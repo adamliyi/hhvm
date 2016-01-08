@@ -169,10 +169,22 @@ struct Vgen {
   void emit(const addsd& i) { a->fadd(i.d, i.s0, i.s1); }
   void emit(const andq& i) { a->and_(i.d, i.s0, i.s1, true); }
   void emit(const andqi& i) { a->andi(i.d, i.s1, i.s0); } // andi changes CR0
-  void emit(const cmpl& i) { a->cmpw(Reg64(i.s1), Reg64(i.s0)); }
-  void emit(const cmpli& i) { a->cmpwi(Reg64(i.s1), i.s0); }
-  void emit(const cmpq& i) { a->cmpd(i.s1, i.s0); }
-  void emit(const cmpqi& i) { a->cmpdi(i.s1, i.s0); }
+  void emit(const cmpl& i) {
+    a->cmpw(Reg64(i.s1), Reg64(i.s0));
+    a->cmplw(Reg64(i.s1), Reg64(i.s0));
+  }
+  void emit(const cmpli& i) {
+    a->cmpwi(Reg64(i.s1), i.s0);
+    a->cmplwi(Reg64(i.s1), i.s0);
+  }
+  void emit(const cmpq& i) {
+    a->cmpd(i.s1, i.s0);
+    a->cmpld(i.s1, i.s0);
+  }
+  void emit(const cmpqi& i) {
+    a->cmpdi(i.s1, i.s0);
+    a->cmpldi(i.s1, i.s0);
+  }
   void emit(const xscvdpsxds& i) { a->xscvdpsxds(i.d, i.s); }
   void emit(const xscvsxddp& i) { a->xscvsxddp(i.d, i.s); }
   void emit(const xxlxor& i) { a->xxlxor(i.d, i.s1, i.s0); }
@@ -267,7 +279,12 @@ struct Vgen {
     obtained by specifying appropriate masks and shift values for
     certain Rotate instructions.
   */
-  void emit(const sar& i) { a->srad(i.d, i.s1, i.s0, true); }
+  void emit(const sar& i) {
+    a->srad(i.d, i.s1, i.s0, true);
+    a->mfcr(rAsm);
+    a->sradi(rAsm,rAsm,4);
+    a->mtocrf(0x40,rAsm);
+  }
   void emit(const sarqi& i) { a->sradi(i.d, i.s1, i.s0.b(), true); }
   void emit(const setcc& i) {
     ppc64_asm::Label l_true, l_end;
@@ -334,9 +351,12 @@ struct Vgen {
     if (i.s0 != i.s1)
       a->and_(rAsm, i.s0, i.s1, true); // result is not used, only flags
     else
+    {
       a->cmpdi(i.s0, Immed(0));
+      a->cmpldi(i.s0, Immed(0));
+    }
   }
-  void emit(const ucomisd& i) { a->dcmpu(i.s1,i.s0); }
+  void emit(const ucomisd& i) { a->dcmpu(i.s0,i.s1); }
   void emit(const ud2& i) { a->trap(); }
   void emit(const xorb& i) {
     a->xor_(Reg64(i.d), Reg64(i.s0), Reg64(i.s1), true);
