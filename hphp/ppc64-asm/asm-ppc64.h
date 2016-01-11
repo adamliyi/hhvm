@@ -1306,8 +1306,8 @@ struct Assembler {
   void msgsnd()         { not_implemented(); }
   void msgsndp()        { not_implemented(); }
   void mtcrf()         { not_implemented(); }
-  void mtocrf(uint8_t fxm, const Reg64& rt)          {
-    EmitXFXForm(31, rn(rt), static_cast<SpecialReg>((fxm << 1)|0x200), 144);
+  void mtocrf(uint16_t fxm, const Reg64& rt)          {
+    EmitXFXForm(31, rn(rt), ( ((fxm << 1) & 0x1fe) |0x200), 144);
   }
 
   void mtdcr()          { not_implemented(); }
@@ -2363,6 +2363,27 @@ protected:
       xo,
       (static_cast<uint32_t>(spr) >> 5) & 0x1F,
       static_cast<uint32_t>(spr) & 0x1F,
+      static_cast<uint32_t>(rs),
+      op
+    };
+
+    dword(xfx_formater.instruction);
+  }
+  void EmitXFXForm(const uint8_t op,
+                   const RegNumber rs,
+                   const uint16_t mask,
+                   const uint16_t xo,
+                   const uint8_t rsv = 0) {
+
+    // GP Register cannot be greater than 31
+    assert(static_cast<uint32_t>(rs) < 32);
+
+    XFX_form_t xfx_formater {
+      rsv,
+      xo,
+      static_cast<uint32_t>((mask) & 0x1F),
+      static_cast<uint32_t>(((mask) >> 5) & 0x1F),
+      //static_cast<uint32_t>((mask) & 0x1F),
       static_cast<uint32_t>(rs),
       op
     };
