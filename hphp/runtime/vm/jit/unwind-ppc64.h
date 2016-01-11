@@ -14,6 +14,35 @@
    +----------------------------------------------------------------------+
 */
 
+#ifndef incl_HPHP_VM_TRANSLATOR_UNWIND_PPC64_H_
+#define incl_HPHP_VM_TRANSLATOR_UNWIND_PPC64_H_
+
+#include "hphp/runtime/vm/jit/unwind-types.h"
+
 namespace HPHP { namespace jit { namespace ppc64 {
 
+//////////////////////////////////////////////////////////////////////
+
+/*
+ * Called whenever we create a new translation cache for the whole
+ * region of code.
+ */
+UnwindInfoHandle register_unwind_region(unsigned char* address, size_t size);
+
+/*
+ * The personality routine for code emitted by the jit.
+ */
+_Unwind_Reason_Code
+tc_unwind_personality(int version,
+                      _Unwind_Action actions,
+                      uint64_t exceptionClass,
+                      _Unwind_Exception* exceptionObj,
+                      _Unwind_Context* context);
+
+TCUnwindInfo tc_unwind_resume(ActRec* fp);
+
+//////////////////////////////////////////////////////////////////////
+
 }}}
+
+#endif

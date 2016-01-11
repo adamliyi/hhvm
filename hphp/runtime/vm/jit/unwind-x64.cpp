@@ -16,6 +16,7 @@
 
 #include "hphp/runtime/vm/jit/unwind-x64.h"
 
+
 #include <vector>
 #include <memory>
 #ifndef _MSC_VER
@@ -31,15 +32,11 @@
 #include "hphp/runtime/vm/jit/service-requests.h"
 #include "hphp/runtime/vm/member-operations.h"
 #include "hphp/runtime/vm/runtime.h"
-#include "hphp/runtime/vm/unwind.h"
+#include "hphp/runtime/vm/unwind-vm.h"
 #include "hphp/util/abi-cxx.h"
 #include "hphp/runtime/vm/jit/smashable-instr-ppc64.h"
 
-// on cygwin in 64 bit/SEH adding frame information needs to be
-// handled with rtladdfunctiontable and rtldeletefunctiontable
-// or use the rtlinstallfunctiontablecallback
-// register_frame and deregister_frame do not exist
-// this is a temp solution that provides empty placeholders for linking
+
 #if defined(__CYGWIN__) || defined(_MSC_VER)
 void __register_frame(const void*) {}
 void __deregister_frame(const void*) {}
@@ -54,12 +51,9 @@ extern "C" void __deregister_frame(const void*);
 
 TRACE_SET_MOD(unwind);
 
-namespace HPHP { namespace jit {
+namespace HPHP { namespace jit { namespace x64 {
 
-rds::Link<UnwindRDS> unwindRdsInfo(rds::kInvalidHandle);
-
-namespace {
-
+//////////////////////////////////////////////////////////////////////
 size_t fdeIdx;
 
 template<class T>
@@ -98,25 +92,15 @@ void sync_regstate(_Unwind_Context* context) {
   FTRACE(2, "synced vmfp: {} vmsp: {} vmpc: {}\n", vmfp(), vmsp(), vmpc());
 }
 
-/*
- * Lookup a catch trace for the given TCA, returning nullptr if none was
- * found. Will abort if a nullptr catch trace was registered, meaning this call
- * isn't allowed to throw.
- */
+void deregister_unwind_region(std::vector<char>* p) {
+  std::auto_ptr<std::vector<char> > del(p);
+  __deregister_frame(&(*p)[fdeIdx]);
+}
+
 TCA lookup_catch_trace(TCA rip, _Unwind_Exception* exn) {
   if (auto catchTraceOpt = mcg->getCatchTrace(rip)) {
     if (auto catchTrace = *catchTraceOpt) return catchTrace;
 
-#if defined(__powerpc64__)
-    const size_t kCallSize = ppc64::smashableCallLen();
-
-    auto callAddr = rip - kCallSize;
-    TCA helperAddr = nullptr;
-    if (ppc64::isCall(callAddr)) {
-      not_implemented();
-      // TODO: helperAddr = rip + *reinterpret_cast<int32_t*>(callAddr + 1);
-    }
-#else
     // A few of our optimization passes must be aware of every path out of
     // the trace, so throwing through jitted code without a catch block is
     // very bad. This is indicated with a present but nullptr entry in the
@@ -129,7 +113,6 @@ TCA lookup_catch_trace(TCA rip, _Unwind_Exception* exn) {
     if (*callAddr == kCallOpcode) {
       helperAddr = rip + *reinterpret_cast<int32_t*>(callAddr + 1);
     }
-#endif
 
     always_assert_flog(false,
                        "Translated call to {} threw '{}' without "
@@ -182,13 +165,129 @@ bool install_catch_trace(_Unwind_Context* ctx, _Unwind_Exception* exn,
   return true;
 }
 
-void deregister_unwind_region(std::vector<char>* p) {
-  std::auto_ptr<std::vector<char> > del(p);
-  __deregister_frame(&(*p)[fdeIdx]);
-}
+/*
+ * Called whenever we create a new translation cache for the whole
+ * region of code.
+ */
+UnwindInfoHandle register_unwind_region(unsigned char* startAddr, size_t size) {
+  FTRACE(1, "register_unwind_region: base {}, size {}\n", startAddr, size);
+  // The first time we're called, this will dynamically link the data
+  // we need in the request data segment.  All future JIT translations
+  // of catch traces may use offsets based on this handle.
+  unwindRdsInfo.bind();
+
+  std::unique_ptr<std::vector<char>> bufferMem(new std::vector<char>);
+  std::vector<char>& buffer = *bufferMem;
+
+  {
+    // This is a dwarf CIE header.  Looks the same as a fde except the
+    // second field is zero.
+    append_vec<uint32_t>(buffer, 0); // Room for length later
+    append_vec<int32_t>(buffer, 0);  // CIE_id
+    append_vec<uint8_t>(buffer, 1);  // version
+
+    /*
+     * Null-terminated "augmentation string" (defines what the rest of
+     * this thing is going to have.
+     */
+    append_vec<char>(buffer, 'z');
+    append_vec<char>(buffer, 'P');
+    append_vec<char>(buffer, '\0');
+
+    // Code and data alignment.
+    append_vec<uint8_t>(buffer, 1);
+    append_vec<uint8_t>(buffer, 8); // Multiplies offsets below.
+
+    // Return address column (in version 1, this is a single byte).
+    append_vec<uint8_t>(buffer, Debug::RIP);
+
+    // Length of the augmentation data.
+    const size_t augIdx = buffer.size();
+    append_vec<uint8_t>(buffer, 9);
+
+    // Pointer to the personality routine for the TC.
+    append_vec<uint8_t>(buffer, DW_EH_PE_absptr);
+    append_vec<uintptr_t>(buffer, uintptr_t(tc_unwind_personality));
+
+    // Fixup the augmentation data length field.  Note that it doesn't include
+    // the space for itself.
+    void* vp = &buffer[augIdx];
+    *static_cast<uint8_t*>(vp) = buffer.size() - augIdx - sizeof(uint8_t);
+
+    /*
+     * Define a program for the CIE.  This explains to the unwinder
+     * how to figure out where the frame pointer was, etc.
+     *
+     * Arguments to some of these are encoded in LEB128, so we have to
+     * clear the high bit for the signed values.
+     */
+    // Previous FP (CFA) is at rbp + 16.
+    append_vec<uint8_t>(buffer, DW_CFA_def_cfa);
+    append_vec<uint8_t>(buffer, Debug::RBP);
+    append_vec<uint8_t>(buffer, 16);
+    // rip is at CFA - 1 * data_align.
+    append_vec<uint8_t>(buffer, DW_CFA_offset_extended_sf);
+    append_vec<uint8_t>(buffer, Debug::RIP);
+    append_vec<uint8_t>(buffer, -1u & 0x7f);
+    // rbp is at CFA - 2 * data_align.
+    append_vec<uint8_t>(buffer, DW_CFA_offset_extended_sf);
+    append_vec<uint8_t>(buffer, Debug::RBP);
+    append_vec<uint8_t>(buffer, -2u & 0x7f);
+    /*
+     * Leave rsp unchanged.
+     *
+     * Note that some things in the translator do actually change rsp,
+     * but we assume they cannot throw so this is ok.  If rvmsp() ever
+     * changes to use rsp this code must change.
+     */
+    append_vec<uint8_t>(buffer, DW_CFA_same_value);
+    append_vec<uint8_t>(buffer, Debug::RSP);
+
+    // Fixup the length field.  Note that it doesn't include the space
+    // for itself.
+    vp = &buffer[0];
+    *static_cast<uint32_t*>(vp) = buffer.size() - sizeof(uint32_t);
+  }
+  fdeIdx = buffer.size();
+  {
+    // Reserve space for FDE length.
+    append_vec<uint32_t>(buffer, 0);
+
+    // Negative offset to the CIE for this FDE---the offset is
+    // relative to this field.
+    append_vec<int32_t>(buffer, int32_t(buffer.size()));
+
+    // We're using the addressing mode DW_EH_PE_absptr, which means it
+    // wants a 8 byte pointer and a 8 byte size indicating the region
+    // this FDE applies to.
+    append_vec<unsigned char*>(buffer, startAddr);
+    append_vec<size_t>(buffer, size);
+
+    // Length of the augmentation data in this FDE. This field must present if
+    // 'z' is set in CIE.
+    append_vec<uint8_t>(buffer, 0);
+
+    // Fixup the length field for this FDE.  Again length doesn't
+    // include the length field itself.
+    void* vp = &buffer[fdeIdx];
+    *static_cast<uint32_t*>(vp) = buffer.size() - fdeIdx - sizeof(uint32_t);
+  }
+  // Add one more zero'd length field---this indicates that there are
+  // no more FDEs sharing this CIE.
+  append_vec<uint32_t>(buffer, 0);
+
+  __register_frame(&buffer[fdeIdx]);
+
+  return std::shared_ptr<std::vector<char>>(
+    bufferMem.release(),
+    deregister_unwind_region
+  );
 
 }
 
+/*
+ * The personality routine for code emitted by the jit.
+ */
 _Unwind_Reason_Code
 tc_unwind_personality(int version,
                       _Unwind_Action actions,
@@ -294,6 +393,7 @@ tc_unwind_personality(int version,
 
   FTRACE(1, "returning _URC_CONTINUE_UNWIND\n");
   return _URC_CONTINUE_UNWIND;
+
 }
 
 TCUnwindInfo tc_unwind_resume(ActRec* fp) {
@@ -346,249 +446,7 @@ TCUnwindInfo tc_unwind_resume(ActRec* fp) {
   }
 }
 
-///////////////////////////////////////////////////////////////////////////////
-
-UnwindInfoHandle
-register_unwind_region(unsigned char* startAddr, size_t size) {
-  FTRACE(1, "register_unwind_region: base {}, size {}\n", startAddr, size);
-  // The first time we're called, this will dynamically link the data
-  // we need in the request data segment.  All future JIT translations
-  // of catch traces may use offsets based on this handle.
-  unwindRdsInfo.bind();
-
-  std::unique_ptr<std::vector<char>> bufferMem(new std::vector<char>);
-  std::vector<char>& buffer = *bufferMem;
-
-#if defined(__powerpc64__)
-  {
-    // This is a dwarf CIE header.  Looks the same as a fde except the
-    // second field is zero.
-    append_vec<uint32_t>(buffer, 0); // Room for length later
-    append_vec<int32_t>(buffer, 0);  // CIE_id
-    append_vec<uint8_t>(buffer, 1);  // version
-
-    /*
-     * Null-terminated "augmentation string" (defines what the rest of
-     * this thing is going to have.
-     */
-    append_vec<char>(buffer, 'z');
-    append_vec<char>(buffer, 'P');
-    append_vec<char>(buffer, '\0');
-
-    // Code and data alignment.
-    append_vec<uint8_t>(buffer, 4);
-    append_vec<uint8_t>(buffer, 8);
-
-    // Return address column (in version 1, this is a single byte).
-    append_vec<uint8_t>(buffer, Debug::LR);
-
-    // Length of the augmentation data.
-    const size_t augIdx = buffer.size();
-    append_vec<uint8_t>(buffer, 9);
-
-    // Pointer to the personality routine for the TC.
-    append_vec<uint8_t>(buffer, DW_EH_PE_absptr);
-    append_vec<uintptr_t>(buffer, uintptr_t(tc_unwind_personality));
-
-    // Fixup the augmentation data length field.  Note that it doesn't include
-    // the space for itself.
-    void* vp = &buffer[augIdx];
-    *static_cast<uint8_t*>(vp) = buffer.size() - augIdx - sizeof(uint8_t);
-
-    append_vec<uint8_t>(buffer, DW_CFA_def_cfa);
-    append_vec<uint8_t>(buffer, Debug::RSP);
-    append_vec<uint8_t>(buffer, 0);
-
-    vp = &buffer[0];
-    *static_cast<uint32_t*>(vp) = buffer.size() - sizeof(uint32_t);
-  }
-  fdeIdx = buffer.size();
-  {
-    // Reserve space for FDE length.
-    append_vec<uint32_t>(buffer, 0);
-
-    // Negative offset to the CIE for this FDE---the offset is
-    // relative to this field.
-    append_vec<int32_t>(buffer, int32_t(buffer.size()));
-
-    // We're using the addressing mode DW_EH_PE_absptr, which means it
-    // wants a 8 byte pointer and a 8 byte size indicating the region
-    // this FDE applies to.
-    append_vec<unsigned char*>(buffer, startAddr);
-    append_vec<size_t>(buffer, size);
-
-    // Length of the augmentation data in this FDE. This field must present if
-    // 'z' is set in CIE.
-    append_vec<uint8_t>(buffer, 0);
-
-    append_vec<uint8_t>(buffer, DW_CFA_def_cfa_offset);
-    append_vec<uint8_t>(buffer, 0);
-
-    // LR is at (*CFA) + 2 * data_align
-    append_vec<uint8_t>(buffer, DW_CFA_val_expression);
-    append_vec<uint8_t>(buffer, Debug::RIP);
-    // Reserve space for block length.
-    const size_t ripIdx = buffer.size();
-    append_vec<uint8_t>(buffer, 0);
-    // the following expression gets the return address based on the last frame.
-    append_vec<uint8_t>(buffer, DW_OP_bregx);
-    append_vec<uint8_t>(buffer, Debug::RSP);
-    append_vec<uint8_t>(buffer, 0);
-    append_vec<uint8_t>(buffer, DW_OP_deref);   // previous frame
-    append_vec<uint8_t>(buffer, DW_OP_consts);
-    append_vec<uint8_t>(buffer, 16);            // LR position
-    append_vec<uint8_t>(buffer, DW_OP_plus);
-    append_vec<uint8_t>(buffer, DW_OP_deref);   // grab data, not address
-    // Fixup the length field for this block. Again length doesn't include the
-    // length field itself.
-    void* vp = &buffer[ripIdx];
-    *static_cast<uint8_t*>(vp) = buffer.size() - ripIdx - sizeof(uint8_t);
-
-    // TOC is at CFA + 3 * data_align
-    append_vec<uint8_t>(buffer, DW_CFA_offset_extended_sf);
-    append_vec<uint8_t>(buffer, Debug::TOC);
-    append_vec<uint8_t>(buffer, 3);
-
-    // updates RBP to point to previous RSP
-    append_vec<uint8_t>(buffer, DW_CFA_val_expression);
-    append_vec<uint8_t>(buffer, Debug::RBP);
-    // Reserve space for block length.
-    const size_t rbpIdx = buffer.size();
-    append_vec<uint8_t>(buffer, 0);
-    append_vec<uint8_t>(buffer, DW_OP_bregx);
-    append_vec<uint8_t>(buffer, Debug::RSP);
-    append_vec<uint8_t>(buffer, 0);
-    append_vec<uint8_t>(buffer, DW_OP_deref);   // previous frame
-    // Fixup the length field for this block. Again length doesn't include the
-    // length field itself.
-    vp = &buffer[rbpIdx];
-    *static_cast<uint8_t*>(vp) = buffer.size() - rbpIdx - sizeof(uint8_t);
-
-    // follow the backchain
-    append_vec<uint8_t>(buffer, DW_CFA_offset_extended_sf);
-    append_vec<uint8_t>(buffer, Debug::RSP);
-    append_vec<uint8_t>(buffer, 0);
-
-    append_vec<uint8_t>(buffer, DW_CFA_def_cfa_register);
-    append_vec<uint8_t>(buffer, Debug::RSP);
-
-    // Fixup the length field for this FDE.  Again length doesn't
-    // include the length field itself.
-    vp = &buffer[fdeIdx];
-    *static_cast<uint32_t*>(vp) = buffer.size() - fdeIdx - sizeof(uint32_t);
-
-    // Add one more zero'd length field---this indicates that there are
-    // no more FDEs sharing this CIE.
-    append_vec<uint32_t>(buffer, 0);
-  }
-#else
-  {
-    // This is a dwarf CIE header.  Looks the same as a fde except the
-    // second field is zero.
-    append_vec<uint32_t>(buffer, 0); // Room for length later
-    append_vec<int32_t>(buffer, 0);  // CIE_id
-    append_vec<uint8_t>(buffer, 1);  // version
-
-    /*
-     * Null-terminated "augmentation string" (defines what the rest of
-     * this thing is going to have.
-     */
-    append_vec<char>(buffer, 'z');
-    append_vec<char>(buffer, 'P');
-    append_vec<char>(buffer, '\0');
-
-    // Code and data alignment.
-    append_vec<uint8_t>(buffer, 1);
-    append_vec<uint8_t>(buffer, 8); // Multiplies offsets below.
-
-    // Return address column (in version 1, this is a single byte).
-    append_vec<uint8_t>(buffer, Debug::RIP);
-
-    // Length of the augmentation data.
-    const size_t augIdx = buffer.size();
-    append_vec<uint8_t>(buffer, 9);
-
-    // Pointer to the personality routine for the TC.
-    append_vec<uint8_t>(buffer, DW_EH_PE_absptr);
-    append_vec<uintptr_t>(buffer, uintptr_t(tc_unwind_personality));
-
-    // Fixup the augmentation data length field.  Note that it doesn't include
-    // the space for itself.
-    void* vp = &buffer[augIdx];
-    *static_cast<uint8_t*>(vp) = buffer.size() - augIdx - sizeof(uint8_t);
-
-    /*
-     * Define a program for the CIE.  This explains to the unwinder
-     * how to figure out where the frame pointer was, etc.
-     *
-     * Arguments to some of these are encoded in LEB128, so we have to
-     * clear the high bit for the signed values.
-     */
-    // Previous FP (CFA) is at rbp + 16.
-    append_vec<uint8_t>(buffer, DW_CFA_def_cfa);
-    append_vec<uint8_t>(buffer, Debug::RBP);
-    append_vec<uint8_t>(buffer, 16);
-    // rip is at CFA - 1 * data_align.
-    append_vec<uint8_t>(buffer, DW_CFA_offset_extended_sf);
-    append_vec<uint8_t>(buffer, Debug::RIP);
-    append_vec<uint8_t>(buffer, -1u & 0x7f);
-    // rbp is at CFA - 2 * data_align.
-    append_vec<uint8_t>(buffer, DW_CFA_offset_extended_sf);
-    append_vec<uint8_t>(buffer, Debug::RBP);
-    append_vec<uint8_t>(buffer, -2u & 0x7f);
-    /*
-     * Leave rsp unchanged.
-     *
-     * Note that some things in the translator do actually change rsp,
-     * but we assume they cannot throw so this is ok.  If rvmsp() ever
-     * changes to use rsp this code must change.
-     */
-    append_vec<uint8_t>(buffer, DW_CFA_same_value);
-    append_vec<uint8_t>(buffer, Debug::RSP);
-
-    // Fixup the length field.  Note that it doesn't include the space
-    // for itself.
-    vp = &buffer[0];
-    *static_cast<uint32_t*>(vp) = buffer.size() - sizeof(uint32_t);
-  }
-  fdeIdx = buffer.size();
-  {
-    // Reserve space for FDE length.
-    append_vec<uint32_t>(buffer, 0);
-
-    // Negative offset to the CIE for this FDE---the offset is
-    // relative to this field.
-    append_vec<int32_t>(buffer, int32_t(buffer.size()));
-
-    // We're using the addressing mode DW_EH_PE_absptr, which means it
-    // wants a 8 byte pointer and a 8 byte size indicating the region
-    // this FDE applies to.
-    append_vec<unsigned char*>(buffer, startAddr);
-    append_vec<size_t>(buffer, size);
-
-    // Length of the augmentation data in this FDE. This field must present if
-    // 'z' is set in CIE.
-    append_vec<uint8_t>(buffer, 0);
-
-    // Fixup the length field for this FDE.  Again length doesn't
-    // include the length field itself.
-    void* vp = &buffer[fdeIdx];
-    *static_cast<uint32_t*>(vp) = buffer.size() - fdeIdx - sizeof(uint32_t);
-  }
-  // Add one more zero'd length field---this indicates that there are
-  // no more FDEs sharing this CIE.
-  append_vec<uint32_t>(buffer, 0);
-#endif
-
-
-  __register_frame(&buffer[fdeIdx]);
-
-  return std::shared_ptr<std::vector<char>>(
-    bufferMem.release(),
-    deregister_unwind_region
-  );
-}
-
 //////////////////////////////////////////////////////////////////////
 
-}}
+}}}
+
