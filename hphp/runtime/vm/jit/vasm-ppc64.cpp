@@ -353,7 +353,10 @@ struct Vgen {
     a->slwi(Reg64(i.d), Reg64(i.s1), i.s0.b(), true);
     copyCR0toCR1(a, rAsm);
   }
-  void emit(const shl& i) { a->sld(i.d, i.s1, i.s0, true); }
+  void emit(const shl& i) {
+    a->sld(i.d, i.s1, i.s0, true);
+    copyCR0toCR1(a, rAsm);
+  }
   void emit(const shlqi& i) {
     a->sldi(i.d, i.s1, i.s0.b(), true);
     copyCR0toCR1(a, rAsm);
