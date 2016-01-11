@@ -831,7 +831,7 @@ struct Assembler {
   void dcmpo()          { not_implemented(); }
   void dcmpoq()         { not_implemented(); }
   void dcmpu(const RegXMM& fra, const RegXMM& frb) {
-    EmitXForm(59, rn(1 << 2), rn(fra), rn(frb), 642);
+    EmitXForm(59, rn(0/*1 << 2*/), rn(fra), rn(frb), 642);
   }
   void dcmpuq()         { not_implemented(); }
   void dcread()         { not_implemented(); }
