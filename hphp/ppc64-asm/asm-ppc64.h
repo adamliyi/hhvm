@@ -534,6 +534,17 @@ struct Assembler {
     PPR32    = 898
   };
 
+  enum class CR {
+    CR0      = 0,
+    CR1      = 1,
+    CR2      = 2,
+    CR3      = 3,
+    CR4      = 4,
+    CR5      = 5,
+    CR6      = 6,
+    CR7      = 7,
+  };
+
   // How many bytes a PPC64 instruction length is
   static const uint8_t kBytesPerInstr = sizeof(PPC64Instr);
 
@@ -1860,21 +1871,21 @@ struct Assembler {
     // TODO(CRField): if other CRs than 0 is used, please change this to 3
     cmp(0, 0, ra, rb);
   }
-  void cmpldi(const Reg64& ra, Immed64 imm) {
-    cmpli(1, 1, ra, imm);
+  void cmpldi(const Reg64& ra, Immed64 imm, CR CRnum = CR::CR0) {
+    cmpli(static_cast<uint16_t>(CRnum), 1, ra, imm);
   }
-  void cmplwi(const Reg64& ra, Immed64 imm) {
+  void cmplwi(const Reg64& ra, Immed64 imm, CR CRnum = CR::CR0) {
     //Extended cmpli 3,0,Rx,value
     // TODO(CRField): if other CRs than 0 is used, please change this to 3
-    cmpli(1, 0, ra, imm);
+    cmpli(static_cast<uint16_t>(CRnum), 0, ra, imm);
   }
-  void cmpld(const Reg64& ra, const Reg64& rb) {
-    cmpl(1, 1, ra, rb);
+  void cmpld(const Reg64& ra, const Reg64& rb, CR CRnum = CR::CR0) {
+    cmpl(static_cast<uint16_t>(CRnum), 1, ra, rb);
   }
-  void cmplw(const Reg64& ra, const Reg64& rb) {
+  void cmplw(const Reg64& ra, const Reg64& rb, CR CRnum = CR::CR0) {
     //Extended cmpl 3,0,Rx,Ry
     // TODO(CRField): if other CRs than 0 is used, please change this to 3
-    cmpl(1, 0, ra, rb);
+    cmpl(static_cast<uint16_t>(CRnum), 0, ra, rb);
   }
   void twgti()          { not_implemented(); }  //Extended twi 8,Rx,value
   void twllei()         { not_implemented(); }  //Extended twi 6,Rx,value

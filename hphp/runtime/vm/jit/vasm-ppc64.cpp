@@ -189,19 +189,19 @@ struct Vgen {
   } // andi changes CR0
   void emit(const cmpl& i) {
     a->cmpw(Reg64(i.s1), Reg64(i.s0));
-    a->cmplw(Reg64(i.s1), Reg64(i.s0));
+    a->cmplw(Reg64(i.s1), Reg64(i.s0), Assembler::CR::CR1);
   }
   void emit(const cmpli& i) {
     a->cmpwi(Reg64(i.s1), i.s0);
-    a->cmplwi(Reg64(i.s1), i.s0);
+    a->cmplwi(Reg64(i.s1), i.s0, Assembler::CR::CR1);
   }
   void emit(const cmpq& i) {
     a->cmpd(i.s1, i.s0);
-    a->cmpld(i.s1, i.s0);
+    a->cmpld(i.s1, i.s0, Assembler::CR::CR1);
   }
   void emit(const cmpqi& i) {
     a->cmpdi(i.s1, i.s0);
-    a->cmpldi(i.s1, i.s0);
+    a->cmpldi(i.s1, i.s0, Assembler::CR::CR1);
   }
   void emit(const xscvdpsxds& i) { a->xscvdpsxds(i.d, i.s); }
   void emit(const xscvsxddp& i) { a->xscvsxddp(i.d, i.s); }
