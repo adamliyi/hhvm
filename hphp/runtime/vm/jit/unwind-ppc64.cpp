@@ -107,7 +107,7 @@ TCA lookup_catch_trace(TCA rip, _Unwind_Exception* exn) {
 
     auto callAddr = rip - kCallSize;
     TCA helperAddr = nullptr;
-    if (ppc64::isCall(callAddr)) {
+    if (ppc64_asm::Assembler::isCall(callAddr)) {
       not_implemented();
        // TODO: helperAddr = rip + *reinterpret_cast<int32_t*>(callAddr + 1);
     }

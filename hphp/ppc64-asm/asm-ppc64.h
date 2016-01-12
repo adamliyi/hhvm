@@ -602,7 +602,7 @@ struct Assembler {
   void addo(const Reg64& rt, const Reg64& ra, const Reg64& rb, bool rc = 0);
   void addze(const Reg64& rt, const Reg64& ra, bool rc = 0);
   void addzeo(const Reg64& rt, const Reg64& ra, bool rc = 0);
-  void and_(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
+  void and(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void andc(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void andi(const Reg64& ra, const Reg64& rs, Immed64 imm);
   void andis(const Reg64& ra, const Reg64& rs, Immed64 imm);
@@ -717,7 +717,7 @@ struct Assembler {
   void neg(const Reg64& rt, const Reg64& ra, bool rc = 0);
   void nego(const Reg64& rt, const Reg64& ra, bool rc = 0);
   void nor(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
-  void or_(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
+  void or(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void orc(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void ori(const Reg64& ra, const Reg64& rs, Immed64 imm);
   void oris(const Reg64& ra, const Reg64& rs, Immed64 imm);
@@ -796,7 +796,7 @@ struct Assembler {
   void tdi(uint16_t to, const Reg64& ra, uint16_t imm);
   void tw(uint16_t to, const Reg64& ra, const Reg64& rb);
   void twi(uint16_t to, const Reg64& ra, uint16_t imm);
-  void xor_(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
+  void xor(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void xori(const Reg64& ra, const Reg64& rs, Immed64 imm);
   void xoris(const Reg64& ra, const Reg64& rs, Immed64 imm);
   void xscvdpuxds(const RegXMM& xt, const RegXMM& xb) {
@@ -1905,9 +1905,9 @@ struct Assembler {
   }
   void xnop()           { not_implemented(); }  //Extended
   void mr(const Reg64& rs, const Reg64& ra) {
-    or_(rs, ra, ra);
+    or(rs, ra, ra);
   }
-  void not_()           { not_implemented(); }  //Extended
+  void not()            { not_implemented(); }  //Extended
   void srwi(const Reg64& ra, const Reg64& rs, int8_t sh, bool rc = 0) {
     rlwinm(ra, rs, 32-sh, sh, 31, rc);
   }
@@ -1998,6 +1998,13 @@ struct Assembler {
              const Reg64& rfuncln,
              const Reg64& rvmfp,
              CodeAddress target);
+
+  // checks if the @inst is pointing to a call
+  static inline bool isCall(HPHP::jit::TCA inst) {
+    // a call always begin with a mflr and it's rarely used elsewhere: good tag
+    return ((((inst[3] >> 2) & 0x3F) == 31) &&                          // OPCD
+      ((((inst[1] & 0x3) << 7) | ((inst[0] >> 1) & 0xFF)) == 339));     // XO
+  }
 
   // Retrieve the target defined by li64 instruction
   static int64_t getLi64(PPC64Instr* pinstr);

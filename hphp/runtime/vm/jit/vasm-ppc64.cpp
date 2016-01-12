@@ -166,21 +166,30 @@ struct Vgen {
   // Addqi and subqi can't be lowered to addq and subq if the destiny is rsp().
   // To avoid this issue, addqi and subqi are the only vasms that will be
   // lowered directly by using rAsm on its emission.
+  //
+  // TODO(gut): move them to lower if rsp() manipulation is exclusively allowed
+  // in lea and not anymore in addqi and subqi
   void emit(const addqi& i) {
-    if (i.s0.fits(HPHP::sz::word))  a->li(rAsm, i.s0);
-    else                            a->li32(rAsm, i.s0.l());
+    if (i.s0.fits(HPHP::sz::word)) {
+      a->li(rAsm, i.s0);
+    } else {
+      a->li32(rAsm, i.s0.l());
+    }
     a->addo(i.d, i.s1, rAsm, true);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const subqi& i) {
-    if (i.s0.fits(HPHP::sz::word))  a->li(rAsm, i.s0);
-    else                            a->li32(rAsm, i.s0.l());
+    if (i.s0.fits(HPHP::sz::word)) {
+      a->li(rAsm, i.s0);
+    } else {
+      a->li32(rAsm, i.s0.l());
+    }
     a->subo(i.d, i.s1, rAsm, true);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const addsd& i) { a->fadd(i.d, i.s0, i.s1); }
   void emit(const andq& i) {
-    a->and_(i.d, i.s0, i.s1, true);
+    a->and(i.d, i.s0, i.s1, true);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const andqi& i) {
@@ -203,6 +212,7 @@ struct Vgen {
     a->cmpdi(i.s1, i.s0);
     a->cmpldi(i.s1, i.s0, Assembler::CR::CR1);
   }
+
   void emit(const xscvdpsxds& i) { a->xscvdpsxds(i.d, i.s); }
   void emit(const xscvsxddp& i) { a->xscvsxddp(i.d, i.s); }
   void emit(const xxlxor& i) { a->xxlxor(i.d, i.s1, i.s0); }
@@ -272,14 +282,14 @@ struct Vgen {
     a->rlwinm(rAsm, i.s, 0, 32-sh, 31); // extract lower 32bits
     a->clrrwi(i.d, i.d, sh); // clear lower 32bits on destination
     // move lower 32bits to destination and keep the higher 32bits
-    a->or_(i.d, i.d, rAsm);
+    a->or(i.d, i.d, rAsm);
   }
   void emit(const movb& i) {
     int8_t sh = CHAR_BIT;
     a->rlwinm(rAsm, Reg64(i.s), 0, 32-sh, 31); // extract lower byte
     a->clrrwi(Reg64(i.d), Reg64(i.d), sh); // clear lower byte on destination
     // move lower byte to destination and keep the other 56 bits
-    a->or_(Reg64(i.d), Reg64(i.d), rAsm);
+    a->or(Reg64(i.d), Reg64(i.d), rAsm);
   }
   void emit(const movzbl& i) {
     int8_t sh_32 = sizeof(int) * CHAR_BIT;
@@ -288,7 +298,7 @@ struct Vgen {
     // clear lower 32bits on destination
     a->clrrwi(Reg64(i.d), Reg64(i.d), sh_32);
     // move lower byte to destination and keep the other 56 bits
-    a->or_(Reg64(i.d), Reg64(i.d), rAsm);
+    a->or(Reg64(i.d), Reg64(i.d), rAsm);
   }
   void emit(const movzbq& i) {
     int8_t sh_8 = CHAR_BIT;
@@ -308,16 +318,17 @@ struct Vgen {
   void emit(const nop& i) { a->ori(Reg64(0), Reg64(0), 0); } // no-op form
   void emit(const not& i) { a->nor(i.d, i.s, i.s, false); }
   void emit(const orq& i) {
-    a->or_(i.d, i.s0, i.s1, true);
+    a->or(i.d, i.s0, i.s1, true);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const orqi& i) {
-    if (i.s0.fits(HPHP::sz::word))
+    if (i.s0.fits(HPHP::sz::word)) {
       a->li(rAsm,i.s0);
-    else
+    } else {
       a->li32(rAsm,i.s0.l());
+    }
 
-    a->or_(i.d, i.s1, rAsm, true /** or. implies Rc = 1 **/);
+    a->or(i.d, i.s1, rAsm, true /** or. implies Rc = 1 **/);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const roundsd& i) { a->xsrdpi(i.d, i.s); }
@@ -341,7 +352,7 @@ struct Vgen {
     Reg64 d(i.d);
 
     a->bc(l_true, i.cc);
-    a->xor_(d, d, d, false);   /* set output to 0 */
+    a->xor(d, d, d, false);   /* set output to 0 */
     a->b(l_end);
 
     l_true.asm_label(*a);
@@ -375,8 +386,11 @@ struct Vgen {
   // macro for commonlizing X-/D-form of load/store instructions
 #define X(instr, dst, ptr)                                \
   do {                                                    \
-    if (ptr.index.isValid()) a->instr##x(dst, ptr);       \
-    else                     a->instr   (dst, ptr);       \
+    if (ptr.index.isValid()) {                            \
+      a->instr##x(dst, ptr);                              \
+    } else {                                              \
+      a->instr   (dst, ptr);                              \
+    }                                                     \
   } while(0)
 
   // As all registers are 64-bits wide, a smaller number from the memory should
@@ -414,7 +428,7 @@ struct Vgen {
     // https://goo.gl/F1wrbO
     if (i.s0 != i.s1)
     {
-      a->and_(rAsm, i.s0, i.s1, true); // result is not used, only flags
+      a->and(rAsm, i.s0, i.s1, true); // result is not used, only flags
       copyCR0toCR1(a, rAsm);
     }
     else
@@ -426,27 +440,29 @@ struct Vgen {
   void emit(const ucomisd& i) {
     a->dcmpu(i.s0,i.s1);
     copyCR0toCR1(a, rAsm);
+
   }
   void emit(const ud2& i) { a->trap(); }
   void emit(const xorb& i) {
-    a->xor_(Reg64(i.d), Reg64(i.s0), Reg64(i.s1), true);
+    a->xor(Reg64(i.d), Reg64(i.s0), Reg64(i.s1), true);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const xorl& i) {
-    a->xor_(Reg64(i.d), Reg64(i.s0), Reg64(i.s1), true);
+    a->xor(Reg64(i.d), Reg64(i.s0), Reg64(i.s1), true);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const xorq& i) {
-    a->xor_(i.d, i.s0, i.s1, true);
+    a->xor(i.d, i.s0, i.s1, true);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const xorqi& i) {
-    if (i.s0.fits(HPHP::sz::word))
+    if (i.s0.fits(HPHP::sz::word)) {
       a->li(rAsm, i.s0);
-    else
+    } else {
       a->li32(rAsm, i.s0.l());
+    }
 
-    a->xor_(i.d, i.s1, rAsm, true /** xor. implies Rc = 1 **/);
+    a->xor(i.d, i.s1, rAsm, true /** xor. implies Rc = 1 **/);
     copyCR0toCR1(a, rAsm);
   }
 
@@ -518,7 +534,7 @@ void Vgen::emit(const ldimmb& i) {
     a->li(rAsm, i.s); // should be only 8bits available
     a->clrrwi(i.d, i.d, CHAR_BIT); // Clear lower byte
     // Place only the byte into the register, keeping the higher 56bits
-    a->or_(i.d, i.d, rAsm);
+    a->or(i.d, i.d, rAsm);
   } else {
     assertx(i.d.isSIMD());
     a->li(rAsm, i.s);
@@ -542,7 +558,7 @@ void Vgen::emit(const ldimmq& i) {
   auto val = i.s.q();
   if (i.d.isGP()) {
     if (val == 0) {
-      a->xor_(i.d, i.d, i.d);
+      a->xor(i.d, i.d, i.d);
       // emit nops to fill a standard li64 instruction block
       // this will be useful on patching and smashable operations
       a->emitNop(ppc64_asm::Assembler::kLi64InstrLen -

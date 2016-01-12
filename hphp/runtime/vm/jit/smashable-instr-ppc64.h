@@ -51,12 +51,6 @@ constexpr uint8_t smashableCallSkipPrologue() { return kStdIns * 5; }
 // epilogue of call function after the return address:
 // skips ld, addi, ld, mtlr
 constexpr uint8_t smashableCallSkipEpilogue() { return kStdIns * 4; }
-// checks if the @inst is pointing to a call
-inline bool isCall(TCA inst) {
-  // a call always begin with a mflr and it's rarely used
-  return ((((inst[3] >> 2) & 0x3F) == 31) &&                            // OPCD
-      ((((inst[1] & 0x3) << 7) | ((inst[0] >> 1) & 0xFF)) == 339));     // XO
-}
 
 // li64 + mtctr + bccrt
 constexpr size_t smashableJccLen()  { return kStdIns * 7; }

@@ -128,8 +128,15 @@ static TCA emitDecRefHelper(CodeBlock& cb, PhysReg tv, PhysReg type,
       // The refcount is positive, so the value is refcounted.  We need to
       // either decref or release.
       ifThen(v, CC_NE, sf, [&] (Vout& v) {
-        // The refcount is greater than 1; decref it.
-        v << declm{data[FAST_REFCOUNT_OFFSET], v.makeReg()};
+        // This new scope is needed for saving the registers used as parameters,
+        // just like the "PhysRegSaver prs{v, live};" below.
+        // Declm instruction (for PPC64) is lowered and uses additional
+        // registers.
+        {
+          PhysRegSaver prs{v, live};
+          // The refcount is greater than 1; decref it.
+          v << declm{data[FAST_REFCOUNT_OFFSET], v.makeReg()};
+        }
         v << ret{};
       });
 
