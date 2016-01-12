@@ -58,7 +58,7 @@ void emitFuncGuard(const Func* func, CodeBlock& cb) {
 
   a.  li64   (tmp1, uint64_t(func));
   a.  ld     (tmp2, rvmfp()[AROFF(m_func)]);
-  a.  cmpld  (tmp1, tmp2);
+  a.  cmpd   (tmp1, tmp2);
 
   a.    branchAuto(mcg->tx().uniqueStubs.funcPrologueRedispatch,
                   ppc64_asm::BranchConditions::NotEqual);
