@@ -245,7 +245,7 @@ struct Vgen {
     copyCR0toCR1(a, rAsm);
   }
   void emit(const fcmpu& i) {
-    a->fcmpu(i.sf, i.s1, i.s0);
+    a->fcmpu(i.sf, i.s0, i.s1);
     copyCR0toCR1(a, rAsm);
   }
   void emit(const incw& i) {
@@ -260,6 +260,7 @@ struct Vgen {
     a->addo(i.d, i.s, rone(), true);
     copyCR0toCR1(a, rAsm);
   }
+
   void emit(const jmpi& i) {
     a->branchAuto(i.target, BranchConditions::Always, LinkReg::DoNotTouch);
   }
@@ -436,11 +437,6 @@ struct Vgen {
       a->cmpdi(i.s0, Immed(0));
       a->cmpldi(i.s0, Immed(0));
     }
-  }
-  void emit(const ucomisd& i) {
-    a->dcmpu(i.s0,i.s1);
-    copyCR0toCR1(a, rAsm);
-
   }
   void emit(const ud2& i) { a->trap(); }
   void emit(const xorb& i) {
@@ -1165,6 +1161,13 @@ void lowerForPPC64(Vout& v, loadqp& inst) {
   v << load{p, inst.d};
 }
 
+void lowerForPPC64(Vout& v, pushm& inst) {
+  auto tmp = v.makeReg();
+  patchVptr(inst.s, v);
+  v << load{inst.s, tmp};
+  v << push{tmp};
+}
+
 void lowerForPPC64(Vout& v, popm& inst) {
   auto tmp = v.makeReg();
   patchVptr(inst.d, v);
@@ -1209,6 +1212,10 @@ void lowerForPPC64(Vout& v, tailcallphp& inst) {
 /////////////////////////////////////////////////////////////////////////////
 
 // Lower movs to copy
+// X64's ucomisd is exactly PPC64's fcmpu, which is already implemented
+void lowerForPPC64(Vout& v, ucomisd& inst) {
+  v << fcmpu{inst.s0, inst.s1, inst.sf};
+}
 void lowerForPPC64(Vout& v, movtqb& inst) { v << copy{inst.s, inst.d}; }
 void lowerForPPC64(Vout& v, movtql& inst) { v << copy{inst.s, inst.d}; }
 

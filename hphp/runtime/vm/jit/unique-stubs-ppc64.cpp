@@ -68,36 +68,65 @@ static void alignJmpTarget(CodeBlock& cb) {
 ///////////////////////////////////////////////////////////////////////////////
 
 TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
-    alignJmpTarget(cb);
+  alignJmpTarget(cb);
 
-    ppc64_asm::Assembler a { cb };
+  auto const start = vwrap(cb, [&] (Vout& v) {
+    auto const ar = v.makeReg();
 
-    auto const start = a.frontier();
+    v << copy{rvmfp(), ar};
 
-    // force the backchain to be the same as current LR.
-    a.prologue(rsp(), rtoc(), rfuncln(), rfuncln());
+    // Fully set up the call frame for the stub.  We can't skip this like we do
+    // in other stubs because we need the return IP for this frame in the %rbp
+    // chain, in order to find the proper fixup for the VMRegAnchor in the
+    // intercept handler.
+    v << stublogue{true};
+    v << copy{rsp(), rvmfp()};
+
+    // When we call the event hook, it might tell us to skip the callee
+    // (because of fb_intercept).  If that happens, we need to return to the
+    // caller, but the handler will have already popped the callee's frame.
+    // So, we need to save these values for later.
+    v << pushm{ar[AROFF(m_savedRip)]};
+    v << pushm{ar[AROFF(m_sfp)]};
+
+    v << copy2{ar, v.cns(EventHook::NormalFunc), rarg(0), rarg(1)};
 
     bool (*hook)(const ActRec*, int) = &EventHook::onFunctionCall;
-    unsigned char *hook_ptr = (unsigned char *)hook;
+    v << call{TCA(hook)};
+  });
 
-    a.branchAuto((hook_ptr), ppc64_asm::BranchConditions::Always,
-        ppc64_asm::LinkReg::Save);
+  us.functionEnterHelperReturn = vwrap2(cb, [&] (Vout& v, Vout& vcold) {
+    auto const sf = v.makeReg();
+    v << testb{rret(), rret(), sf};
 
-    auto const HelperReturn = a.frontier();
-    us.functionEnterHelperReturn = HelperReturn;
+    unlikelyIfThen(v, vcold, CC_Z, sf, [&] (Vout& v) {
+      auto const saved_rip = v.makeReg();
 
-    a.epilogue(rsp(), rtoc(), rfuncln());
+      // The event hook has already cleaned up the stack and popped the
+      // callee's frame, so we're ready to continue from the original call
+      // site.  We just need to grab the fp/rip of the original frame that we
+      // saved earlier, and sync rvmsp().
+      v << pop{rvmfp()};
+      v << pop{saved_rip};
 
-    ppc64_asm::Label l;
-    a.cmpdi(rret(), 0);
+      // Drop our call frame; the stublogue{} instruction guarantees that this
+      // is exactly 16 bytes.
+      v << addqi{16, rsp(), rsp(), v.makeReg()};
 
-    a.branchAuto(l, ppc64_asm::BranchConditions::Equal);
-      // indent to improve readability of the block
-      a.blr();
+      // Sync vmsp and return to the caller.  This unbalances the return stack
+      // buffer, but if we're intercepting, we probably don't care.
+      v << load{rvmtl()[rds::kVmspOff], rvmsp()};
+      v << jmpr{saved_rip};
+    });
 
-    l.asm_label(a);
+    // Skip past the stuff we saved for the intercept case.
+    v << addqi{16, rsp(), rsp(), v.makeReg()};
 
-    return start;
+    // Restore rvmfp() and return to the callee's func prologue.
+    v << stubret{RegSet(), true};
+  });
+
+  return start;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
