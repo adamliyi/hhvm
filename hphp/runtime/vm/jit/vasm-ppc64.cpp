@@ -1114,12 +1114,15 @@ void lowerForPPC64(Vout& v, phplogue& inst) {
 }
 
 void lowerForPPC64(Vout& v, phpret& inst) {
-  Vreg tmp = v.makeReg();
-  v << load{inst.fp[AROFF(m_savedRip)], tmp};
+  Vreg return_info = v.makeReg();
+  v << load{inst.fp[AROFF(m_savedRip)], return_info};
   if (!inst.noframe) {
     v << load{inst.fp[AROFF(m_sfp)], inst.d};
   }
-  v << jmpr{tmp};
+
+  // for balancing the link stack (branch predictor), this should perform blr
+  v << mtlr{return_info};
+  v << ret{RegSet()};
 }
 
 /*
