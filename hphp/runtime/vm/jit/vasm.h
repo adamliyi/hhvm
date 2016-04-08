@@ -31,21 +31,12 @@
 namespace HPHP { namespace jit {
 ///////////////////////////////////////////////////////////////////////////////
 
-struct Vunit;
-struct Vinstr;
-struct Vblock;
-struct Vreg;
 struct Abi;
-
-///////////////////////////////////////////////////////////////////////////////
-
-/*
- * If Trace::moduleEnabled(Trace::llvm) || RuntimeOption::EvalJitLLVMCounters,
- * these two RDS values are used to count the number of bytecodes executed by
- * code emitted from their respective backends.
- */
-extern rds::Link<uint64_t> g_bytecodesLLVM;
-extern rds::Link<uint64_t> g_bytecodesVasm;
+struct Vblock;
+struct Vinstr;
+struct Vreg;
+struct Vunit;
+struct Vtext;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -133,10 +124,15 @@ folly::Range<const Vlabel*> succs(const Vblock& block);
 jit::vector<Vlabel> sortBlocks(const Vunit& unit);
 
 /*
- * Group blocks into main, cold, and frozen while preserving relative order
- * with each section.
+ * Order blocks for lowering to machine code.  May use different layout
+ * algorithms depending on the TransKind of `unit'.
+ *
+ * The output is guaranteed to be partitioned by area relative to `text'.  This
+ * is almost the same as partitioning by AreaIndex, except we may interleave,
+ * e.g., Main and Cold blocks in the same partition if their actual code areas
+ * in `text' are the same.
  */
-jit::vector<Vlabel> layoutBlocks(const Vunit& unit);
+jit::vector<Vlabel> layoutBlocks(const Vunit& unit, const Vtext& text);
 
 /*
  * Return a bitset, keyed by Vlabel, indicating which blocks are targets of

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -68,9 +68,7 @@ const Variant& APCLocalArray::GetValueRef(const ArrayData* adIn, ssize_t pos) {
   } else {
     static_assert(KindOfUninit == 0, "must be 0 since we use req::calloc");
     unsigned cap = ad->m_arr->capacity();
-    ad->m_localCache = static_cast<TypedValue*>(
-      req::calloc(cap, sizeof(TypedValue))
-    );
+    ad->m_localCache = req::calloc_raw_array<TypedValue>(cap);
   }
   auto const tv = &ad->m_localCache[pos];
   tvAsVariant(tv) = sv->toLocal();

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -189,7 +189,7 @@ void Transport::parseGetParams() {
 void Transport::parsePostParams() {
   if (!m_postDataParsed) {
     assert(m_postData == nullptr);
-    int size;
+    size_t size;
     const char *data = (const char *)getPostData(size);
     if (data && *data && size) {
       // Post data may be binary, but if parsePostParams() is called, it is
@@ -526,7 +526,7 @@ std::string Transport::getHTTPVersion() const {
   return "1.1";
 }
 
-int Transport::getRequestSize() const {
+size_t Transport::getRequestSize() const {
   return 0;
 }
 
@@ -751,15 +751,16 @@ void Transport::prepareHeaders(bool compressed, bool chunked,
     String ip = this->getServerAddr();
     String key = RuntimeOption::XFBDebugSSLKey;
     String cipher("AES-256-CBC");
-    int iv_len = HHVM_FN(openssl_cipher_iv_length)(cipher).toInt32();
-    String iv = HHVM_FN(openssl_random_pseudo_bytes)(iv_len);
-    String encrypted =
-      HHVM_FN(openssl_encrypt)(ip, cipher, key, k_OPENSSL_RAW_DATA, iv);
-    String output = StringUtil::Base64Encode(iv + encrypted);
+    auto const iv_len = HHVM_FN(openssl_cipher_iv_length)(cipher).toInt32();
+    auto const iv = HHVM_FN(openssl_random_pseudo_bytes)(iv_len).toString();
+    auto const encrypted = HHVM_FN(openssl_encrypt)(
+      ip, cipher, key, k_OPENSSL_RAW_DATA, iv
+    ).toString();
+    auto const output = StringUtil::Base64Encode(iv + encrypted);
     if (debug) {
-      String decrypted = HHVM_FN(openssl_decrypt)(
+      auto const decrypted = HHVM_FN(openssl_decrypt)(
         encrypted, cipher, key, k_OPENSSL_RAW_DATA, iv
-      );
+      ).toString();
       assert(decrypted.get()->same(ip.get()));
     }
     addHeaderImpl("X-FB-Debug", output.c_str());
@@ -812,10 +813,9 @@ StringHolder Transport::prepareResponse(const void *data, int size,
     return response;
   }
 
-  // There isn't that much need to gzip response, when it can fit into one
-  // Ethernet packet (1500 bytes), unless we are doing chunked encoding,
-  // where we don't really know if next chunk will benefit from compression.
-  if (m_chunkedEncoding || size > 1000 ||
+  // Gzip has 20 bytes header, so anything smaller than a few bytes probably
+  // wouldn't benefit much from compression
+  if (m_chunkedEncoding || size > 50 ||
       m_compressionDecision == CompressionDecision::HasTo) {
     String compression;
     int compressionLevel = RuntimeOption::GzipCompressionLevel;
@@ -1020,7 +1020,7 @@ void Transport::debuggerInfo(InfoVec &info) {
   Add(info, "HTTP",        getHTTPVersion());
   Add(info, "Method",      getMethodName());
   if (getMethod() == Method::POST) {
-    int size; getPostData(size);
+    size_t size; getPostData(size);
     Add(info, "Post Data", FormatSize(size));
   }
 }

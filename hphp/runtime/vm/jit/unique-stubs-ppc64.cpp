@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -35,7 +35,7 @@
 #include "hphp/runtime/vm/jit/smashable-instr-ppc64.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
-#include "hphp/runtime/vm/jit/unwind.h"
+#include "hphp/runtime/vm/jit/unwind-itanium.h"
 #include "hphp/runtime/vm/jit/vasm-gen.h"
 #include "hphp/runtime/vm/jit/vasm-instr.h"
 
@@ -62,7 +62,7 @@ namespace ppc64 {
 ///////////////////////////////////////////////////////////////////////////////
 
 static void alignJmpTarget(CodeBlock& cb) {
-  align(cb, Alignment::JmpTarget, AlignContext::Dead);
+  align(cb, nullptr, Alignment::JmpTarget, AlignContext::Dead);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -76,18 +76,29 @@ TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
     v << copy{rvmfp(), ar};
 
     // Fully set up the call frame for the stub.  We can't skip this like we do
-    // in other stubs because we need the return IP for this frame in the %rbp
+    // in other stubs because we need the return IP for this frame in the vmfp
     // chain, in order to find the proper fixup for the VMRegAnchor in the
     // intercept handler.
-    v << stublogue{true};
+
+    // kind of a stublogue
+    v << mflr{rfuncln()};
+    v << push{rtoc()};
+    v << push{rfuncln()};    // desired fixup
+    v << lea{rsp()[-8], rsp()};
+    v << push{rvmfp()};
+
     v << copy{rsp(), rvmfp()};
 
     // When we call the event hook, it might tell us to skip the callee
     // (because of fb_intercept).  If that happens, we need to return to the
     // caller, but the handler will have already popped the callee's frame.
     // So, we need to save these values for later.
-    v << pushm{ar[AROFF(m_savedRip)]};
-    v << pushm{ar[AROFF(m_sfp)]};
+    auto const savedRip = v.makeReg();
+    v << pushm{ar[AROFF(m_savedToc)]};
+    v << load{ar[AROFF(m_savedRip)], savedRip};
+    v << push{savedRip};
+    v << pushm{ar[AROFF(m_sfp)]};   // Reserved, used to hide the frame pointer
+    v << push{rvmfp()};             // Save the real top of the stack.
 
     v << copy2{ar, v.cns(EventHook::NormalFunc), rarg(0), rarg(1)};
 
@@ -106,12 +117,13 @@ TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
       // callee's frame, so we're ready to continue from the original call
       // site.  We just need to grab the fp/rip of the original frame that we
       // saved earlier, and sync rvmsp().
-      v << pop{rvmfp()};
+      v << pop{rfuncln()};  // Discard. It was used only for the vmfp backchain
+      v << pop{rvmfp()};    // Reserved, used to save the fp previously
       v << pop{saved_rip};
+      v << pop{rtoc()};
 
-      // Drop our call frame; the stublogue{} instruction guarantees that this
-      // is exactly 16 bytes.
-      v << addqi{16, rsp(), rsp(), v.makeReg()};
+      // Drop our call frame plus the pushed info (return addres and TOC).
+      v << lea{rsp()[48], rsp()};
 
       // Sync vmsp and return to the caller.  This unbalances the return stack
       // buffer, but if we're intercepting, we probably don't care.
@@ -120,11 +132,21 @@ TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
     });
 
     // Skip past the stuff we saved for the intercept case.
-    v << addqi{16, rsp(), rsp(), v.makeReg()};
+    v << lea{rsp()[32], rsp()}; // saved frame
 
     // Restore rvmfp() and return to the callee's func prologue.
-    v << stubret{RegSet(), true};
+    // kind of stubret
+    v << pop{rvmfp()};
+    v << lea{rsp()[8], rsp()};
+    v << pop{rfuncln()}; // savedRip
+    v << pop{rtoc()};
+
+    v << mtlr{rfuncln()};
+    v << ret{RegSet()};
   });
+
+  // set it to the return address of emitFunctionEnterHelper's call
+  us.functionEnterHelperReturn -= smashableCallSkipEpilogue();
 
   return start;
 }
@@ -142,9 +164,9 @@ TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
  * The `saved' register should be a callee-saved GP register that the helper
  * can use to preserve `tv' across native calls.
  */
-static TCA emitDecRefHelper(CodeBlock& cb, PhysReg tv, PhysReg type,
+static TCA emitDecRefHelper(CodeBlock& cb, CGMeta& fixups, PhysReg tv, PhysReg type,
                             RegSet live) {
-  return vwrap(cb, [&] (Vout& v) {
+  return vwrap(cb, fixups, [&] (Vout& v) {
     // We use the first argument register for the TV data because we may pass
     // it to the release routine.  It's not live when we enter the helper.
     auto const data = rarg(0);
@@ -162,11 +184,10 @@ static TCA emitDecRefHelper(CodeBlock& cb, PhysReg tv, PhysReg type,
         // Declm instruction (for PPC64) is lowered and uses additional
         // registers.
         {
-          PhysRegSaver prs{v, live};
           // The refcount is greater than 1; decref it.
           v << declm{data[FAST_REFCOUNT_OFFSET], v.makeReg()};
         }
-        v << ret{};
+        v << ret{live};
       });
 
       // Note that the stack is aligned since we called to this helper from an
@@ -177,10 +198,11 @@ static TCA emitDecRefHelper(CodeBlock& cb, PhysReg tv, PhysReg type,
       // Avoid 'this' pointer overwriting by reserving it as an argument.
       v << callm{lookupDestructor(v, type), arg_regs(1)};
 
-      // Between where rsp is now and the saved RIP of the call into the
-      // freeLocalsHelpers stub, we have all the live regs we pushed, plus the
-      // saved RIP of the call from the stub to this helper.
-      v << syncpoint{makeIndirectFixup(prs.dwordsPushed() + 1)};
+      // Between where r1 is now and the saved RIP of the call into the
+      // freeLocalsHelpers stub, we have all the live regs we pushed, plus one
+      // entire frame.
+      Fixup fixup = makeIndirectFixup(prs.dwordsPushed() + 4);
+      v << syncpoint{fixup};
       // fallthru
     });
 
@@ -195,10 +217,11 @@ TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us) {
   auto const local = rarg(1);
   auto const last = rarg(2);
   auto const type = rarg(3);
+  CGMeta fixups;
 
   // This stub is very hot; keep it cache-aligned.
-  align(cb, Alignment::CacheLine, AlignContext::Dead);
-  auto const release = emitDecRefHelper(cb, local, type, local | last);
+  align(cb, &fixups, Alignment::CacheLine, AlignContext::Dead);
+  auto const release = emitDecRefHelper(cb, fixups, local, type, local | last);
 
   auto const decref_local = [&] (Vout& v) {
     auto const sf = v.makeReg();
@@ -221,7 +244,7 @@ TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us) {
 
   alignJmpTarget(cb);
 
-  us.freeManyLocalsHelper = vwrap(cb, [&] (Vout& v) {
+  us.freeManyLocalsHelper = vwrap(cb, fixups, [&] (Vout& v) {
     // We always unroll the final `kNumFreeLocalsHelpers' decrefs, so only loop
     // until we hit that point.
     v << lea{rvmfp()[localOffset(kNumFreeLocalsHelpers - 1)], last};
@@ -246,14 +269,17 @@ TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us) {
   }
 
   // All the stub entrypoints share the same ret.
-  vwrap(cb, [] (Vout& v) { v << ret{}; });
+  vwrap(cb, fixups, [] (Vout& v) { v << ret{}; });
 
   // This stub is hot, so make sure to keep it small.
-#if defined(PPC64_PERFORMANCE)
+#if 0
+  // TODO(gut): Currently this assert fails.
+  // Take a closer look when looking at performance
   always_assert(Stats::enabled() ||
                 (cb.frontier() - release <= 4 * cache_line_size()));
 #endif
 
+  fixups.process(nullptr);
   return release;
 }
 
@@ -310,11 +336,20 @@ TCA emitEndCatchHelper(CodeBlock& cb, UniqueStubs& us) {
 
   return vwrap(cb, [&] (Vout& v) {
     auto const done1 = v.makeBlock();
+    auto const sf = v.makeReg();
     auto const sf1 = v.makeReg();
 
     v << cmpqim{0, udrspo, sf1};
     v << jcci{CC_NE, sf1, done1, debuggerReturn};
     v = done1;
+
+    // TODO(lbianc): This condition fixed some tests, which rvmfp() is not
+    // correct. These tests must be better analyzed to find out if this
+    // behavior is coming from another error.
+    v << cmpq{rvmfp(), ppc64_asm::reg::r1, sf};
+    ifThen(v, CC_E, sf, [&] (Vout& v) {
+      v << load{rvmfp()[0], rvmfp()};
+    });
 
     // Normal end catch situation: call back to tc_unwind_resume, which returns
     // the catch trace (or null) in $r3, and the new vmfp in $r4.

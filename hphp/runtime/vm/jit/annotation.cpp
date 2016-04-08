@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -78,17 +78,17 @@ const void annotate(NormalizedInstruction* i,
   if (!funcName && !clsName) {
     switch (pushOp) {
       case Op::FPushClsMethodD:
-        decodeVariableSizeImm(&pc);
+        decode_iva(pc);
         funcName = decode_litstr();
         clsName = decode_litstr();
         break;
       case Op::FPushFuncD:
-        decodeVariableSizeImm(&pc);
+        decode_iva(pc);
         funcName = decode_litstr();
         clsName = nullptr;
         break;
       case Op::FPushCtorD:
-        decodeVariableSizeImm(&pc);
+        decode_iva(pc);
         clsName = decode_litstr();
         break;
       default:

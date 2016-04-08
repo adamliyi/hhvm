@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -36,7 +36,7 @@ PhysRegSaver::PhysRegSaver(Vout& v, RegSet regs)
   m_adjust = gpr.size() & 0x1 ? 8 : 0;
 
   if (!xmm.empty()) {
-    v << subqi{16 * xmm.size(), sp, sp, v.makeReg()};
+    v << lea{sp[-16 * xmm.size()], sp};
 
     int offset = 0;
     xmm.forEach([&] (PhysReg r) {
@@ -50,7 +50,7 @@ PhysRegSaver::PhysRegSaver(Vout& v, RegSet regs)
   });
 
   if (m_adjust) {
-    v << subqi{m_adjust, sp, sp, v.makeReg()};
+    v << lea{sp[-m_adjust], sp};
   }
 }
 
@@ -59,7 +59,7 @@ PhysRegSaver::~PhysRegSaver() {
   auto const sp = rsp();
 
   if (m_adjust) {
-    v << addqi{m_adjust, sp, sp, v.makeReg()};
+    v << lea{sp[m_adjust], sp};
   }
 
   auto gpr = m_regs & abi().gp();
@@ -75,7 +75,7 @@ PhysRegSaver::~PhysRegSaver() {
       v << loadups{sp[offset], r};
       offset += 16;
     });
-    v << addqi{offset, sp, sp, v.makeReg()};
+    v << lea{sp[offset], sp};
   }
 }
 

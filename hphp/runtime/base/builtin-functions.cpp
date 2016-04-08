@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -611,8 +611,17 @@ Object init_object(const String& s, const Array& params, ObjectData* o) {
   return Object{g_context->initObject(s.get(), params, o)};
 }
 
-Object create_object(const String& s, const Array& params, bool init /* = true */) {
+Object
+create_object(const String& s, const Array& params, bool init /* = true */) {
   return Object::attach(g_context->createObject(s.get(), params, init));
+}
+
+void throw_object(const Object& e) {
+  throw_object_inl(e);
+}
+
+void throw_object(Object&& e) {
+  throw_object_inl(std::move(e));
 }
 
 /*
@@ -1014,7 +1023,7 @@ void throw_exception(const Object& e) {
     raise_error("Exceptions must implement the Throwable interface.");
   }
   DEBUGGER_ATTACHED_ONLY(phpDebuggerExceptionThrownHook(e.get()));
-  throw e;
+  throw_object(e);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

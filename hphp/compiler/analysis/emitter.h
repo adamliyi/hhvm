@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -57,21 +57,20 @@ DECLARE_BOOST_TYPES(FunctionCall);
 DECLARE_BOOST_TYPES(SimpleFunctionCall);
 DECLARE_BOOST_TYPES(SwitchStatement);
 DECLARE_BOOST_TYPES(ForEachStatement);
-class StaticClassName;
-class HhbcExtFuncInfo;
-class HhbcExtClassInfo;
+struct StaticClassName;
+struct HhbcExtFuncInfo;
+struct HhbcExtClassInfo;
 
 namespace Compiler {
 ///////////////////////////////////////////////////////////////////////////////
 
 // Forward declarations.
-class Label;
-class EmitterVisitor;
+struct Label;
+struct EmitterVisitor;
 
 using OptLocation = folly::Optional<Location::Range>;
 
-class Emitter {
-public:
+struct Emitter {
   Emitter(ConstructPtr node, UnitEmitter& ue, EmitterVisitor& ev)
       : m_node(node), m_ue(ue), m_ev(ev) {}
   UnitEmitter& getUnitEmitter() { return m_ue; }
@@ -108,7 +107,6 @@ public:
   IMM_##typ1, IMM_##typ2, IMM_##typ3
 #define FOUR(typ1, typ2, typ3, typ4) \
   IMM_##typ1, IMM_##typ2, IMM_##typ3, IMM_##typ4
-#define IMM_MA std::vector<unsigned char>
 #define IMM_BLA std::vector<Label*>&
 #define IMM_SLA std::vector<StrOff>&
 #define IMM_ILA std::vector<IterPair>&
@@ -123,6 +121,7 @@ public:
 #define IMM_BA Label&
 #define IMM_OA(type) type
 #define IMM_VSA std::vector<std::string>&
+#define IMM_KA MemberKey
 #define O(name, imm, pop, push, flags) void name(imm);
   OPCODES
 #undef O
@@ -146,6 +145,7 @@ public:
 #undef IMM_BA
 #undef IMM_OA
 #undef IMM_VSA
+#undef IMM_KA
 
 private:
   ConstructPtr m_node;
@@ -273,8 +273,7 @@ public:
   void popFDesc();
 };
 
-class Label {
-public:
+struct Label {
   Label() : m_off(InvalidAbsoluteOffset) {}
   explicit Label(Emitter& e) : m_off(InvalidAbsoluteOffset) {
     set(e);
@@ -299,14 +298,12 @@ private:
   SymbolicStack m_evalStack;
 };
 
-class Thunklet {
-public:
+struct Thunklet {
   virtual ~Thunklet();
   virtual void emit(Emitter& e) = 0;
 };
 
-class Funclet {
-public:
+struct Funclet {
   explicit Funclet(Thunklet* body)
     : m_body(body) {
   }
@@ -350,8 +347,7 @@ DECLARE_BOOST_TYPES(Region);
  * implementation. The levels are used to keep track of the information
  * such as the control targets that can be taken inside a block.
  */
-class Region {
-public:
+struct Region {
   enum Kind {
     // Top-level (global) context.
     Global,
@@ -430,9 +426,9 @@ public:
   RegionPtr m_parent;
 };
 
-class EmitterVisitor {
-  friend class UnsetUnnamedLocalThunklet;
-  friend class FuncFinisher;
+struct EmitterVisitor {
+  friend struct UnsetUnnamedLocalThunklet;
+  friend struct FuncFinisher;
 public:
   typedef std::vector<int> IndexChain;
   typedef std::pair<ExpressionPtr, IndexChain> IndexPair;
@@ -466,8 +462,8 @@ public:
     m_evalStackIsUnknown = false;
   }
   bool evalStackIsUnknown() { return m_evalStackIsUnknown; }
-  void popEvalStack(char symFlavor, int arg = -1, int pos = -1);
-  void popSymbolicLocal(Op opcode, int arg = -1, int pos = -1);
+  void popEvalStack(char symFlavor);
+  void popSymbolicLocal(Op opcode);
   void popEvalStackMMany();
   void popEvalStackMany(int len, char symFlavor);
   void popEvalStackCVMany(int len);
@@ -523,8 +519,7 @@ private:
   typedef std::vector<NonScalarPair> NonScalarVec;
   typedef std::pair<Id, int> StrCase;
 
-  class PostponedMeth {
-  public:
+  struct PostponedMeth {
     PostponedMeth(MethodStatementPtr m, FuncEmitter* fe, bool top,
                   ClosureUseVarVec* useVars)
         : m_meth(m), m_fe(fe), m_top(top), m_closureUseVars(useVars) {}
@@ -534,16 +529,14 @@ private:
     ClosureUseVarVec* m_closureUseVars;
   };
 
-  class PostponedCtor {
-  public:
+  struct PostponedCtor {
     PostponedCtor(InterfaceStatementPtr is, FuncEmitter* fe)
       : m_is(is), m_fe(fe) {}
     InterfaceStatementPtr m_is;
     FuncEmitter* m_fe;
   };
 
-  class PostponedNonScalars {
-  public:
+  struct PostponedNonScalars {
     PostponedNonScalars(InterfaceStatementPtr is, FuncEmitter* fe,
                         NonScalarVec* v)
       : m_is(is), m_fe(fe), m_vec(v) {}
@@ -555,8 +548,7 @@ private:
     NonScalarVec* m_vec;
   };
 
-  class PostponedClosureCtor {
-  public:
+  struct PostponedClosureCtor {
     PostponedClosureCtor(ClosureUseVarVec& v, ClosureExpressionPtr e,
                          FuncEmitter* fe)
         : m_useVars(v), m_expr(e), m_fe(fe) {}
@@ -565,8 +557,7 @@ private:
     FuncEmitter* m_fe;
   };
 
-  class CatchRegion {
-  public:
+  struct CatchRegion {
     CatchRegion(Offset start, Offset end) : m_start(start),
       m_end(end) {}
     ~CatchRegion() {
@@ -581,8 +572,7 @@ private:
     std::vector<std::pair<StringData*, Label*> > m_catchLabels;
   };
 
-  class FaultRegion {
-  public:
+  struct FaultRegion {
     FaultRegion(Offset start,
                 Offset end,
                 Label* func,
@@ -601,8 +591,7 @@ private:
     IterKind m_iterKind;
   };
 
-  class FPIRegion {
-    public:
+  struct FPIRegion {
       FPIRegion(Offset start, Offset end, Offset fpOff)
         : m_start(start), m_end(end), m_fpOff(fpOff) {}
       Offset m_start;
@@ -623,6 +612,16 @@ private:
     int nonZeroI;
     int defI;
   };
+
+  void allocPipeLocal(Id pipeVar) { m_pipeVars.emplace(pipeVar); }
+  void releasePipeLocal(Id pipeVar) {
+    assert(!m_pipeVars.empty() && m_pipeVars.top() == pipeVar);
+    m_pipeVars.pop();
+  }
+  folly::Optional<Id> getPipeLocal() {
+    if (m_pipeVars.empty()) return folly::none;
+    return m_pipeVars.top();
+  }
 
 private:
   static constexpr size_t kMinStringSwitchCases = 8;
@@ -655,7 +654,7 @@ private:
   std::deque<FaultRegion*> m_faultRegions;
   std::deque<FPIRegion*> m_fpiRegions;
   std::vector<Array> m_staticArrays;
-  std::vector<folly::Optional<CollectionType>> m_staticColType;
+  std::vector<folly::Optional<HeaderKind>> m_staticColType;
   std::set<std::string,stdltistr> m_hoistables;
   OptLocation m_tempLoc;
   std::unordered_set<std::string> m_staticEmitted;
@@ -668,6 +667,8 @@ private:
   // Unnamed local variables used by the "finally router" logic
   Id m_stateLocal;
   Id m_retLocal;
+  // stack of nested unnamed pipe variables
+  std::stack<Id> m_pipeVars;
 
 public:
   bool checkIfStackEmpty(const char* forInstruction) const;
@@ -675,16 +676,39 @@ public:
 
   int scanStackForLocation(int iLast);
 
-  void buildVectorImm(std::vector<unsigned char>& vectorImm,
-                      int iFirst, int iLast, bool allowW,
-                      Emitter& e);
   /*
    * Emit bytecodes for the base and intermediate dims, returning the number of
    * eval stack slots containing member keys that should be consumed by the
    * final operation.
    */
-  size_t emitMOp(int iFirst, int& iLast, bool allowW, bool rhsVal,
-                 Emitter& e, MOpFlags flags);
+  struct MInstrOpts {
+    explicit MInstrOpts(MOpFlags flags)
+      : allowW{flags & MOpFlags::Define}
+      , flags{flags}
+    {}
+
+    explicit MInstrOpts(int32_t paramId)
+      : allowW{true}
+      , fpass{true}
+      , paramId{paramId}
+    {}
+
+    MInstrOpts& rhs() {
+      rhsVal = true;
+      return *this;
+    }
+
+    bool allowW{false};
+    bool rhsVal{false};
+    bool fpass{false};
+    union {
+      MOpFlags flags;
+      int32_t paramId;
+    };
+  };
+
+  MemberKey symToMemberKey(Emitter& e, int i, bool allowW);
+  size_t emitMOp(int iFirst, int& iLast, Emitter& e, MInstrOpts opts);
   void emitQueryMOp(int iFirst, int iLast, Emitter& e, QueryMOp op);
 
   enum class PassByRefKind {
@@ -733,7 +757,7 @@ public:
                         std::vector<Label>& caseLabels, Label& done,
                         const SwitchState& state);
   void emitArrayInit(Emitter& e, ExpressionListPtr el,
-                     folly::Optional<CollectionType> ct = folly::none);
+                     folly::Optional<HeaderKind> ct = folly::none);
   void emitPairInit(Emitter&e, ExpressionListPtr el);
   void emitVectorInit(Emitter&e, CollectionType ct, ExpressionListPtr el);
   void emitMapInit(Emitter&e, CollectionType ct, ExpressionListPtr el);
@@ -903,7 +927,7 @@ public:
   void saveMaxStackCells(FuncEmitter* fe, int32_t stackPad);
   void finishFunc(Emitter& e, FuncEmitter* fe, int32_t stackPad);
   void initScalar(TypedValue& tvVal, ExpressionPtr val,
-                  folly::Optional<CollectionType> ct = folly::none);
+                  folly::Optional<HeaderKind> ct = folly::none);
   bool requiresDeepInit(ExpressionPtr initExpr) const;
 
   void emitClassTraitPrecRule(PreClassEmitter* pce, TraitPrecStatementPtr rule);

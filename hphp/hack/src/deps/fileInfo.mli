@@ -18,8 +18,6 @@
  *)
 (*****************************************************************************)
 
-open Utils
-
 (*****************************************************************************)
 (* Parsing modes *)
 (*****************************************************************************)
@@ -70,4 +68,4 @@ val empty_names: names
 
 val simplify: t -> names
 val merge_names: names -> names -> names
-val simplify_fast: t Relative_path.Map.t -> names Relative_path.Map.t
+val simplify_fast: t Relative_path.Map.t -> fast

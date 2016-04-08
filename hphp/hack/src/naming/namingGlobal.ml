@@ -28,47 +28,29 @@ let canon_key = String.lowercase
 
 module GEnv = struct
 
-  let class_id name = ClassIdHeap.get name
+  let type_pos name = match TypeIdHeap.get name with
+    | Some (p, _k) -> Some p
+    | None -> None
 
-  let class_canon_name name = ClassCanonHeap.get (canon_key name)
+  let type_canon_name name = TypeCanonHeap.get (canon_key name)
 
-  let fun_id name = FunIdHeap.get name
+  let type_info = TypeIdHeap.get
+
+  let fun_pos name = FunPosHeap.get name
 
   let fun_canon_name name = FunCanonHeap.get (canon_key name)
 
-  let typedef_id name = TypedefIdHeap.get name
+  let typedef_pos name = match TypeIdHeap.get name with
+    | Some (p, `Typedef) -> Some p
+    | Some (_, `Class)
+    | None -> None
 
-  let gconst_id name = ConstIdHeap.get name
+  let gconst_pos name = ConstPosHeap.get name
 
 end
 
 (* The primitives to manipulate the naming environment *)
 module Env = struct
-  let classes =
-    (module ClassIdHeap : IdHeap), (module ClassCanonHeap : CanonHeap)
-
-  let funs = (module FunIdHeap : IdHeap), (module FunCanonHeap : CanonHeap)
-
-  let gconsts = (module ConstIdHeap : IdHeap)
-
-  let resilient_new_canon_var (id_heap, canon_heap) (p, name) =
-    let module Ids = (val id_heap : IdHeap) in
-    let module Canons = (val canon_heap : CanonHeap) in
-    let name_key = canon_key name in
-    match Canons.get name_key with
-      | Some canonical ->
-        let p', id = Ids.find_unsafe canonical in
-        if Pos.compare p p' = 0 then (p, id)
-        else begin
-          Errors.error_name_already_bound name canonical p p';
-          p', id
-        end
-      | None ->
-        let pos_and_id = p, Ident.make name in
-        Ids.add name pos_and_id;
-        Canons.add name_key name;
-        pos_and_id
-
   let check_not_typehint (p, name) =
     let x = canon_key (Utils.strip_all_ns name) in
     match x with
@@ -91,37 +73,43 @@ module Env = struct
       ) -> Errors.name_is_reserved name p; false
     | _ -> true
 
-  let resilient_new_var id_heap (p, x) =
-    let module Ids = (val id_heap : IdHeap) in
-    match Ids.get x with
-    | Some (p', y) ->
-      if Pos.compare p p' = 0 then (p, y)
-      else begin
-        Errors.error_name_already_bound x x p p';
-        p', y
-      end
-   | None ->
-      let y = p, Ident.make x in
-      Ids.add x y;
-      y
+  let new_fun (p, name) =
+    let name_key = canon_key name in
+    match FunCanonHeap.get name_key with
+    | Some canonical ->
+      let p' = FunPosHeap.find_unsafe canonical in
+      if not (Pos.compare p p' = 0)
+      then Errors.error_name_already_bound name canonical p p'
+    | None ->
+      FunPosHeap.add name p;
+      FunCanonHeap.add name_key name;
+      ()
 
-  let new_fun_id x =
-    ignore (resilient_new_canon_var funs x)
+  let new_cid cid_kind (p, name) =
+    if not (check_not_typehint (p, name)) then () else
+    let name_key = canon_key name in
+    match TypeCanonHeap.get name_key with
+    | Some canonical ->
+      let p' = unsafe_opt @@ GEnv.type_pos canonical in
+      if not (Pos.compare p p' = 0)
+      then Errors.error_name_already_bound name canonical p p'
+    | None ->
+      TypeIdHeap.add name (p, cid_kind);
+      TypeCanonHeap.add name_key name;
+      ()
 
-  let new_class_id x =
-    if check_not_typehint x then ignore (resilient_new_canon_var classes x)
-    else ()
+  let new_class = new_cid `Class
 
-  let new_typedef_id x =
-    if check_not_typehint x
-    then
-      let v = resilient_new_canon_var classes x in
-      TypedefIdHeap.add (snd x) v
-    else ()
+  let new_typedef = new_cid `Typedef
 
-  let new_global_const_id x =
-    let v = resilient_new_var gconsts x in
-    ConstIdHeap.add (snd x) v
+  let new_global_const (p, x) =
+    match ConstPosHeap.get x with
+    | Some p' ->
+      if not (Pos.compare p p' = 0)
+      then Errors.error_name_already_bound x x p p';
+    | None ->
+      ConstPosHeap.add x p;
+      ()
 end
 
 (*****************************************************************************)
@@ -129,28 +117,26 @@ end
 (*****************************************************************************)
 let remove_decls ~funs ~classes ~typedefs ~consts =
   let canonicalize_set = (fun elt acc -> SSet.add (canon_key elt) acc) in
-
-  let class_namekeys = SSet.fold canonicalize_set classes SSet.empty in
-  let class_namekeys = SSet.fold canonicalize_set typedefs class_namekeys in
-  ClassCanonHeap.remove_batch class_namekeys;
-  ClassIdHeap.remove_batch classes;
+  let types = SSet.union classes typedefs in
+  let canon_types = SSet.fold canonicalize_set types SSet.empty in
+  TypeCanonHeap.remove_batch canon_types;
+  TypeIdHeap.remove_batch types;
 
   let fun_namekeys = SSet.fold canonicalize_set funs SSet.empty in
   FunCanonHeap.remove_batch fun_namekeys;
-  FunIdHeap.remove_batch funs;
+  FunPosHeap.remove_batch funs;
 
-  TypedefIdHeap.remove_batch typedefs;
-  ConstIdHeap.remove_batch consts
+  ConstPosHeap.remove_batch consts
 
 (*****************************************************************************)
 (* The entry point to build the naming environment *)
 (*****************************************************************************)
 
 let make_env ~funs ~classes ~typedefs ~consts =
-  List.iter funs Env.new_fun_id;
-  List.iter classes Env.new_class_id;
-  List.iter typedefs Env.new_typedef_id ;
-  List.iter consts Env.new_global_const_id
+  List.iter funs Env.new_fun;
+  List.iter classes Env.new_class;
+  List.iter typedefs Env.new_typedef;
+  List.iter consts Env.new_global_const
 
 (*****************************************************************************)
 (* Declaring the names in a list of files *)
@@ -160,7 +146,7 @@ let add_files_to_rename failed defl defs_in_env =
   List.fold_left ~f:begin fun failed (_, def) ->
     match defs_in_env def with
     | None -> failed
-    | Some (previous_definition_position, _) ->
+    | Some previous_definition_position ->
       let filename = Pos.filename previous_definition_position in
       Relative_path.Set.add filename failed
   end ~init:failed defl
@@ -171,8 +157,7 @@ let ndecl_file fn { FileInfo.file_mode; funs; classes; typedefs; consts;
     dn ("Naming decl: "^Relative_path.to_absolute fn);
     if not consider_names_just_for_autoload then
       make_env ~funs ~classes ~typedefs ~consts
-  end
-  in
+  end in
   match errors with
   | [] -> [], Relative_path.Set.empty
   | l ->
@@ -202,10 +187,14 @@ let ndecl_file fn { FileInfo.file_mode; funs; classes; typedefs; consts;
    *
    * This way, when the user removes foo.php, A.php and B.php are recomputed
    * and the naming environment is in a sane state.
+   *
+   * XXX (jezng): we can probably be less conservative about this -- instead
+   * of adding all the declarations in the file, why not just add those that
+   * were actually duplicates?
    *)
   let failed = Relative_path.Set.singleton fn in
-  let failed = add_files_to_rename failed funs FunIdHeap.get in
-  let failed = add_files_to_rename failed classes ClassIdHeap.get in
-  let failed = add_files_to_rename failed typedefs TypedefIdHeap.get in
-  let failed = add_files_to_rename failed consts ConstIdHeap.get in
+  let failed = add_files_to_rename failed funs FunPosHeap.get in
+  let failed = add_files_to_rename failed classes GEnv.type_pos in
+  let failed = add_files_to_rename failed typedefs GEnv.type_pos in
+  let failed = add_files_to_rename failed consts ConstPosHeap.get in
   l, failed

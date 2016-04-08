@@ -96,8 +96,6 @@ module Members = struct
     (Utils.str_starts_with s ":data-") || (Utils.str_starts_with s ":aria-")
 end
 
-open Utils
-
 module UserAttributes = struct
 
   let uaOverride            = "__Override"
@@ -139,6 +137,7 @@ module SpecialIdents = struct
 
   let this = "$this"
   let placeholder = "$_"
+  let dollardollar = "$$"
 
 end
 

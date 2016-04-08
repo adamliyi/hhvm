@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,6 +22,7 @@
 #include "hphp/runtime/base/array-data-defs.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/collections.h"
+#include "hphp/runtime/base/req-root.h"
 #include "hphp/runtime/base/strings.h"
 #include "hphp/runtime/base/tv-conversions.h"
 #include "hphp/runtime/base/type-array.h"
@@ -34,8 +35,7 @@ namespace HPHP {
 
 const StaticString s_storage("storage");
 
-class InvalidSetMException : public std::runtime_error {
- public:
+struct InvalidSetMException : std::runtime_error {
   InvalidSetMException()
     : std::runtime_error("Empty InvalidSetMException")
     , m_tv(make_tv<KindOfNull>())
@@ -50,10 +50,11 @@ class InvalidSetMException : public std::runtime_error {
   ~InvalidSetMException() noexcept {}
 
   const TypedValue& tv() const { return m_tv; };
+
  private:
   /* m_tv will contain a TypedValue with a reference destined for the
    * VM eval stack. */
-  const TypedValue m_tv;
+  req::root<TypedValue> m_tv;
 };
 
 // When MoreWarnings is set to true, the VM will raise more warnings
@@ -166,8 +167,9 @@ inline const TypedValue* ElemArrayPre(ArrayData* base, int64_t key) {
 
 inline const TypedValue* ElemArrayPre(ArrayData* base, StringData* key) {
   int64_t n;
-  auto const result = !key->isStrictlyInteger(n) ? base->nvGet(key)
-                                                 : base->nvGet(n);
+  auto const result = !base->convertKey(key, n)
+    ? base->nvGet(key)
+    : base->nvGet(n);
   return result ? result : null_variant.asTypedValue();
 }
 
@@ -189,6 +191,9 @@ inline const TypedValue* ElemArray(ArrayData* base, key_type<keyType> key) {
   if (UNLIKELY(result->m_type == KindOfUninit)) {
     result = init_null_variant.asTypedValue();
     if (warn) {
+      if (!base->useWeakKeys()) {
+        throwOOBArrayKeyException(key);
+      }
       auto scratch = initScratchKey(key);
       raise_notice(Strings::UNDEFINED_INDEX,
                    tvAsCVarRef(&scratch).toString().data());
@@ -257,9 +262,9 @@ inline const TypedValue* ElemString(TypedValue& tvRef,
     if (warn && RuntimeOption::EnableHipHopSyntax) {
       raise_warning("Out of bounds");
     }
-    tvRef = make_tv<KindOfStaticString>(staticEmptyString());
+    tvRef = make_tv<KindOfPersistentString>(staticEmptyString());
   } else {
-    tvRef = make_tv<KindOfStaticString>(base->m_data.pstr->getChar(offset));
+    tvRef = make_tv<KindOfPersistentString>(base->m_data.pstr->getChar(offset));
     assert(tvRef.m_data.pstr->isStatic());
   }
   return &tvRef;
@@ -309,7 +314,7 @@ NEVER_INLINE const TypedValue* ElemSlow(TypedValue& tvRef,
     case KindOfDouble:
     case KindOfResource:
       return ElemScalar();
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       return ElemString<warn, keyType>(tvRef, base, key);
     case KindOfPersistentArray:
@@ -365,7 +370,10 @@ inline TypedValue* ElemDArray(TypedValue* base, key_type<keyType> key) {
   auto* result = ElemDArrayPre<keyType>(baseArr, key);
   if (warn) {
     if (!defined) {
-      TypedValue scratchKey = initScratchKey(key);
+      if (!baseArr.useWeakKeys()) {
+        throwOOBArrayKeyException(key);
+      }
+      auto scratchKey = initScratchKey(key);
       raise_notice(Strings::UNDEFINED_INDEX,
                    tvAsCVarRef(&scratchKey).toString().data());
     }
@@ -473,7 +481,7 @@ TypedValue* ElemD(TypedValue& tvRef, TypedValue* base, key_type<keyType> key) {
     case KindOfDouble:
     case KindOfResource:
       return ElemDScalar(tvRef);
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       return ElemDString<warn, keyType>(base, key);
     case KindOfPersistentArray:
@@ -548,7 +556,7 @@ TypedValue* ElemU(TypedValue& tvRef, TypedValue* base, key_type<keyType> key) {
       // Unset on scalar base never modifies the base, but the const_cast is
       // necessary to placate the type system.
       return const_cast<TypedValue*>(null_variant.asTypedValue());
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       raise_error(Strings::OP_NOT_SUPPORTED_STRING);
       return nullptr;
@@ -646,7 +654,7 @@ inline TypedValue* NewElem(TypedValue& tvRef,
     case KindOfDouble:
     case KindOfResource:
       return NewElemInvalid(tvRef);
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       return NewElemString(tvRef, base);
     case KindOfPersistentArray:
@@ -875,8 +883,9 @@ inline ArrayData* SetElemArrayPre(ArrayData* a,
                                   Cell* value,
                                   bool copy) {
   int64_t n;
-  return key->isStrictlyInteger(n) ? a->set(n, cellAsCVarRef(*value), copy) :
-         a->set(StrNR(key), cellAsCVarRef(*value), copy);
+  return a->convertKey(key, n)
+    ? a->set(n, cellAsCVarRef(*value), copy)
+    : a->set(StrNR(key), cellAsCVarRef(*value), copy);
 }
 
 template<bool setResult>
@@ -884,14 +893,17 @@ inline ArrayData* SetElemArrayPre(ArrayData* a,
                                   TypedValue key,
                                   Cell* value,
                                   bool copy) {
-  if (isNullType(key.m_type)) {
-    return a->set(staticEmptyString(), cellAsCVarRef(*value), copy);
-  }
   if (isStringType(key.m_type)) {
     return SetElemArrayPre<setResult>(a, key.m_data.pstr, value, copy);
   }
   if (key.m_type == KindOfInt64) {
     return SetElemArrayPre<setResult>(a, key.m_data.num, value, copy);
+  }
+  if (!a->useWeakKeys()) {
+    throwInvalidArrayKeyException(&key);
+  }
+  if (isNullType(key.m_type)) {
+    return a->set(staticEmptyString(), cellAsCVarRef(*value), copy);
   }
   if (!isArrayType(key.m_type) && key.m_type != KindOfObject) {
     return SetElemArrayPre<setResult>(a, tvAsCVarRef(&key).toInt64(),
@@ -946,7 +958,7 @@ StringData* SetElemSlow(TypedValue* base, key_type<keyType> key, Cell* value) {
     case KindOfResource:
       SetElemScalar<setResult>(value);
       return nullptr;
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       return SetElemString<setResult, keyType>(base, key, value);
     case KindOfPersistentArray:
@@ -1067,7 +1079,7 @@ inline void SetNewElem(TypedValue* base, Cell* value) {
     case KindOfDouble:
     case KindOfResource:
       return SetNewElemScalar<setResult>(value);
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       return SetNewElemString(base, value);
     case KindOfPersistentArray:
@@ -1133,7 +1145,7 @@ inline TypedValue* SetOpElem(TypedValue& tvRef,
     case KindOfResource:
       return SetOpElemScalar(tvRef);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         raise_error("Cannot use assign-op operators with overloaded "
@@ -1206,7 +1218,7 @@ inline TypedValue* SetOpNewElem(TypedValue& tvRef,
     case KindOfResource:
       return SetOpNewElemScalar(tvRef);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         raise_error("[] operator not supported for strings");
@@ -1344,7 +1356,7 @@ inline void IncDecElem(
     case KindOfResource:
       return IncDecElemScalar(dest);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         raise_error("Cannot increment/decrement overloaded objects "
@@ -1423,7 +1435,7 @@ inline void IncDecNewElem(
     case KindOfResource:
       return IncDecNewElemScalar(dest);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         raise_error("[] operator not supported for strings");
@@ -1471,8 +1483,9 @@ inline ArrayData* UnsetElemArrayPre(ArrayData* a, int64_t key,
 inline ArrayData* UnsetElemArrayPre(ArrayData* a, StringData* key,
                                     bool copy) {
   int64_t n;
-  return !key->isStrictlyInteger(n) ? a->remove(StrNR(key), copy) :
-         a->remove(n, copy);
+  return !a->convertKey(key, n)
+    ? a->remove(StrNR(key), copy)
+    : a->remove(n, copy);
 }
 
 inline ArrayData* UnsetElemArrayPre(ArrayData* a, TypedValue key,
@@ -1483,7 +1496,7 @@ inline ArrayData* UnsetElemArrayPre(ArrayData* a, TypedValue key,
   if (key.m_type == KindOfInt64) {
     return UnsetElemArrayPre(a, key.m_data.num, copy);
   }
-  VarNR varKey = tvAsCVarRef(&key).toKey();
+  VarNR varKey = tvAsCVarRef(&key).toKey(a->useWeakKeys());
   if (varKey.isNull()) {
     return a;
   }
@@ -1523,7 +1536,7 @@ void UnsetElemSlow(TypedValue* base, key_type<keyType> key) {
     case KindOfResource:
       return; // Do nothing.
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       raise_error(Strings::CANT_UNSET_STRING);
       return;
@@ -1654,7 +1667,7 @@ NEVER_INLINE bool IssetEmptyElemSlow(TypedValue* base, key_type<keyType> key) {
     case KindOfResource:
       return useEmpty;
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       return IssetEmptyElemString<useEmpty, keyType>(base, key);
 
@@ -1732,7 +1745,7 @@ TypedValue* propPre(TypedValue& tvRef, TypedValue* base) {
     case KindOfResource:
       return propPreNull<warn>(tvRef);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         return propPreNull<warn>(tvRef);
@@ -1767,7 +1780,7 @@ inline TypedValue* nullSafeProp(TypedValue& tvRef,
     case KindOfInt64:
     case KindOfDouble:
     case KindOfResource:
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
     case KindOfPersistentArray:
     case KindOfArray:
@@ -1909,7 +1922,7 @@ inline void SetProp(Class* ctx, TypedValue* base, key_type<keyType> key,
     case KindOfResource:
       return SetPropNull<setResult>(val);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         return SetPropNull<setResult>(val);
@@ -1988,7 +2001,7 @@ inline TypedValue* SetOpProp(TypedValue& tvRef,
     case KindOfResource:
       return SetOpPropNull(tvRef);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         return SetOpPropNull(tvRef);
@@ -2070,7 +2083,7 @@ inline void IncDecProp(
     case KindOfResource:
       return IncDecPropNull(dest);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       if (base->m_data.pstr->size() != 0) {
         return IncDecPropNull(dest);

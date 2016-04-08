@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/base/ssl-socket.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/req-ptr.h"
 #include "hphp/runtime/base/string-util.h"
@@ -125,7 +126,13 @@ SSL *SSLSocket::createSSL(SSL_CTX *ctx) {
     String cafile = m_context[s_cafile].toString();
     String capath = m_context[s_capath].toString();
 
-    if (!cafile.empty() || !capath.empty()) {
+    if (!FileUtil::isValidPath(cafile)) {
+      raise_warning("cafile expected to be a path, string given");
+      return nullptr;
+    } else if (!FileUtil::isValidPath(capath)) {
+      raise_warning("capath expected to be a path, string given");
+      return nullptr;
+    } else if (!cafile.empty() || !capath.empty()) {
       const char* cafileptr = cafile.empty() ? nullptr : cafile.data();
       const char* capathptr = capath.empty() ? nullptr : capath.data();
       if (!SSL_CTX_load_verify_locations(ctx, cafileptr, capathptr)) {
@@ -160,7 +167,10 @@ SSL *SSLSocket::createSSL(SSL_CTX *ctx) {
   SSL_CTX_set_cipher_list(ctx, cipherlist.data());
 
   String certfile = m_context[s_local_cert].toString();
-  if (!certfile.empty()) {
+  if (!FileUtil::isValidPath(certfile)) {
+    raise_warning("local_cert expected to be a path, string given");
+    return nullptr;
+  } else if (!certfile.empty()) {
     String resolved_path_buff = File::TranslatePath(certfile);
     if (!resolved_path_buff.empty()) {
       /* a certificate to use for authentication */
@@ -370,7 +380,8 @@ bool SSLSocket::handleError(int64_t nr_bytes, bool is_init) {
 
 req::ptr<SSLSocket> SSLSocket::Create(
   int fd, int domain, const HostURL &hosturl, double timeout,
-  const req::ptr<StreamContext>& ctx) {
+  const req::ptr<StreamContext>& ctx
+) {
   CryptoMethod method;
   const std::string scheme = hosturl.getScheme();
 
@@ -391,8 +402,16 @@ req::ptr<SSLSocket> SSLSocket::Create(
     return nullptr;
   }
 
+  return Create(fd, domain, method, hosturl.getHost(), hosturl.getPort(),
+                timeout, ctx);
+}
+
+req::ptr<SSLSocket> SSLSocket::Create(
+  int fd, int domain, CryptoMethod method, std::string address, int port,
+  double timeout, const req::ptr<StreamContext>& ctx
+) {
   auto sock = req::make<SSLSocket>(
-    fd, domain, ctx, hosturl.getHost().c_str(), hosturl.getPort());
+    fd, domain, ctx, address.c_str(), port);
 
   sock->m_data->m_method = method;
   sock->m_data->m_connect_timeout = timeout;
@@ -762,6 +781,10 @@ bool SSLSocket::checkLiveness() {
     }
   }
   return true;
+}
+
+SSLSocket::CryptoMethod SSLSocket::getCryptoMethod() {
+  return m_data->m_method;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

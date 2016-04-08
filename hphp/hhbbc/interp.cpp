@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -60,88 +60,11 @@ const StaticString s_PHP_Incomplete_Class("__PHP_Incomplete_Class");
 const StaticString s_IMemoizeParam("HH\\IMemoizeParam");
 const StaticString s_getInstanceKey("getInstanceKey");
 
-//////////////////////////////////////////////////////////////////////
-
-/*
- * impl(...)
- *
- * Utility for chaining one bytecode implementation to a series of a
- * few others.  Use reduce() if you also want to enable strength
- * reduction (i.e. the bytecode can be replaced by some other
- * bytecode as an optimization).
- *
- * The chained-to bytecodes should not take branches.  Also, constprop with
- * impl() will only occur on the last thing in the impl list---earlier opcodes
- * may set the canConstProp flag, but it will have no effect.
- */
-
-template<class... Ts>
-void impl(ISS& env, Ts&&... ts) {
-  std::vector<Bytecode> bcs = { std::forward<Ts>(ts)... };
-
-  folly::Optional<std::vector<Bytecode>> currentReduction;
-
-  for (auto it = begin(bcs); it != end(bcs); ++it) {
-    assert(env.flags.jmpFlag == StepFlags::JmpFlags::Either &&
-           "you can't use impl with branching opcodes before last position");
-
-    auto const wasPEI = env.flags.wasPEI;
-
-    FTRACE(3, "    (impl {}\n", show(*it));
-    env.flags.wasPEI          = true;
-    env.flags.canConstProp    = false;
-    env.flags.strengthReduced = folly::none;
-    default_dispatch(env, *it);
-
-    if (env.flags.strengthReduced) {
-      if (!currentReduction) {
-        currentReduction = std::vector<Bytecode>{};
-        currentReduction->assign(begin(bcs), it);
-      }
-      std::copy(begin(*env.flags.strengthReduced),
-                end(*env.flags.strengthReduced),
-                std::back_inserter(*currentReduction));
-    } else if (currentReduction) {
-      currentReduction->push_back(*it);
-    }
-
-    // If any of the opcodes in the impl list said they could throw,
-    // then the whole thing could throw.
-    env.flags.wasPEI = env.flags.wasPEI || wasPEI;
-  }
-
-  env.flags.strengthReduced = currentReduction;
-}
-
-/*
- * Reduce means that (given some situation in the execution state),
- * a given bytecode could be replaced by some other bytecode
- * sequence.  Ensure that if you call reduce(), it is before any
- * state-affecting operations (like popC()).
- */
-template<class... Bytecodes>
-void reduce(ISS& env, const Bytecodes&... hhbc) {
-  impl(env, hhbc...);
-  if (!env.flags.strengthReduced) {
-    env.flags.strengthReduced = std::vector<Bytecode> { hhbc... };
-  }
-}
-
 }
 
 //////////////////////////////////////////////////////////////////////
 
 namespace interp_step {
-
-/*
- * An interp_step::in(ISS&, const bc::op&) function exists for every
- * bytecode. Most are defined in this file, but some (like FCallBuiltin and
- * member instructions) are defined elsewhere.
- */
-#define O(opcode, ...) void in(ISS&, const bc::opcode&);
-OPCODES
-#undef O
-
 
 void in(ISS& env, const bc::Nop&)  { nothrow(env); }
 void in(ISS& env, const bc::PopA&) { nothrow(env); popA(env); }
@@ -238,6 +161,10 @@ void in(ISS& env, const bc::Array& op) {
 
 void in(ISS& env, const bc::NewArray& op) {
   push(env, op.arg1 == 0 ? aempty() : counted_aempty());
+}
+
+void in(ISS& env, const bc::NewDictArray& op) {
+  push(env, counted_aempty());
 }
 
 void in(ISS& env, const bc::NewMixedArray& op) {
@@ -353,8 +280,8 @@ void in(ISS& env, const bc::Concat& op) {
   auto const v1 = tv(t1);
   auto const v2 = tv(t2);
   if (v1 && v2) {
-    if (v1->m_type == KindOfStaticString &&
-        v2->m_type == KindOfStaticString) {
+    if (v1->m_type == KindOfPersistentString &&
+        v2->m_type == KindOfPersistentString) {
       constprop(env);
       auto const cell = eval_cell([&] {
         auto s = StringData::Make(
@@ -777,13 +704,15 @@ void in(ISS& env, const bc::CGetL3& op) {
   push(env, t1);
 }
 
-void in(ISS& env, const bc::CGetN&) {
+namespace {
+
+template <typename Op> void common_cgetn(ISS& env) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     if (auto const loc = findLocal(env, v1->m_data.pstr)) {
       return reduce(env, bc::PopC {},
-                         bc::CGetL { loc });
+                         Op { loc });
     }
   }
   readUnknownLocals(env);
@@ -791,9 +720,10 @@ void in(ISS& env, const bc::CGetN&) {
   push(env, TInitCell);
 }
 
-void in(ISS& env, const bc::CGetQuietN&) {
-  in(env, *static_cast<const bc::CGetQuietN*>(nullptr));
 }
+
+void in(ISS& env, const bc::CGetN&) { common_cgetn<bc::CGetL>(env); }
+void in(ISS& env, const bc::CGetQuietN&) { common_cgetn<bc::CGetQuietL>(env); }
 
 void in(ISS& env, const bc::CGetG&) { popC(env); push(env, TInitCell); }
 void in(ISS& env, const bc::CGetQuietG&) { popC(env); push(env, TInitCell); }
@@ -804,7 +734,7 @@ void in(ISS& env, const bc::CGetS&) {
   auto const vname = tv(tname);
   auto const self  = selfCls(env);
 
-  if (vname && vname->m_type == KindOfStaticString &&
+  if (vname && vname->m_type == KindOfPersistentString &&
       self && tcls.subtypeOf(*self)) {
     if (auto const ty = selfPropAsCell(env, vname->m_data.pstr)) {
       // Only nothrow when we know it's a private declared property
@@ -851,7 +781,7 @@ void in(ISS& env, const bc::VGetL& op) {
 void in(ISS& env, const bc::VGetN&) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     if (auto const loc = findLocal(env, v1->m_data.pstr)) {
       return reduce(env, bc::PopC {},
                          bc::VGetL { loc });
@@ -871,7 +801,7 @@ void in(ISS& env, const bc::VGetS&) {
   auto const self  = selfCls(env);
 
   if (!self || tcls.couldBe(*self)) {
-    if (vname && vname->m_type == KindOfStaticString) {
+    if (vname && vname->m_type == KindOfPersistentString) {
       boxSelfProp(env, vname->m_data.pstr);
     } else {
       killSelfProps(env);
@@ -891,7 +821,7 @@ void aGetImpl(ISS& env, Type t1) {
     return push(env, objcls(t1));
   }
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     if (auto const rcls = env.index.resolve_class(env.ctx, v1->m_data.pstr)) {
       return push(env, clsExact(*rcls));
     }
@@ -954,8 +884,7 @@ void in(ISS& env, const bc::EmptyL& op) {
   nothrow(env);
   constprop(env);
   if (!locCouldBeUninit(env, op.loc1)) {
-    return impl(env, bc::CGetL { op.loc1 },
-                     bc::Not {});
+    return impl(env, bc::CGetL { op.loc1 }, bc::Not {});
   }
   locAsCell(env, op.loc1); // read the local
   push(env, TBool);
@@ -974,7 +903,7 @@ void in(ISS& env, const bc::IssetS&) {
   auto const self  = selfCls(env);
 
   if (self && tcls.subtypeOf(*self) &&
-      vname && vname->m_type == KindOfStaticString) {
+      vname && vname->m_type == KindOfPersistentString) {
     if (auto const t = selfPropAsCell(env, vname->m_data.pstr)) {
       if (t->subtypeOf(TNull))  { constprop(env); return push(env, TFalse); }
       if (!t->couldBe(TNull))   { constprop(env); return push(env, TTrue); }
@@ -996,7 +925,7 @@ template<class ReduceOp>
 void issetEmptyNImpl(ISS& env) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     if (auto const loc = findLocal(env, v1->m_data.pstr)) {
       return reduce(env, bc::PopC {}, ReduceOp { loc });
     }
@@ -1073,7 +1002,7 @@ void in(ISS& env, const bc::InstanceOfD& op) {
 void in(ISS& env, const bc::InstanceOf& op) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     return reduce(env, bc::PopC {},
                        bc::InstanceOfD { v1->m_data.pstr });
   }
@@ -1109,7 +1038,7 @@ void in(ISS& env, const bc::SetN&) {
   auto const v2 = tv(t2);
   // TODO(#3653110): could nothrow if t2 can't be an Obj or Res
 
-  auto const knownLoc = v2 && v2->m_type == KindOfStaticString
+  auto const knownLoc = v2 && v2->m_type == KindOfPersistentString
     ? findLocal(env, v2->m_data.pstr)
     : nullptr;
   if (knownLoc) {
@@ -1136,7 +1065,7 @@ void in(ISS& env, const bc::SetS&) {
   auto const self  = selfCls(env);
 
   if (!self || tcls.couldBe(*self)) {
-    if (vname && vname->m_type == KindOfStaticString) {
+    if (vname && vname->m_type == KindOfPersistentString) {
       nothrow(env);
       mergeSelfProp(env, vname->m_data.pstr, t1);
     } else {
@@ -1203,7 +1132,7 @@ void in(ISS& env, const bc::SetOpS&) {
   auto const self  = selfCls(env);
 
   if (!self || tcls.couldBe(*self)) {
-    if (vname && vname->m_type == KindOfStaticString) {
+    if (vname && vname->m_type == KindOfPersistentString) {
       mergeSelfProp(env, vname->m_data.pstr, TInitCell);
     } else {
       loseNonRefSelfPropTypes(env);
@@ -1236,7 +1165,7 @@ void in(ISS& env, const bc::IncDecL& op) {
 void in(ISS& env, const bc::IncDecN& op) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  auto const knownLoc = v1 && v1->m_type == KindOfStaticString
+  auto const knownLoc = v1 && v1->m_type == KindOfPersistentString
     ? findLocal(env, v1->m_data.pstr)
     : nullptr;
   if (knownLoc) {
@@ -1257,7 +1186,7 @@ void in(ISS& env, const bc::IncDecS&) {
   auto const self  = selfCls(env);
 
   if (!self || tcls.couldBe(*self)) {
-    if (vname && vname->m_type == KindOfStaticString) {
+    if (vname && vname->m_type == KindOfPersistentString) {
       mergeSelfProp(env, vname->m_data.pstr, TInitCell);
     } else {
       loseNonRefSelfPropTypes(env);
@@ -1283,7 +1212,7 @@ void in(ISS& env, const bc::BindN&) {
   auto const t1 = popV(env);
   auto const t2 = popC(env);
   auto const v2 = tv(t2);
-  auto const knownLoc = v2 && v2->m_type == KindOfStaticString
+  auto const knownLoc = v2 && v2->m_type == KindOfPersistentString
     ? findLocal(env, v2->m_data.pstr)
     : nullptr;
   if (knownLoc) {
@@ -1308,7 +1237,7 @@ void in(ISS& env, const bc::BindS&) {
   auto const self  = selfCls(env);
 
   if (!self || tcls.couldBe(*self)) {
-    if (vname && vname->m_type == KindOfStaticString) {
+    if (vname && vname->m_type == KindOfPersistentString) {
       boxSelfProp(env, vname->m_data.pstr);
     } else {
       killSelfProps(env);
@@ -1330,7 +1259,7 @@ void in(ISS& env, const bc::UnsetL& op) {
 void in(ISS& env, const bc::UnsetN& op) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     if (auto const loc = findLocal(env, v1->m_data.pstr)) {
       return reduce(env, bc::PopC {},
                          bc::UnsetL { loc });
@@ -1354,7 +1283,7 @@ void in(ISS& env, const bc::FPushFuncD& op) {
 void in(ISS& env, const bc::FPushFunc& op) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     auto const name = normalizeNS(v1->m_data.pstr);
     // FPushFuncD doesn't support class-method pair strings yet.
     if (isNSNormalized(name) && notClassMethodPair(name)) {
@@ -1396,7 +1325,7 @@ void in(ISS& env, const bc::FPushObjMethodD& op) {
 void in(ISS& env, const bc::FPushObjMethod& op) {
   auto const t1 = topC(env);
   auto const v1 = tv(t1);
-  if (v1 && v1->m_type == KindOfStaticString) {
+  if (v1 && v1->m_type == KindOfPersistentString) {
     return reduce(
       env,
       bc::PopC {},
@@ -1424,7 +1353,7 @@ void in(ISS& env, const bc::FPushClsMethod& op) {
   auto const v2 = tv(t2);
 
   folly::Optional<res::Func> rfunc;
-  if (v2 && v2->m_type == KindOfStaticString) {
+  if (v2 && v2->m_type == KindOfPersistentString) {
     rfunc = env.index.resolve_method(env.ctx, t1, v2->m_data.pstr);
   }
   folly::Optional<res::Class> rcls;
@@ -1531,7 +1460,7 @@ void in(ISS& env, const bc::FPassS& op) {
       auto const tname = popC(env);
       auto const vname = tv(tname);
       if (!self || tcls.couldBe(*self)) {
-        if (vname && vname->m_type == KindOfStaticString) {
+        if (vname && vname->m_type == KindOfPersistentString) {
           // May or may not be boxing it, depending on the refiness.
           mergeSelfProp(env, vname->m_data.pstr, TInitGen);
         } else {
@@ -1607,32 +1536,6 @@ void in(ISS& env, const bc::FPassCE& op) {
   case PrepKind::Val:     return reduce(env, bc::FPassC { op.arg1 });
   case PrepKind::Ref:     /* will warn/fatal at runtime */ return;
   }
-}
-
-void in(ISS& env, const bc::FPassM& op) {
-  switch (prepKind(env, op.arg1)) {
-  case PrepKind::Unknown:
-    break;
-  case PrepKind::Val:
-    return reduce(env, bc::CGetM { op.mvec }, bc::FPassC { op.arg1 });
-  case PrepKind::Ref:
-    return reduce(env, bc::VGetM { op.mvec }, bc::FPassVNop { op.arg1 });
-  }
-
-  /*
-   * FPassM with an unknown PrepKind either has the effects of CGetM
-   * or the effects of VGetM, but we don't know which statically.
-   * These are complicated instructions, so the easiest way to
-   * handle this is to run both and then merge their output states.
-   */
-  auto const start = env.state;
-  in(env, bc::CGetM { op.mvec });
-  auto const cgetm = env.state;
-  env.state = start;
-  in(env, bc::VGetM { op.mvec });
-  merge_into(env.state, cgetm);
-  assert(env.flags.wasPEI);
-  assert(!env.flags.canConstProp);
 }
 
 void pushCallReturnType(ISS& env, const Type& ty) {

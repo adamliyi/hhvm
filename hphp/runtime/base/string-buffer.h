@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,20 +19,19 @@
 
 #include "hphp/runtime/base/exceptions.h"
 #include "hphp/runtime/base/type-string.h"
+#include "hphp/runtime/base/req-root.h"
+#include "hphp/runtime/base/imarker.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class File;
+struct File;
 
 struct StringBufferLimitException : FatalErrorException {
   StringBufferLimitException(int size, const String& partialResult)
     : FatalErrorException(0, "StringBuffer exceeded %d bytes of memory", size),
       m_result(partialResult) {}
-
-  void vscan(IMarker& mark) const override;
-
-  String m_result;
+  req::root<String> m_result;
 };
 
 /*

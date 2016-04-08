@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -29,7 +29,7 @@
 
 #include <folly/String.h>
 
-#include "hphp/util/code-cache.h"
+#include "hphp/util/build-info.h"
 #include "hphp/util/hdf.h"
 #include "hphp/util/text-util.h"
 #include "hphp/util/network.h"
@@ -65,6 +65,8 @@
 #include "hphp/runtime/base/hphp-system.h"
 #include "hphp/runtime/base/zend-url.h"
 #include "hphp/runtime/ext/extension-registry.h"
+
+#include "hphp/runtime/vm/jit/code-cache.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -110,17 +112,13 @@ int RuntimeOption::ForceErrorReportingLevel = 0;
 
 std::string RuntimeOption::ServerUser;
 
-int RuntimeOption::MaxLoopCount = 0;
 int RuntimeOption::MaxSerializedStringSize = 64 * 1024 * 1024; // 64MB
 bool RuntimeOption::NoInfiniteRecursionDetection = false;
-bool RuntimeOption::WarnTooManyArguments = false;
-bool RuntimeOption::EnableHipHopErrors = true;
 bool RuntimeOption::AssertEmitted = true;
 int64_t RuntimeOption::NoticeFrequency = 1;
 int64_t RuntimeOption::WarningFrequency = 1;
 int RuntimeOption::RaiseDebuggingFrequency = 1;
 int64_t RuntimeOption::SerializationSizeLimit = StringData::MaxSize;
-int64_t RuntimeOption::StringOffsetLimit = 10 * 1024 * 1024; // 10MB
 
 std::string RuntimeOption::AccessLogDefaultFormat = "%h %l %u %t \"%r\" %>s %b";
 std::map<std::string, AccessLogFileData> RuntimeOption::AccessLogs;
@@ -169,15 +167,14 @@ int64_t RuntimeOption::ServerMemoryHeadRoom = 0;
 int64_t RuntimeOption::RequestMemoryMaxBytes =
   std::numeric_limits<int64_t>::max();
 int64_t RuntimeOption::ImageMemoryMaxBytes = 0;
-int RuntimeOption::ResponseQueueCount = 0;
 int RuntimeOption::ServerGracefulShutdownWait = 0;
 bool RuntimeOption::ServerHarshShutdown = true;
 bool RuntimeOption::ServerEvilShutdown = true;
 bool RuntimeOption::ServerKillOnSIGTERM = false;
-int RuntimeOption::ServerDanglingWait = 0;
+int RuntimeOption::ServerPreShutdownWait = 0;
 int RuntimeOption::ServerShutdownListenWait = 0;
-int RuntimeOption::ServerShutdownListenNoWork = -1;
 std::vector<std::string> RuntimeOption::ServerNextProtocols;
+bool RuntimeOption::ServerEnableH2C = false;
 int RuntimeOption::GzipCompressionLevel = 3;
 int RuntimeOption::GzipMaxCompressionLevel = 9;
 std::string RuntimeOption::ForceCompressionURL;
@@ -195,6 +192,7 @@ bool RuntimeOption::ImplicitFlush = false;
 bool RuntimeOption::EnableEarlyFlush = true;
 bool RuntimeOption::ForceChunkedEncoding = false;
 int64_t RuntimeOption::MaxPostSize = 100;
+int64_t RuntimeOption::LowestMaxPostSize = LLONG_MAX;
 bool RuntimeOption::AlwaysPopulateRawPostData = false;
 int64_t RuntimeOption::UploadMaxFileSize = 100;
 std::string RuntimeOption::UploadTmpDir = "/tmp";
@@ -204,15 +202,13 @@ int64_t RuntimeOption::MaxFileUploads = 20;
 int RuntimeOption::Rfc1867Freq = 256 * 1024;
 std::string RuntimeOption::Rfc1867Prefix = "vupload_";
 std::string RuntimeOption::Rfc1867Name = "video_ptoken";
-bool RuntimeOption::LibEventSyncSend = true;
 bool RuntimeOption::ExpiresActive = true;
 int RuntimeOption::ExpiresDefault = 2592000;
 std::string RuntimeOption::DefaultCharsetName = "";
 bool RuntimeOption::ForceServerNameToHeader = false;
-bool RuntimeOption::EnableCufAsync = false;
 bool RuntimeOption::PathDebug = false;
 
-int RuntimeOption::RequestBodyReadLimit = -1;
+int64_t RuntimeOption::RequestBodyReadLimit = -1;
 
 bool RuntimeOption::EnableSSL = false;
 int RuntimeOption::SSLPort = 443;
@@ -300,19 +296,20 @@ bool RuntimeOption::AlwaysUseRelativePath = false;
 int RuntimeOption::HttpDefaultTimeout = 30;
 int RuntimeOption::HttpSlowQueryThreshold = 5000; // ms
 
-bool RuntimeOption::TranslateLeakStackTrace = false;
 bool RuntimeOption::NativeStackTrace = false;
-bool RuntimeOption::FullBacktrace = false;
 bool RuntimeOption::ServerErrorMessage = false;
-bool RuntimeOption::TranslateSource = false;
 bool RuntimeOption::RecordInput = false;
 bool RuntimeOption::ClearInputOnSuccess = true;
 std::string RuntimeOption::ProfilerOutputDir = "/tmp";
 std::string RuntimeOption::CoreDumpEmail;
 bool RuntimeOption::CoreDumpReport = true;
+std::string RuntimeOption::CoreDumpReportDirectory =
+#if defined(HPHP_OSS)
+  "/tmp";
+#else
+  "/var/tmp/cores";
+#endif
 std::string RuntimeOption::StackTraceFilename;
-bool RuntimeOption::LocalMemcache = false;
-bool RuntimeOption::MemcacheReadOnly = false;
 int RuntimeOption::StackTraceTimeout = 0; // seconds; 0 means unlimited
 
 bool RuntimeOption::EnableStats = false;
@@ -331,7 +328,6 @@ int64_t RuntimeOption::MaxRSS = 0;
 int64_t RuntimeOption::MaxRSSPollingCycle = 0;
 int64_t RuntimeOption::DropCacheCycle = 0;
 int64_t RuntimeOption::MaxSQLRowCount = 0;
-int64_t RuntimeOption::MaxMemcacheKeyCount = 0;
 int64_t RuntimeOption::SocketDefaultTimeout = 60;
 bool RuntimeOption::LockCodeMemory = false;
 int RuntimeOption::MaxArrayChain = INT_MAX;
@@ -408,13 +404,6 @@ const std::string& RuntimeOption::GetServerPrimaryIPv6() {
    return serverPrimaryIPv6;
 }
 
-static inline bool newMInstrsDefault() {
-#ifdef HHVM_OLD_MINSTRS
-  return false;
-#endif
-  return true;
-}
-
 static inline std::string regionSelectorDefault() {
   return "tracelet";
 }
@@ -442,7 +431,7 @@ static inline std::string pgoRegionSelectorDefault() {
 
 static inline bool evalJitDefault() {
 // Disable JIT for PPC64 - Port under development
-#if defined(__CYGWIN__) || defined(_MSC_VER) || defined(__powerpc64__)
+#if defined(__CYGWIN__) || defined(_MSC_VER)
   return false;
 #else
   return true;
@@ -460,24 +449,6 @@ static inline bool simulateARMDefault() {
 static inline bool jitPseudomainDefault() {
   // TODO(#4238120)
   return !RuntimeOption::EvalSimulateARM;
-}
-
-/*
- * 0: never use LLVM
- * 1: use LLVM for TransOptimize translations
- * 2: use LLVM for all translations
- */
-static inline uint32_t jitLLVMDefault() {
-#ifdef HHVM_JIT_LLVM_BY_DEFAULT
-  return 2;
-#else
-  return 0;
-#endif
-}
-
-static inline bool jitLLVMSLPVectorizeDefault() {
-  return RuntimeOption::EvalJitLLVMOptLevel > 1 &&
-         RuntimeOption::EvalJitLLVMSizeLevel < 2;
 }
 
 static inline bool reuseTCDefault() {
@@ -536,6 +507,11 @@ bool RuntimeOption::RepoDebugInfo = true;
 // perf-sensitive.
 bool RuntimeOption::RepoPreload;
 
+bool RuntimeOption::HHProfEnabled = false;
+bool RuntimeOption::HHProfActive = false;
+bool RuntimeOption::HHProfAccum = false;
+bool RuntimeOption::HHProfRequest = false;
+
 bool RuntimeOption::SandboxMode = false;
 std::string RuntimeOption::SandboxPattern;
 std::string RuntimeOption::SandboxHome;
@@ -568,15 +544,6 @@ int64_t RuntimeOption::PregBacktraceLimit = 1000000;
 int64_t RuntimeOption::PregRecursionLimit = 100000;
 bool RuntimeOption::EnablePregErrorLog = true;
 
-bool RuntimeOption::HHProfServerEnabled = false;
-int RuntimeOption::HHProfServerPort = 4327;
-int RuntimeOption::HHProfServerThreads = 2;
-int RuntimeOption::HHProfServerTimeoutSeconds = 30;
-bool RuntimeOption::HHProfServerProfileClientMode = true;
-bool RuntimeOption::HHProfServerAllocationProfile = false;
-int RuntimeOption::HHProfServerFilterMinAllocPerReq = 2;
-int RuntimeOption::HHProfServerFilterMinBytesPerReq = 128;
-
 bool RuntimeOption::SimpleXMLEmptyNamespaceMatchesAll = false;
 
 bool RuntimeOption::AllowDuplicateCookies = true;
@@ -596,10 +563,9 @@ int RuntimeOption::Fb303ServerPoolThreads = 1;
 
 double RuntimeOption::XenonPeriodSeconds = 0.0;
 bool RuntimeOption::XenonForceAlwaysOn = false;
+bool RuntimeOption::TrackPerUnitMemory = false;
 
 std::map<std::string, std::string> RuntimeOption::CustomSettings;
-
-int RuntimeOption::EnableAlternative = 0;
 
 #ifdef NDEBUG
   #ifdef ALWAYS_ASSERT
@@ -697,6 +663,13 @@ static std::vector<std::string> getTierOverwrites(IniSetting::Map& ini,
           matchHdfPattern(cpu, ini, hdf, "cpu")) {
         messages.emplace_back(folly::sformat(
                                 "Matched tier: {}", hdf.getName()));
+        if (hdf.exists("clear")) {
+          std::vector<std::string> list;
+          hdf["clear"].configGet(list);
+          for (auto const& s : list) {
+            config.remove(s);
+          }
+        }
         config.copy(hdf["overwrite"]);
         // no break here, so we can continue to match more overwrites
       }
@@ -912,13 +885,8 @@ void RuntimeOption::Load(
                  config, "ErrorHandling.ThrowExceptionOnBadMethodCall", true);
     Config::Bind(LogNativeStackOnOOM, ini,
                  config, "ErrorHandling.LogNativeStackOnOOM", false);
-    Config::Bind(MaxLoopCount, ini, config, "ErrorHandling.MaxLoopCount", 0);
     Config::Bind(NoInfiniteRecursionDetection, ini,
                  config, "ErrorHandling.NoInfiniteRecursionDetection");
-    Config::Bind(WarnTooManyArguments, ini, config,
-                 "ErrorHandling.WarnTooManyArguments");
-    Config::Bind(EnableHipHopErrors, ini, config,
-                 "ErrorHandling.EnableHipHopErrors", true);
     Config::Bind(NoticeFrequency, ini, config, "ErrorHandling.NoticeFrequency",
                  1);
     Config::Bind(WarningFrequency, ini, config,
@@ -954,12 +922,8 @@ void RuntimeOption::Load(
                  0);
     Config::Bind(MaxSQLRowCount, ini, config, "ResourceLimit.MaxSQLRowCount",
                  0);
-    Config::Bind(MaxMemcacheKeyCount, ini, config,
-                 "ResourceLimit.MaxMemcacheKeyCount", 0);
     Config::Bind(SerializationSizeLimit, ini, config,
                  "ResourceLimit.SerializationSizeLimit", StringData::MaxSize);
-    Config::Bind(StringOffsetLimit, ini, config,
-                 "ResourceLimit.StringOffsetLimit", 10 * 1024 * 1024);
     Config::Bind(HeapSizeMB, ini, config, "ResourceLimit.HeapSizeMB",
                  HeapSizeMB);
     Config::Bind(HeapResetCountBase, ini, config,
@@ -1025,6 +989,13 @@ void RuntimeOption::Load(
   }
 
   {
+    // HHProf
+    Config::Bind(HHProfEnabled, ini, config, "HHProf.Enabled", false);
+    Config::Bind(HHProfActive, ini, config, "HHProf.Active", false);
+    Config::Bind(HHProfAccum, ini, config, "HHProf.Accum", false);
+    Config::Bind(HHProfRequest, ini, config, "HHProf.Request", false);
+  }
+  {
     // Eval
     Config::Bind(EnableHipHopSyntax, ini, config, "Eval.EnableHipHopSyntax");
     Config::Bind(EnableHipHopExperimentalSyntax, ini,
@@ -1050,7 +1021,6 @@ void RuntimeOption::Load(
                  "Eval.EnableObjDestructCall", true);
     Config::Bind(CheckSymLink, ini, config, "Eval.CheckSymLink", true);
 
-    Config::Bind(EnableAlternative, ini, config, "Eval.EnableAlternative", 0);
 #define F(type, name, defaultVal) \
     Config::Bind(Eval ## name, ini, config, "Eval."#name, defaultVal);
     EVALFLAGS()
@@ -1121,6 +1091,7 @@ void RuntimeOption::Load(
   }
   {
     // CodeCache
+    using jit::CodeCache;
     Config::Bind(CodeCache::AHotSize, ini, config, "Eval.JitAHotSize",
                  ahotDefault());
     Config::Bind(CodeCache::ASize, ini, config, "Eval.JitASize", 60 << 20);
@@ -1281,13 +1252,7 @@ void RuntimeOption::Load(
                  "Server.PspCpuTimeoutSeconds", 0);
     Config::Bind(ServerMemoryHeadRoom, ini, config, "Server.MemoryHeadRoom", 0);
     Config::Bind(RequestMemoryMaxBytes, ini, config,
-                 "Server.RequestMemoryMaxBytes", (16l << 30)); // 16GiB
-    Config::Bind(ResponseQueueCount, ini, config, "Server.ResponseQueueCount",
-                 0);
-    if (ResponseQueueCount <= 0) {
-      ResponseQueueCount = ServerThreadCount / 10;
-      if (ResponseQueueCount <= 0) ResponseQueueCount = 1;
-    }
+                 "Server.RequestMemoryMaxBytes", (16LL << 30)); // 16GiB
     Config::Bind(ServerGracefulShutdownWait, ini,
                  config, "Server.GracefulShutdownWait", 0);
     Config::Bind(ServerHarshShutdown, ini, config, "Server.HarshShutdown",
@@ -1295,15 +1260,12 @@ void RuntimeOption::Load(
     Config::Bind(ServerKillOnSIGTERM, ini, config, "Server.KillOnSIGTERM",
                  false);
     Config::Bind(ServerEvilShutdown, ini, config, "Server.EvilShutdown", true);
-    Config::Bind(ServerDanglingWait, ini, config, "Server.DanglingWait", 0);
+    Config::Bind(ServerPreShutdownWait, ini, config,
+                 "Server.PreShutdownWait", 0);
     Config::Bind(ServerShutdownListenWait, ini, config,
                  "Server.ShutdownListenWait", 0);
-    Config::Bind(ServerShutdownListenNoWork, ini, config,
-                 "Server.ShutdownListenNoWork", -1);
     Config::Bind(ServerNextProtocols, ini, config, "Server.SSLNextProtocols");
-    if (ServerGracefulShutdownWait < ServerDanglingWait) {
-      ServerGracefulShutdownWait = ServerDanglingWait;
-    }
+    Config::Bind(ServerEnableH2C, ini, config, "Server.EnableH2C");
     Config::Bind(GzipCompressionLevel, ini, config,
                  "Server.GzipCompressionLevel", 3);
     Config::Bind(GzipMaxCompressionLevel, ini, config,
@@ -1333,8 +1295,6 @@ void RuntimeOption::Load(
     MaxPostSize <<= 20;
     Config::Bind(AlwaysPopulateRawPostData, ini, config,
                  "Server.AlwaysPopulateRawPostData", false);
-    Config::Bind(LibEventSyncSend, ini, config, "Server.LibEventSyncSend",
-                 true);
     Config::Bind(TakeoverFilename, ini, config, "Server.TakeoverFilename");
     Config::Bind(ExpiresActive, ini, config, "Server.ExpiresActive", true);
     Config::Bind(ExpiresDefault, ini, config, "Server.ExpiresDefault", 2592000);
@@ -1457,8 +1417,6 @@ void RuntimeOption::Load(
                  "Server.ForceServerNameToHeader");
     Config::Bind(AllowDuplicateCookies, ini, config,
                  "Server.AllowDuplicateCookies", !EnableHipHopSyntax);
-    Config::Bind(EnableCufAsync, ini, config, "Server.EnableCufAsync",
-                 false);
     Config::Bind(PathDebug, ini, config, "Server.PathDebug", false);
     Config::Bind(ServerUser, ini, config, "Server.User", "");
   }
@@ -1482,6 +1440,7 @@ void RuntimeOption::Load(
     // naturally (as specified top to bottom in the file and left to right on
     // the command line.
     Config::Iterate(vh_callback, ini, config, "VirtualHost");
+    LowestMaxPostSize = VirtualHost::GetLowestMaxPostSize();
   }
   {
     // IpBlocks
@@ -1592,11 +1551,7 @@ void RuntimeOption::Load(
 
     Config::Bind(NativeStackTrace, ini, config, "Debug.NativeStackTrace");
     StackTrace::Enabled = NativeStackTrace;
-    Config::Bind(TranslateLeakStackTrace, ini, config,
-                 "Debug.TranslateLeakStackTrace");
-    Config::Bind(FullBacktrace, ini, config, "Debug.FullBacktrace");
     Config::Bind(ServerErrorMessage, ini, config, "Debug.ServerErrorMessage");
-    Config::Bind(TranslateSource, ini, config, "Debug.TranslateSource");
     Config::Bind(RecordInput, ini, config, "Debug.RecordInput");
     Config::Bind(ClearInputOnSuccess, ini, config, "Debug.ClearInputOnSuccess",
                  true);
@@ -1607,22 +1562,15 @@ void RuntimeOption::Load(
     if (CoreDumpReport) {
       install_crash_reporter();
     }
-
-    auto core_dump_report_dir =
-      Config::GetString(ini, config, "Debug.CoreDumpReportDirectory",
-#if defined(HPHP_OSS)
-  "/tmp"
-#else
-  "/var/tmp/cores"
-#endif
-      );
+    // Binding default dependenant on whether we are using an OSS build or
+    // not, and that is set at initialization time of CoreDumpReportDirectory.
+    Config::Bind(CoreDumpReportDirectory, ini, config,
+                 "Debug.CoreDumpReportDirectory", CoreDumpReportDirectory);
     std::ostringstream stack_trace_stream;
-    stack_trace_stream << core_dump_report_dir << "/stacktrace."
+    stack_trace_stream << CoreDumpReportDirectory << "/stacktrace."
                        << Process::GetProcessId() << ".log";
     StackTraceFilename = stack_trace_stream.str();
 
-    Config::Bind(LocalMemcache, ini, config, "Debug.LocalMemcache");
-    Config::Bind(MemcacheReadOnly, ini, config, "Debug.MemcacheReadOnly");
     Config::Bind(StackTraceTimeout, ini, config, "Debug.StackTraceTimeout", 0);
 
     {
@@ -1656,6 +1604,8 @@ void RuntimeOption::Load(
                  "Stats.ProfilerTraceExpansion", 1.2);
     Config::Bind(ProfilerMaxTraceBuffer, ini, config,
                  "Stats.ProfilerMaxTraceBuffer", 0);
+    Config::Bind(TrackPerUnitMemory, ini, config,
+                 "Stats.TrackPerUnitMemory", false);
   }
   {
     Config::Bind(ServerVariables, ini, config, "ServerVariables");
@@ -1690,25 +1640,6 @@ void RuntimeOption::Load(
     Config::Bind(PregRecursionLimit, ini, config, "Preg.RecursionLimit",
                  100000);
     Config::Bind(EnablePregErrorLog, ini, config, "Preg.ErrorLog", true);
-  }
-  {
-    Config::Bind(HHProfServerEnabled, ini, config, "HHProfServer.Enabled",
-                 false);
-    Config::Bind(HHProfServerPort, ini, config, "HHProfServer.Port", 4327);
-    Config::Bind(HHProfServerThreads, ini, config, "HHProfServer.Threads", 2);
-    Config::Bind(HHProfServerTimeoutSeconds, ini, config,
-                 "HHProfServer.TimeoutSeconds", 30);
-    Config::Bind(HHProfServerProfileClientMode, ini, config,
-                 "HHProfServer.ProfileClientMode", true);
-    Config::Bind(HHProfServerAllocationProfile, ini, config,
-                 "HHProfServer.AllocationProfile", false);
-    {
-      // HHProfServer.Filter.*
-      Config::Bind(HHProfServerFilterMinAllocPerReq, ini, config,
-                   "HHProfServer.Filter.MinAllocPerReq", 2);
-      Config::Bind(HHProfServerFilterMinBytesPerReq, ini, config,
-                   "HHProfServer.Filter.MinBytesPerReq", 128);
-    }
   }
   {
     // SimpleXML
@@ -1835,7 +1766,7 @@ void RuntimeOption::Load(
                    "hphp.compiler_id",
                    IniSetting::SetAndGet<std::string>(
                      [](const std::string& value) { return false; },
-                     []() { return getHphpCompilerId(); }
+                     []() { return compilerId().begin(); }
                    ));
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_NONE,
                    "hphp.compiler_version",

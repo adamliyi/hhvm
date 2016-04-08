@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,11 +21,11 @@
 #include "hphp/util/portability.h"
 
 namespace HPHP {
-class ObjectData;
-class Unit;
-class Class;
-class Func;
-class Object;
+struct ObjectData;
+struct Unit;
+struct Class;
+struct Func;
+struct Object;
 } //namespace HPHP
 
 namespace HPHP { namespace SystemLib {

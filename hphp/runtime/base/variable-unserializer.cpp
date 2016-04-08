@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,89 +18,95 @@
 #include <algorithm>
 #include <utility>
 
+#include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/comparisons.h"
-#include "hphp/runtime/base/zend-strtod.h"
-#include "hphp/runtime/ext/std/ext_std_classobj.h"
 #include "hphp/runtime/base/dummy-resource.h"
-#include "hphp/runtime/vm/native-data.h"
-#include "hphp/runtime/vm/repo.h"
-#include "hphp/runtime/vm/repo-global-data.h"
+#include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/base/variable-serializer.h"
+#include "hphp/runtime/base/zend-strtod.h"
+#include "hphp/runtime/vm/native-data.h"
+#include "hphp/runtime/vm/repo-global-data.h"
+#include "hphp/runtime/vm/repo.h"
+
 #include "hphp/runtime/ext/collections/ext_collections-idl.h"
-#include "hphp/runtime/base/execution-context.h"
-#include "hphp/runtime/base/array-init.h"
-#include "hphp/runtime/vm/jit/mc-generator.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
+
+#include "hphp/runtime/vm/jit/perf-counters.h"
 
 namespace HPHP {
 
-static void unserializeVariant(Variant&, VariableUnserializer* unserializer,
-                               UnserializeMode mode = UnserializeMode::Value);
-static Array unserializeArray(VariableUnserializer*);
-static String unserializeString(VariableUnserializer*, char delimiter0 = '"',
-                                char delimiter1 = '"');
-static void unserializeCollection(ObjectData* obj, VariableUnserializer* uns,
-                                  int64_t sz, char type);
-static void unserializeVector(ObjectData*, VariableUnserializer*, int64_t sz,
-                              char type);
-static void unserializeMap(ObjectData*, VariableUnserializer*, int64_t sz,
-                           char type);
-static void unserializeSet(ObjectData*, VariableUnserializer*, int64_t sz,
-                           char type);
-static void unserializePair(ObjectData*, VariableUnserializer*, int64_t sz,
-                            char type);
+namespace {
+
+enum class ArrayKind { PHP, Dict };
+
+void unserializeVariant(Variant&, VariableUnserializer* unserializer,
+                        UnserializeMode mode = UnserializeMode::Value);
+Array unserializeArray(VariableUnserializer*, ArrayKind);
+String unserializeString(VariableUnserializer*, char delimiter0 = '"',
+                         char delimiter1 = '"');
+void unserializeCollection(ObjectData* obj, VariableUnserializer* uns,
+                           int64_t sz, char type);
+void unserializeVector(ObjectData*, VariableUnserializer*, int64_t sz,
+                       char type);
+void unserializeMap(ObjectData*, VariableUnserializer*, int64_t sz,
+                    char type);
+void unserializeSet(ObjectData*, VariableUnserializer*, int64_t sz,
+                    char type);
+void unserializePair(ObjectData*, VariableUnserializer*, int64_t sz,
+                     char type);
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnexpectedSep(char expect, char actual) {
+void throwUnexpectedSep(char expect, char actual) {
   throw Exception("Expected '%c' but got '%c'", expect, actual);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwOutOfRange(int64_t id) {
+void throwOutOfRange(int64_t id) {
   throw Exception("Id %" PRId64 " out of range", id);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnexpectedStr(const char* expect, folly::StringPiece& actual) {
+void throwUnexpectedStr(const char* expect, folly::StringPiece& actual) {
   throw Exception("Expected '%s' but got '%.*s'", expect,
                   (int)actual.size(), actual.data());
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnknownType(char type) {
+void throwUnknownType(char type) {
   throw Exception("Unknown type '%c'", type);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwInvalidPair() {
+void throwInvalidPair() {
   throw Exception("Pair objects must have exactly 2 elements");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwInvalidOFormat(const String& clsName) {
+void throwInvalidOFormat(const String& clsName) {
   throw Exception("%s does not support the 'O' serialization format",
                   clsName.data());
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwMangledPrivateProperty() {
+void throwMangledPrivateProperty() {
   throw Exception("Mangled private object property");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnterminatedProperty() {
+void throwUnterminatedProperty() {
   throw Exception("Object property not terminated properly");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwNotCollection(const String& clsName) {
+void throwNotCollection(const String& clsName) {
   throw Exception("%s is not a collection class", clsName.data());
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnexpectedType(const String& key, const ObjectData* obj,
-                                const Variant& type) {
+void throwUnexpectedType(const String& key, const ObjectData* obj,
+                         const Variant& type) {
   auto msg = folly::format(
     "Property {} for class {} was deserialized with type ({}) that "
     "didn't match what we inferred in static analysis",
@@ -112,74 +118,76 @@ static void throwUnexpectedType(const String& key, const ObjectData* obj,
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnexpectedType(const StringData* key, const ObjectData* obj,
-                                const Variant& type) {
+void throwUnexpectedType(const StringData* key, const ObjectData* obj,
+                         const Variant& type) {
   String str(key->data(), key->size(), CopyString);
   throwUnexpectedType(str, obj, type);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwArraySizeOutOfBounds() {
+void throwArraySizeOutOfBounds() {
   throw Exception("Array size out of bounds");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwInvalidKey() {
+void throwInvalidKey() {
   throw Exception("Invalid key");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnterminatedElement() {
+void throwUnterminatedElement() {
   throw Exception("Array element not terminated properly");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwLargeStringSize(int64_t size) {
+void throwLargeStringSize(int64_t size) {
   throw Exception("Size of serialized string (%ld) exceeds max", size);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwNegativeStringSize(int64_t size) {
+void throwNegativeStringSize(int64_t size) {
   throw Exception("Size of serialized string (%ld) must not be negative", size);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwBadFormat(const ObjectData* obj, char type) {
+void throwBadFormat(const ObjectData* obj, char type) {
   throw Exception("%s does not support the '%c' serialization format",
                   header_names[(int)obj->headerKind()], type);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwInvalidHashKey(const ObjectData* obj) {
+void throwInvalidHashKey(const ObjectData* obj) {
   throw Exception("%s values must be integers or strings",
                   header_names[(int)obj->headerKind()]);
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwColRKey() {
+void throwColRKey() {
   throw Exception("Referring to collection keys using the 'r' encoding "
                     "is not supported");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwColRefValue() {
+void throwColRefValue() {
   throw Exception("Collection values cannot be taken by reference");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwColRefKey() {
+void throwColRefKey() {
   throw Exception("Collection keys cannot be taken by reference");
 }
 
 NEVER_INLINE ATTRIBUTE_NORETURN
-static void throwUnexpectedEOB() {
+void throwUnexpectedEOB() {
   throw Exception("Unexpected end of buffer during unserialization");
+}
 }
 
 const StaticString
   s_unserialize("unserialize"),
   s_PHP_Incomplete_Class("__PHP_Incomplete_Class"),
-  s_PHP_Incomplete_Class_Name("__PHP_Incomplete_Class_Name");
+  s_PHP_Incomplete_Class_Name("__PHP_Incomplete_Class_Name"),
+  s___wakeup("__wakeup");
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -291,10 +299,16 @@ void VariableUnserializer::set(const char* buf, const char* end) {
 Variant VariableUnserializer::unserialize() {
   Variant v;
   unserializeVariant(v, this);
+
+  for (auto& obj : m_sleepingObjects) {
+    obj->invokeWakeup();
+  }
+
   return v;
 }
 
-static std::pair<int64_t,const char*> hh_strtoll_base10(const char* p) {
+namespace {
+std::pair<int64_t,const char*> hh_strtoll_base10(const char* p) {
   int64_t x = 0;
   bool neg = false;
   if (*p == '-') {
@@ -309,6 +323,7 @@ static std::pair<int64_t,const char*> hh_strtoll_base10(const char* p) {
     x = -x;
   }
   return std::pair<int64_t,const char*>(x, p);
+}
 }
 
 int64_t VariableUnserializer::readInt() {
@@ -341,7 +356,8 @@ void VariableUnserializer::expectChar(char expected) {
   }
 }
 
-static bool isWhitelistClass(const String& clsName, const Array& list) {
+namespace {
+bool isWhitelistClass(const String& clsName, const Array& list) {
   if (!list.empty()) {
     for (ArrayIter iter(list); iter; ++iter) {
       auto val = iter.second().toString();
@@ -351,6 +367,7 @@ static bool isWhitelistClass(const String& clsName, const Array& list) {
     }
   }
   return false;
+}
 }
 
 const StaticString s_allowed_classes("allowed_classes");
@@ -404,6 +421,10 @@ void VariableUnserializer::putInOverwrittenList(const Variant& v) {
   m_overwrittenList.append(v);
 }
 
+void VariableUnserializer::addSleepingObject(const Object& o) {
+  m_sleepingObjects.emplace_back(o);
+}
+
 bool VariableUnserializer::matchString(folly::StringPiece str) {
   const char* p = m_buf;
   const auto ss = str.size();
@@ -432,9 +453,9 @@ bool VariableUnserializer::matchString(folly::StringPiece str) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-
+namespace {
 // remainingProps should include the current property being unserialized.
-static void unserializePropertyValue(Variant& v, VariableUnserializer* uns,
+void unserializePropertyValue(Variant& v, VariableUnserializer* uns,
                                      int remainingProps) {
   assert(remainingProps > 0);
   unserializeVariant(v, uns);
@@ -448,7 +469,7 @@ static void unserializePropertyValue(Variant& v, VariableUnserializer* uns,
 
 // nProp should include the current property being unserialized.
 NEVER_INLINE
-static void unserializeProp(VariableUnserializer* uns,
+void unserializeProp(VariableUnserializer* uns,
                             ObjectData* obj,
                             const String& key,
                             Class* ctx,
@@ -498,7 +519,7 @@ static void unserializeProp(VariableUnserializer* uns,
 
 
 NEVER_INLINE
-static void unserializeRemainingProps(VariableUnserializer* uns,
+void unserializeRemainingProps(VariableUnserializer* uns,
                                       Object& obj,
                                       int remainingProps,
                                       Variant& serializedNativeData,
@@ -553,7 +574,7 @@ static void unserializeRemainingProps(VariableUnserializer* uns,
  * what's passed.
  * If no alternate name is found, returns nullptr.
  */
-static const StringData* getAlternateCollectionName(const StringData* clsName) {
+const StringData* getAlternateCollectionName(const StringData* clsName) {
   typedef hphp_hash_map<const StringData*, const StringData*,
                         string_data_hash, string_data_isame> ClsNameMap;
 
@@ -586,12 +607,12 @@ static const StringData* getAlternateCollectionName(const StringData* clsName) {
   return it != altMap->end() ? it->second : nullptr;
 }
 
-static Class* tryAlternateCollectionClass(const StringData* clsName) {
+Class* tryAlternateCollectionClass(const StringData* clsName) {
   auto altName = getAlternateCollectionName(clsName);
   return altName ? Unit::getClass(altName, /* autoload */ false) : nullptr;
 }
 
-NEVER_INLINE static
+NEVER_INLINE
 void unserializeVariant(Variant& self, VariableUnserializer* uns,
                         UnserializeMode mode /* = UnserializeMode::Value */) {
 
@@ -690,16 +711,18 @@ void unserializeVariant(Variant& self, VariableUnserializer* uns,
       assert(str.size() == 8);
       auto sdp = reinterpret_cast<StringData*const*>(&str[0]);
       assert((*sdp)->isStatic());
-      tvMove(make_tv<KindOfStaticString>(*sdp), *self.asTypedValue());
+      tvMove(make_tv<KindOfPersistentString>(*sdp), *self.asTypedValue());
     } else {
       throwUnknownType(type);
     }
     break;
+  case 'D':
   case 'a':
     {
       // Check stack depth to avoid overflow.
       check_recursion_throw();
-      auto a = unserializeArray(uns);
+      auto const kind = type == 'D' ? ArrayKind::Dict : ArrayKind::PHP;
+      auto a = unserializeArray(uns, kind);
       tvMove(make_tv<KindOfArray>(a.detach()), *self.asTypedValue());
     }
     return; // array has '}' terminating
@@ -766,7 +789,8 @@ void unserializeVariant(Variant& self, VariableUnserializer* uns,
         // Only unserialize CPP extension types which can actually
         // support it. Otherwise, we risk creating a CPP object
         // without having it initialized completely.
-        if (cls->instanceCtor() && !cls->isCppSerializable()) {
+        if (cls->instanceCtor() && !cls->isCppSerializable() &&
+            !cls->isCollectionClass()) {
           assert(obj.isNull());
           throw_null_pointer_exception();
         } else {
@@ -874,11 +898,13 @@ void unserializeVariant(Variant& self, VariableUnserializer* uns,
       }
       uns->expectChar('}');
 
-      if (uns->type() != VariableUnserializer::Type::DebuggerSerialize ||
-          (cls && cls->instanceCtor() && cls->isCppSerializable())) {
+      if (cls &&
+          cls->lookupMethod(s___wakeup.get()) &&
+          (uns->type() != VariableUnserializer::Type::DebuggerSerialize ||
+           (cls->instanceCtor() && cls->isCppSerializable()))) {
         // Don't call wakeup when unserializing for the debugger, except for
         // natively implemented classes.
-        obj->invokeWakeup();
+        uns->addSleepingObject(obj);
       }
 
       check_request_surprise_unlikely();
@@ -925,13 +951,17 @@ void unserializeVariant(Variant& self, VariableUnserializer* uns,
   uns->expectChar(';');
 }
 
-Array unserializeArray(VariableUnserializer* uns) {
+Array unserializeArray(VariableUnserializer* uns, ArrayKind kind) {
   int64_t size = uns->readInt();
   uns->expectChar(':');
   uns->expectChar('{');
   if (size == 0) {
     uns->expectChar('}');
-    return Array::Create(); // static empty array
+    switch (kind) {
+    case ArrayKind::Dict: return DictInit(0).toArray();
+    case ArrayKind::PHP:  return Array::Create(); // static empty array
+    }
+    not_reached();
   }
   if (UNLIKELY(size < 0 || size > std::numeric_limits<int>::max())) {
     throwArraySizeOutOfBounds();
@@ -946,7 +976,14 @@ Array unserializeArray(VariableUnserializer* uns) {
 
   // Pre-allocate an ArrayData of the given size, to avoid escalation in the
   // middle, which breaks references.
-  Array arr = ArrayInit(size, ArrayInit::Mixed{}).toArray();
+  Array arr = [&] {
+    switch (kind) {
+    case ArrayKind::Dict: return DictInit(size).toArray();
+    case ArrayKind::PHP:  return ArrayInit(size, ArrayInit::Mixed{}).toArray();
+    }
+    not_reached();
+  }();
+
   for (int64_t i = 0; i < size; i++) {
     Variant key;
     unserializeVariant(key, uns, UnserializeMode::Key);
@@ -975,7 +1012,6 @@ Array unserializeArray(VariableUnserializer* uns) {
   return arr;
 }
 
-static
 String unserializeString(VariableUnserializer* uns, char delimiter0 /* = '"' */,
                          char delimiter1 /* = '"' */) {
   int64_t size = uns->readInt();
@@ -993,7 +1029,6 @@ String unserializeString(VariableUnserializer* uns, char delimiter0 /* = '"' */,
   return str;
 }
 
-static
 void unserializeCollection(ObjectData* obj, VariableUnserializer* uns,
                            int64_t sz, char type) {
   switch (obj->collectionType()) {
@@ -1015,7 +1050,6 @@ void unserializeCollection(ObjectData* obj, VariableUnserializer* uns,
   }
 }
 
-static
 void unserializeVector(ObjectData* obj, VariableUnserializer* uns,
                        int64_t sz, char type) {
   if (type != 'V') throwBadFormat(obj, type);
@@ -1029,7 +1063,6 @@ void unserializeVector(ObjectData* obj, VariableUnserializer* uns,
   }
 }
 
-static
 void unserializeMap(ObjectData* obj, VariableUnserializer* uns,
                     int64_t sz, char type) {
   if (type != 'K') throwBadFormat(obj, type);
@@ -1058,7 +1091,6 @@ do_unserialize:
   }
 }
 
-static
 void unserializeSet(ObjectData* obj, VariableUnserializer* uns, int64_t sz,
                     char type) {
   if (type != 'V') throwBadFormat(obj, type);
@@ -1090,7 +1122,6 @@ void unserializeSet(ObjectData* obj, VariableUnserializer* uns, int64_t sz,
   }
 }
 
-static
 void unserializePair(ObjectData* obj, VariableUnserializer* uns,
                      int64_t sz, char type) {
   assert(sz == 2);
@@ -1100,6 +1131,9 @@ void unserializePair(ObjectData* obj, VariableUnserializer* uns,
   unserializeVariant(tvAsVariant(&elms[0]), uns, UnserializeMode::ColValue);
   unserializeVariant(tvAsVariant(&elms[1]), uns, UnserializeMode::ColValue);
 }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 
 void reserialize(VariableUnserializer* uns, StringBuffer& buf) {
   char type = uns->readChar();

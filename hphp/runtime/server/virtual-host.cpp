@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -60,13 +60,35 @@ const VirtualHost *VirtualHost::GetCurrent() {
   return ret;
 }
 
+VirtualHost* VirtualHost::Resolve(const std::string& host) {
+  for (auto vhost : RuntimeOption::VirtualHosts) {
+    if (vhost->match(host)) {
+      return vhost.get();
+    }
+  }
+  return nullptr;
+}
+
+int64_t VirtualHost::getMaxPostSize() const {
+  if (m_runtimeOption.maxPostSize != -1) {
+    return m_runtimeOption.maxPostSize;
+  }
+  return RuntimeOption::MaxPostSize;
+}
+
+int64_t VirtualHost::GetLowestMaxPostSize() {
+  auto lowest = RuntimeOption::MaxPostSize;
+  for (auto vhost : RuntimeOption::VirtualHosts) {
+    auto max = vhost->getMaxPostSize();
+    lowest = std::min(lowest, max);
+  }
+  return lowest;
+}
+
 int64_t VirtualHost::GetMaxPostSize() {
   const VirtualHost *vh = GetCurrent();
   assert(vh);
-  if (vh->m_runtimeOption.maxPostSize != -1) {
-    return vh->m_runtimeOption.maxPostSize;
-  }
-  return RuntimeOption::MaxPostSize;
+  return vh->getMaxPostSize();
 }
 
 int64_t VirtualHost::GetUploadMaxFileSize() {
@@ -162,9 +184,12 @@ void VirtualHost::initRuntimeOption(const IniSetting::Map& ini, const Hdf& vh) {
   m_runtimeOption.serializationSizeLimit = serializationSizeLimit;
 
   m_documentRoot = RuntimeOption::SourceRoot + m_pathTranslation;
-  if (!m_documentRoot.empty() &&
-      m_documentRoot[m_documentRoot.length() - 1] == '/') {
-    m_documentRoot = m_documentRoot.substr(0, m_documentRoot.length() - 1);
+  if (m_documentRoot.length() > 1 &&
+      m_documentRoot.back() == '/') {
+    m_documentRoot.pop_back();
+    // Make sure we've not converted "/" to "" (which is why we're checking
+    // length() > 1 instead of !empty() above)
+    assert(!m_documentRoot.empty());
   }
 }
 

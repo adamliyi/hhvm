@@ -16,7 +16,7 @@ open ServerEnv
 
 module SLC = ServerLocalConfig
 
-let make_genv options config local_config =
+let make_genv options config local_config ide_process =
   let root = ServerArgs.root options in
   let check_mode   = ServerArgs.check_mode options in
   let gc_control   = ServerConfig.gc_control config in
@@ -32,8 +32,6 @@ let make_genv options config local_config =
   let watchman =
     if check_mode || not local_config.SLC.use_watchman
     then None
-    else if Sys.file_exists (Watchman.crash_marker_path root)
-    then (Hh_logger.log "Watchman failed recently, falling back to dfind"; None)
     else Watchman.init local_config.SLC.watchman_init_timeout root
   in
   if Option.is_some watchman then Hh_logger.log "Using watchman";
@@ -53,8 +51,9 @@ let make_genv options config local_config =
       let indexer filter = Find.make_next_files ~name:"root" ~filter root in
       let log_link = ServerFiles.dfind_log root in
       let log_file = Sys_utils.make_link_of_timestamped log_link in
-      let dfind =
-        DfindLib.init ~log_file (GlobalConfig.scuba_table_name, [root]) in
+      let log_fd = Daemon.fd_of_path log_file in
+      let dfind = DfindLib.init
+        (log_fd, log_fd) (GlobalConfig.scuba_table_name, [root]) in
       let notifier () =
         begin try
           Timeout.with_timeout ~timeout:120
@@ -78,6 +77,7 @@ let make_genv options config local_config =
     indexer;
     notifier;
     wait_until_ready;
+    ide_process;
   }
 
 let make_env config =

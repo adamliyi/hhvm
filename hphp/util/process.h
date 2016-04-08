@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -34,8 +34,7 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // helper class
 
-class CPipe {
-public:
+struct CPipe {
   CPipe()  { m_fds[0] = m_fds[1] = 0;}
   ~CPipe() { close();}
 
@@ -62,8 +61,7 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class Process {
-public:
+struct Process {
   // Cached process statics
   static std::string HostName;
   static std::string CurrentWorkingDirectory;

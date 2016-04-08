@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,6 +17,7 @@
 #ifndef incl_HPHP_VM_CODE_GEN_HELPERS_H_
 #define incl_HPHP_VM_CODE_GEN_HELPERS_H_
 
+#include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/vm/hhbc.h"
 
 #include "hphp/runtime/vm/jit/call-spec.h"
@@ -106,12 +107,6 @@ Vreg emitDecRef(Vout& v, Vreg data);
 void emitIncRefWork(Vout& v, Vreg data, Vreg type);
 
 /*
- * DecRef for KindOfObject type, and release the object if necessary.  This
- * DecRef optimizes for known KindOfObject (the case in AsyncRetCtrl stub).
- */
-void emitDecRefObj(Vout& v, Vreg obj);
-
-/*
  * Check the refcount of `data'.  If it's negative (and hence, a sentinel
  * static value), do nothing.  If it's exactly 1, release `data' via the code
  * emitted by `destroy'.  Otherwise, decref it.
@@ -121,6 +116,11 @@ void emitDecRefObj(Vout& v, Vreg obj);
 template<class Destroy>
 void emitDecRefWork(Vout& v, Vout& vcold, Vreg data,
                     Destroy destroy, bool unlikelyDestroy);
+
+/*
+ * Like emitDecRefWork(), but for a known-KindOfObject value.
+ */
+void emitDecRefWorkObj(Vout& v, Vreg obj);
 
 /*
  * Trap or otherwise fail if `data' does not have a realistic refcount (either
@@ -184,6 +184,14 @@ void emitTransCounterInc(Vout& v);
  * Write `msg' of type `t' to the global ring buffer.
  */
 void emitRB(Vout& v, Trace::RingBufferType t, const char* msg);
+
+/*
+ * Increment the counter for `stat' by `n'.
+ *
+ * If `force' is set, do so even if stats aren't enabled.
+ */
+void emitIncStat(Vout& v, Stats::StatCounter stat, int n = 1,
+                 bool force = false);
 
 ///////////////////////////////////////////////////////////////////////////////
 

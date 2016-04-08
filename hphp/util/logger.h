@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,11 +28,10 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class StackTrace;
-class Exception;
+struct StackTrace;
+struct Exception;
 
-class Logger {
-public:
+struct Logger {
   enum LogLevelType {
     LogNone,
     LogError,
@@ -101,15 +100,16 @@ public:
 
   static char *EscapeString(const std::string &msg);
 
-  static FILE *GetStandardOut(LogLevelType level);
+  static FILE *GetStandardOut();
   static void SetStandardOut(FILE*);
 
   virtual ~Logger() { }
   static void ResetPid();
 
+  static void FlushAll();
+
 protected:
-  class ThreadData {
-  public:
+  struct ThreadData {
     int request{0};
     int message{0};
     LogFileFlusher flusher;
@@ -142,6 +142,8 @@ protected:
   virtual void log(LogLevelType level, const std::string &msg,
                    const StackTrace *stackTrace,
                    bool escape = false, bool escapeMore = false);
+  // mainly intended for subclass of loggers that batch
+  virtual void flush() {}
 
   /**
    * What needs to be print for each line of logging. Currently it's

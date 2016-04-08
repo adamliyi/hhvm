@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -23,12 +23,12 @@
 
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/exceptions.h"
-#include "hphp/runtime/base/memory-profile.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/stack-logger.h"
 #include "hphp/runtime/base/surprise-flags.h"
 #include "hphp/runtime/base/sweepable.h"
 #include "hphp/runtime/base/thread-info.h"
+#include "hphp/runtime/base/req-root.h"
 #include "hphp/runtime/base/heap-graph.h"
 #include "hphp/runtime/server/http-server.h"
 
@@ -199,32 +199,22 @@ MemoryManager::MemoryManager() {
   m_bypassSlabAlloc = RuntimeOption::DisableSmallAllocator;
 }
 
-void MemoryManager::addExceptionRoot(ExtendedException* exn) {
-  m_exceptionRoots.push_back(exn);
-  // The key is the index into the exception root list (biased by 1).
-  exn->m_key.m_index = m_exceptionRoots.size();
-}
-
-void MemoryManager::removeExceptionRoot(ExtendedException* exn) {
-  // Swap the exception being removed with the last exception in the list (which
-  // might be the same one). This lets us remove from the vector in constant
-  // time.
-  assert(exn->m_key.m_index > 0 &&
-         exn->m_key.m_index <= m_exceptionRoots.size());
-  auto& removed = m_exceptionRoots[exn->m_key.m_index-1];
-  assert(removed == exn);
-  auto& back = m_exceptionRoots.back();
-  assert(back->m_key.m_index == m_exceptionRoots.size());
-  back->m_key = removed->m_key;
-  removed->m_key.m_index = 0;
-  removed = back;
-  m_exceptionRoots.pop_back();
+MemoryManager::~MemoryManager() {
+  dropRootMaps();
+  if (debug) {
+    // Check that every allocation in heap has been freed before destruction.
+    forEachHeader([&](Header* h) {
+        assert(h->kind() == HeaderKind::Free);
+      });
+  }
+  // ~BigHeap releases its slabs/bigs.
 }
 
 void MemoryManager::dropRootMaps() {
   m_objectRoots = nullptr;
   m_resourceRoots = nullptr;
-  m_exceptionRoots = std::vector<ExtendedException*>();
+  for (auto r : m_root_handles) r->invalidate();
+  m_root_handles.clear();
 }
 
 void MemoryManager::deleteRootMaps() {
@@ -236,7 +226,8 @@ void MemoryManager::deleteRootMaps() {
     req::destroy_raw(m_resourceRoots);
     m_resourceRoots = nullptr;
   }
-  m_exceptionRoots = std::vector<ExtendedException*>();
+  for (auto r : m_root_handles) r->invalidate();
+  m_root_handles.clear();
 }
 
 void MemoryManager::resetRuntimeOptions() {
@@ -475,10 +466,6 @@ template void MemoryManager::refreshStatsImpl<true>(MemoryUsageStats& stats);
 template void MemoryManager::refreshStatsImpl<false>(MemoryUsageStats& stats);
 
 void MemoryManager::sweep() {
-  // running a gc-cycle at end of request exposes bugs, but otherwise is
-  // somewhat pointless since we're about to free the heap en-masse.
-  if (debug) collect("before MM::sweep");
-
   assert(!sweeping());
   m_sweeping = true;
   DEBUG_ONLY size_t num_sweepables = 0, num_natives = 0;
@@ -543,6 +530,7 @@ void MemoryManager::resetAllocator() {
   m_exiting = false;
   resetStatsImpl(true);
   FTRACE(1, "reset: strings {}\n", nstrings);
+  if (debug) resetEagerGC();
 }
 
 void MemoryManager::flush() {
@@ -550,7 +538,7 @@ void MemoryManager::flush() {
   m_heap.flush();
   m_apc_arrays = std::vector<APCLocalArray*>();
   m_natives = std::vector<NativeNode*>();
-  m_exceptionRoots = std::vector<ExtendedException*>();
+  m_root_handles = std::vector<req::root_handle*>{};
 }
 
 /*
@@ -643,7 +631,7 @@ inline void* MemoryManager::realloc(void* ptr, size_t nbytes) {
     return newmem;
   }
   // Ok, it's a big allocation.
-  if (debug) eagerGCCheck();
+  if (debug) checkEagerGC();
   auto block = m_heap.resizeBig(ptr, nbytes);
   refreshStats();
   return block.ptr;
@@ -651,7 +639,7 @@ inline void* MemoryManager::realloc(void* ptr, size_t nbytes) {
 
 const char* header_names[] = {
   "PackedArray", "StructArray", "MixedArray", "EmptyArray", "ApcArray",
-  "GlobalsArray", "ProxyArray", "String", "Resource", "Ref",
+  "GlobalsArray", "ProxyArray", "DictArray", "String", "Resource", "Ref",
   "Object", "WaitHandle", "ResumableObj", "AwaitAllWH",
   "Vector", "Map", "Set", "Pair", "ImmVector", "ImmMap", "ImmSet",
   "ResumableFrame", "NativeData", "SmallMalloc", "BigMalloc", "BigObj",
@@ -725,6 +713,7 @@ void MemoryManager::checkHeap(const char* phase) {
       case HeaderKind::Packed:
       case HeaderKind::Struct:
       case HeaderKind::Mixed:
+      case HeaderKind::Dict:
       case HeaderKind::Empty:
       case HeaderKind::Globals:
       case HeaderKind::Proxy:
@@ -785,7 +774,7 @@ void MemoryManager::checkHeap(const char* phase) {
 
   // heap check is done. If we are not exiting, check pointers using HeapGraph
   if (Trace::moduleEnabled(Trace::heapreport)) {
-    auto g = makeHeapGraph();
+    auto g = makeHeapGraph(true /* include free blocks */);
     if (!exiting()) checkPointers(g, phase);
     if (Trace::moduleEnabled(Trace::heapreport, 2)) {
       printHeapReport(g, phase);
@@ -849,9 +838,6 @@ NEVER_INLINE void* MemoryManager::newSlab(uint32_t nbytes) {
     refreshStats();
   }
   storeTail(m_front, (char*)m_limit - (char*)m_front);
-  if (debug && RuntimeOption::EvalCheckHeapOnAlloc && !g_context.isNull()) {
-    setSurpriseFlag(PendingGCFlag); // defer heap check until safepoint
-  }
   auto slab = m_heap.allocSlab(kSlabSize);
   assert((uintptr_t(slab.ptr) & kSmallSizeAlignMask) == 0);
   m_stats.borrow(slab.size);
@@ -965,7 +951,7 @@ MemBlock MemoryManager::mallocBigSize<false>(size_t);
 
 template<bool callerSavesActualSize> NEVER_INLINE
 MemBlock MemoryManager::mallocBigSize(size_t bytes) {
-  if (debug) eagerGCCheck();
+  if (debug) checkEagerGC();
 
   auto block = m_heap.allocBig(bytes, HeaderKind::BigObj);
   auto szOut = block.size;
@@ -987,7 +973,7 @@ MemBlock MemoryManager::mallocBigSize(size_t bytes) {
 
 NEVER_INLINE
 void* MemoryManager::callocBig(size_t totalbytes) {
-  if (debug) eagerGCCheck();
+  if (debug) checkEagerGC();
   assert(totalbytes > 0);
   auto block = m_heap.callocBig(totalbytes);
   updateBigStats();
@@ -1016,6 +1002,14 @@ void* realloc(void* ptr, size_t nbytes) {
     return nullptr;
   }
   return MM().realloc(ptr, nbytes);
+}
+
+char* strndup(const char* str, size_t len) {
+  size_t n = std::min(len, strlen(str));
+  char* ret = reinterpret_cast<char*>(req::malloc(n + 1));
+  memcpy(ret, str, n);
+  ret[n] = 0;
+  return ret;
 }
 
 void free(void* ptr) {
@@ -1066,14 +1060,6 @@ Sweepable::Sweepable() {
 }
 
 //////////////////////////////////////////////////////////////////////
-
-void MemoryManager::logAllocation(void* p, size_t bytes) {
-  MemoryProfile::logAllocation(p, bytes);
-}
-
-void MemoryManager::logDeallocation(void* p) {
-  MemoryProfile::logDeallocation(p);
-}
 
 void MemoryManager::resetCouldOOM(bool state) {
   clearSurpriseFlag(MemExceededFlag);
@@ -1152,12 +1138,13 @@ void MemoryManager::requestShutdown() {
   profctx = ReqProfContext{};
 }
 
-void MemoryManager::eagerGCCheck() {
-  if (RuntimeOption::EvalEagerGCProbability > 0 &&
-      !g_context.isNull() &&
-      folly::Random::oneIn(RuntimeOption::EvalEagerGCProbability)) {
-    setSurpriseFlag(PendingGCFlag);
-  }
+/* static */ void MemoryManager::setupProfiling() {
+  always_assert(MM().empty());
+  MM().m_bypassSlabAlloc = true;
+}
+
+/* static */ void MemoryManager::teardownProfiling() {
+  MM().m_bypassSlabAlloc = RuntimeOption::DisableSmallAllocator;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1479,5 +1466,6 @@ void ContiguousHeap::createRequestHeap() {
 
 ContiguousHeap::~ContiguousHeap(){
   flush();
+  // ~BigHeap releases its slabs/bigs.
 }
 }

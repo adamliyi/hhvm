@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -1163,7 +1163,7 @@ static String preg_do_repl_func(const Variant& function, const String& subject,
 
   Array args;
   args.set(0, subpats);
-  return vm_call_user_func(function, args);
+  return vm_call_user_func(function, args).toString();
 }
 
 static bool preg_get_backref(const char** str, int* backref) {
@@ -1411,7 +1411,7 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
                                     g_context->getContextClass(), nullptr,
                                     nullptr,
                                     ExecutionContext::InvokePseudoMain);
-            eval_result = v;
+            eval_result = std::move(v).toString();
 
             result.resize(result_len);
             result.append(eval_result.data(), eval_result.size());

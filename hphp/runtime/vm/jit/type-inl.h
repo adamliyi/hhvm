@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -245,7 +245,7 @@ inline Type Type::cns(const TypedValue& tv) {
       case KindOfDouble:
         return Type(tv.m_type);
 
-      case KindOfStaticString:
+      case KindOfPersistentString:
       case KindOfString:
         return type_detail::for_const(tv.m_data.pstr);
 
@@ -443,7 +443,7 @@ inline Type Type::unbox() const {
 
 inline Type Type::ptr(Ptr kind) const {
   assertx(*this <= TGen);
-  assertx(kind <= Ptr::Ptr);
+  assertx(ptrSubsetOf(kind, Ptr::Ptr));
   // Enforce a canonical representation for Bottom.
   if (m_bits == kBottom) return TBottom;
   return Type(m_bits,

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -122,6 +122,12 @@ struct VariableUnserializer {
    */
   void putInOverwrittenList(const Variant& v);
 
+  /*
+   * Register an object that needs its __wakeup() method called after
+   * unserialization of the top-level value is complete.
+   */
+  void addSleepingObject(const Object&);
+
 private:
   /*
    * Hold references to previously-unserialized data, along with bits telling
@@ -146,6 +152,7 @@ private:
   req::vector<RefInfo> m_refs;
   bool m_unknownSerializable;
   const Array& m_options; // e.g. classes allowed to be unserialized
+  req::vector<Object> m_sleepingObjects;
 };
 
 void reserialize(VariableUnserializer* uns, StringBuffer& buf);

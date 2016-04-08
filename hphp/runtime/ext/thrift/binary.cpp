@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -15,17 +15,21 @@
    +----------------------------------------------------------------------+
 */
 
-#include "hphp/runtime/ext/thrift/transport.h"
 #include "hphp/runtime/ext/thrift/ext_thrift.h"
-#include "hphp/runtime/ext/thrift/spec-holder.h"
-#include "hphp/runtime/ext/std/ext_std_classobj.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
-#include "hphp/runtime/ext/reflection/ext_reflection.h"
-#include "hphp/runtime/ext/extension.h"
+
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/collections.h"
-#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/vm-regs.h"
+
+#include "hphp/runtime/ext/collections/ext_collections-idl.h"
+#include "hphp/runtime/ext/extension.h"
+#include "hphp/runtime/ext/reflection/ext_reflection.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
+#include "hphp/runtime/ext/thrift/spec-holder.h"
+#include "hphp/runtime/ext/thrift/transport.h"
+
+#include "hphp/runtime/vm/jit/perf-counters.h"
+
 #include "hphp/util/logger.h"
 
 #include <sys/types.h>
@@ -48,6 +52,8 @@ const StaticString
   s_val("val"),
   s_elem("elem"),
   s_var("var"),
+  s_union("union"),
+  s__type("_type"),
   s_type("type"),
   s_ktype("ktype"),
   s_vtype("vtype"),
@@ -101,8 +107,7 @@ Object createObject(const String& obj_typename, int nargs = 0,
 }
 
 void throw_tprotocolexception(const String& what, long errorcode) {
-  Object ex = createObject(s_TProtocolException, 2, what, errorcode);
-  throw ex;
+  throw_object(createObject(s_TProtocolException, 2, what, errorcode));
 }
 
 Variant binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport,
@@ -395,6 +400,10 @@ void binary_deserialize_slow(const Object& zthis, const Array& spec,
       if (ttypes_are_compatible(ttype, expected_ttype)) {
         Variant rv = binary_deserialize(ttype, transport, fieldspec);
         zthis->o_set(varname, rv, zthis->getClassName());
+        bool isUnion = fieldspec.rvalAt(s_union).toBoolean();
+        if (isUnion) {
+          zthis->o_set(s__type, Variant(fieldno), zthis->getClassName());
+        }
       } else {
         skip_element(ttype, transport);
       }
@@ -433,6 +442,14 @@ void binary_deserialize_spec(const Object& dest, PHPInputTransport& transport,
         !ttypes_are_compatible(fieldType, fields[i].type)) {
       return binary_deserialize_slow(
         dest, spec, fieldNum, fieldType, transport);
+    }
+    if (fields[i].isUnion) {
+      if (s__type.equal(prop[numFields].name)) {
+        tvAsVariant(&objProp[numFields]) = Variant(fieldNum);
+      } else {
+        return binary_deserialize_slow(
+          dest, spec, fieldNum, fieldType, transport);
+      }
     }
     ArrNR fieldSpec(fields[i].spec);
     tvAsVariant(&objProp[i]) =
@@ -663,7 +680,7 @@ Object HHVM_FUNCTION(thrift_protocol_read_binary,
     Object ex = createObject(s_TApplicationException);
     Variant spec(get_tspec(ex->getVMClass()));
     binary_deserialize_spec(ex, transport, spec.toArray());
-    throw ex;
+    throw_object(ex);
   }
 
   Object ret_val = createObject(obj_typename);

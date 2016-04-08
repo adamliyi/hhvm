@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -192,6 +192,10 @@ void emitNewMixedArray(IRGS& env, int32_t capacity) {
   } else {
     push(env, gen(env, NewMixedArray, cns(env, capacity)));
   }
+}
+
+void emitNewDictArray(IRGS& env, int32_t capacity) {
+  push(env, gen(env, NewDictArray, cns(env, capacity)));
 }
 
 void emitNewLikeArrayL(IRGS& env, int32_t id, int32_t capacity) {

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -1649,7 +1649,7 @@ static void HHVM_METHOD(SimpleXMLElement, addAttribute,
 }
 
 static String HHVM_METHOD(SimpleXMLElement, __toString) {
-  return SimpleXMLElement_objectCast(this_, KindOfString);
+  return SimpleXMLElement_objectCast(this_, KindOfString).toString();
 }
 
 static Variant HHVM_METHOD(SimpleXMLElement, __get, const Variant& name) {
@@ -1816,8 +1816,7 @@ static bool HHVM_METHOD(SimpleXMLIterator, hasChildren) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-static class SimpleXMLExtension : public Extension {
- public:
+static struct SimpleXMLExtension : Extension {
   SimpleXMLExtension(): Extension("simplexml", "1.0") {}
 
   void moduleInit() override {

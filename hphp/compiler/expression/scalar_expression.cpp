@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -83,7 +83,7 @@ ScalarExpression::ScalarExpression
         m_type = T_DNUMBER;
         return;
 
-      case KindOfStaticString:
+      case KindOfPersistentString:
       case KindOfString:
         m_type = T_STRING;
         return;

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -32,10 +32,9 @@ namespace HPHP {
  * An async generator wait handle represents one step of asynchronous execution
  * between two yield statements of an async generator.
  */
-class AsyncGenerator;
+struct AsyncGenerator;
 
-class c_AsyncGeneratorWaitHandle final : public c_ResumableWaitHandle {
- public:
+struct c_AsyncGeneratorWaitHandle final : c_ResumableWaitHandle {
   WAITHANDLE_CLASSOF(AsyncGeneratorWaitHandle);
   WAITHANDLE_DTOR(AsyncGeneratorWaitHandle);
 

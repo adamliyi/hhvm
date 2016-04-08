@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -29,8 +29,8 @@
 #include <folly/IPAddress.h>
 
 namespace HPHP {
-class ProxygenServer;
-class ProxygenTransport;
+struct ProxygenServer;
+struct ProxygenTransport;
 
 ////////////////////////////////////////////////////////////////////////////////
 /** Message passed from dispatch thread to I/O thread
@@ -38,8 +38,7 @@ class ProxygenTransport;
  * These messages hold a reference to the transport so it doesn't get deleted
  * out from under them in transit.
  */
-class ResponseMessage {
-  public:
+struct ResponseMessage {
   enum class Type {
     HEADERS,
     BODY,
@@ -83,7 +82,7 @@ class ResponseMessage {
   bool m_eom{false};
 };
 
-class PushTxnHandler;
+struct PushTxnHandler;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -94,12 +93,13 @@ class PushTxnHandler;
  * Note that one transport object is created for each request.  The transport
  * accessed by the I/O thread and dispatch thread, but it should be OK, right?
  */
-class ProxygenTransport : public Transport,
-  public proxygen::HTTPTransactionHandler,
-  public std::enable_shared_from_this<ProxygenTransport>,
-  public folly::AsyncTimeout,
-  public Synchronizable {
-public:
+struct ProxygenTransport final
+  : Transport
+  , proxygen::HTTPTransactionHandler
+  , std::enable_shared_from_this<ProxygenTransport>
+  , folly::AsyncTimeout
+  , Synchronizable
+{
   explicit ProxygenTransport(ProxygenServer *server,
                              folly::EventBase *eventBase);
   virtual ~ProxygenTransport();
@@ -124,9 +124,9 @@ public:
   /**
    * POST request's data.
    */
-  const void *getPostData(int &size) override;
+  const void *getPostData(size_t &size) override;
   bool hasMorePostData() override;
-  const void *getMorePostData(int &size) override;
+  const void *getMorePostData(size_t &size) override;
 
   // TODO: is get getFiles required?
 
@@ -144,7 +144,7 @@ public:
   /**
    * Get http request size.
    */
-  int getRequestSize() const override;
+  size_t getRequestSize() const override;
 
   /**
    * Get request header(s).

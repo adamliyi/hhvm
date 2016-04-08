@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -27,6 +27,7 @@
 #include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/request-local.h"
+#include "hphp/runtime/base/req-containers.h"
 #include "hphp/runtime/base/sort-flags.h"
 #include "hphp/runtime/base/zend-collator.h"
 #include "hphp/runtime/base/zend-sort.h"
@@ -296,11 +297,11 @@ bool HHVM_FUNCTION(array_key_exists,
     case KindOfInt64:
       return ad->exists(cell->m_data.num);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString: {
       int64_t n = 0;
       StringData *sd = cell->m_data.pstr;
-      if (sd->isStrictlyInteger(n)) {
+      if (ad->convertKey(sd, n)) {
         return ad->exists(n);
       }
       return ad->exists(StrNR(sd));
@@ -450,35 +451,29 @@ Variant HHVM_FUNCTION(array_map, const Variant& callback,
 
   // Handle the uncommon case where the caller passed a callback
   // and two or more containers
-  ArrayIter* iters =
-    (ArrayIter*)req::malloc(sizeof(ArrayIter) * (_argv.size() + 1));
-  size_t numIters = 0;
-  SCOPE_EXIT {
-    while (numIters--) iters[numIters].~ArrayIter();
-    req::free(iters);
-  };
+  req::vector<ArrayIter> iters;
+  iters.reserve(_argv.size() + 1);
   size_t maxLen = getContainerSize(cell_arr1);
-  (void) new (&iters[numIters]) ArrayIter(cell_arr1);
-  ++numIters;
-  for (ArrayIter it(_argv); it; ++it, ++numIters) {
+  iters.emplace_back(cell_arr1);
+  for (ArrayIter it(_argv); it; ++it) {
     const auto& c = *it.secondRefPlus().asCell();
     if (UNLIKELY(!isContainer(c))) {
       raise_warning("array_map(): Argument #%d should be an array or "
-                    "collection", (int)(numIters + 2));
-      (void) new (&iters[numIters]) ArrayIter(it.secondRefPlus().toArray());
+                    "collection", (int)(iters.size() + 2));
+      iters.emplace_back(it.secondRefPlus().toArray());
     } else {
-      (void) new (&iters[numIters]) ArrayIter(c);
+      iters.emplace_back(c);
       size_t len = getContainerSize(c);
       if (len > maxLen) maxLen = len;
     }
   }
   PackedArrayInit ret_ai(maxLen);
   for (size_t k = 0; k < maxLen; k++) {
-    PackedArrayInit params_ai(numIters);
-    for (size_t i = 0; i < numIters; ++i) {
-      if (iters[i]) {
-        params_ai.append(iters[i].secondRefPlus());
-        ++iters[i];
+    PackedArrayInit params_ai(iters.size());
+    for (auto& iter : iters) {
+      if (iter) {
+        params_ai.append(iter.secondRefPlus());
+        ++iter;
       } else {
         params_ai.append(init_null_variant);
       }
@@ -703,7 +698,7 @@ Variant HHVM_FUNCTION(array_product,
       case KindOfDouble:
         goto DOUBLE;
 
-      case KindOfStaticString:
+      case KindOfPersistentString:
       case KindOfString: {
         int64_t ti;
         double td;
@@ -965,7 +960,7 @@ Variant HHVM_FUNCTION(array_sum,
       case KindOfDouble:
         goto DOUBLE;
 
-      case KindOfStaticString:
+      case KindOfPersistentString:
       case KindOfString: {
         int64_t ti;
         double td;
@@ -994,7 +989,7 @@ Variant HHVM_FUNCTION(array_sum,
 DOUBLE:
   double d = i;
   for (; iter; ++iter) {
-    const Variant& entry(iter.secondRef());
+    const Variant& entry(iter.secondRefPlus());
     switch (entry.getType()) {
       DT_UNCOUNTED_CASE:
       case KindOfString:
@@ -1248,7 +1243,7 @@ int64_t HHVM_FUNCTION(count,
     case KindOfBoolean:
     case KindOfInt64:
     case KindOfDouble:
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
     case KindOfResource:
       return 1;
@@ -1265,7 +1260,7 @@ int64_t HHVM_FUNCTION(count,
       {
         Object obj = var.toObject();
         if (obj->isCollection()) {
-          return getCollectionSize(obj.get());
+          return collections::getSize(obj.get());
         }
         if (obj.instanceof(SystemLib::s_CountableClass)) {
           return obj->o_invoke_few_args(s_count, 0).toInt64();
@@ -1848,8 +1843,7 @@ static inline TypedValue* makeContainerListHelper(const Variant& a,
   assert(0 <= smallestPos);
   assert(smallestPos < count);
   // Allocate a TypedValue array and copy 'a' and the contents of 'argv'
-  TypedValue* containers =
-    (TypedValue*)req::malloc(count * sizeof(TypedValue));
+  TypedValue* containers = req::make_raw_array<TypedValue>(count);
   tvCopy(*a.asCell(), containers[0]);
   int pos = 1;
   for (ArrayIter argvIter(argv); argvIter; ++argvIter, ++pos) {
@@ -2330,8 +2324,7 @@ private:
 IMPLEMENT_STATIC_REQUEST_LOCAL(Collator, s_collator);
 
 namespace {
-class ArraySortTmp {
- public:
+struct ArraySortTmp {
   explicit ArraySortTmp(Array& arr, SortFunction sf) : m_arr(arr) {
     m_ad = arr.get()->escalateForSort(sf);
     assert(m_ad == arr.get() || m_ad->hasExactlyOneRef());
@@ -2649,7 +2642,7 @@ Variant HHVM_FUNCTION(hphp_array_idx,
   if (!key.isNull()) {
     if (LIKELY(search.isArray())) {
       ArrayData *arr = search.getArrayData();
-      VarNR index = key.toKey();
+      VarNR index = key.toKey(arr->useWeakKeys());
       if (!index.isNull()) {
         const Variant& ret = arr->get(index, false);
         return (&ret != &null_variant) ? ret : def;
@@ -2736,10 +2729,14 @@ TypedValue* HHVM_FN(array_multisort)(ActRec* ar) {
   return arReturn(ar, Array::MultiSort(data, true));
 }
 
+// __SystemLib\\dict
+Array HHVM_FUNCTION(__SystemLib_dict, const Array& arr) {
+  return Array::ConvertToDict(arr);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
-class ArrayExtension final : public Extension {
-public:
+struct ArrayExtension final : Extension {
   ArrayExtension() : Extension("array") {}
   void moduleInit() override {
     HHVM_RC_INT_SAME(UCOL_DEFAULT);
@@ -2868,6 +2865,7 @@ public:
     HHVM_FE(i18n_loc_get_error_code);
     HHVM_FE(hphp_array_idx);
     HHVM_FE(array_multisort);
+    HHVM_FALIAS(__SystemLib\\dict, __SystemLib_dict);
 
     loadSystemlib();
   }

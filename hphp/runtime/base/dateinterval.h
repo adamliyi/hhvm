@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -35,8 +35,7 @@ typedef std::shared_ptr<timelib_rel_time> DateIntervalPtr;
 /**
  * Handles all date interval related functions.
  */
-class DateInterval : public SweepableResourceData {
-public:
+struct DateInterval : SweepableResourceData {
   DECLARE_RESOURCE_ALLOCATION(DateInterval);
   static const StaticString& classnameof() {
     static const StaticString result("DateInterval");
@@ -77,7 +76,7 @@ public:
   req::ptr<DateInterval> cloneDateInterval() const;
 
 protected:
-  friend class DateTime;
+  friend struct DateTime;
 
   timelib_rel_time *get() const { return m_di.get(); }
 

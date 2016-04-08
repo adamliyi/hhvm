@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -31,7 +31,6 @@
 #include "hphp/runtime/vm/jit/trans-rec.h"
 #include "hphp/runtime/vm/jit/type.h"
 #include "hphp/runtime/vm/jit/recycle-tc.h"
-#include "hphp/runtime/vm/jit/unique-stubs.h"
 #include "hphp/runtime/vm/jit/write-lease.h"
 
 #include "hphp/util/hash-map-typedefs.h"
@@ -109,7 +108,8 @@ using BlockIdToIRBlockMap = hphp_hash_map<RegionDesc::BlockId, Block*>;
  * need access to this.
  */
 struct TransContext {
-  TransContext(TransID id, SrcKey sk, FPInvOffset spOff);
+  TransContext(TransID id, TransKind kind, TransFlags flags,
+               SrcKey sk, FPInvOffset spOff);
 
   /*
    * The SrcKey for this translation.
@@ -122,6 +122,8 @@ struct TransContext {
    * The contents of SrcKey are re-laid out to avoid func table lookups.
    */
   TransID transID;  // May be kInvalidTransID if not for a real translation.
+  TransKind kind{TransKind::Invalid};
+  TransFlags flags;
   FPInvOffset initSpOffset;
   const Func* func;
   Offset initBcOffset;
@@ -143,6 +145,7 @@ struct TranslArgs {
   bool setFuncBody{false};
   TransFlags flags{0};
   TransID transId{kInvalidTransID};
+  TransKind kind{TransKind::Invalid};
   RegionDescPtr region{nullptr};
 };
 
@@ -180,24 +183,6 @@ struct Translator {
    * If no SrcRec exists, insert one into the SrcDB.
    */
   SrcRec* getSrcRec(SrcKey sk);
-
-  /////////////////////////////////////////////////////////////////////////////
-  // Configuration.
-
-  /*
-   * We call the TransKind `mode' for some reason.
-   */
-  TransKind mode() const;
-  void setMode(TransKind mode);
-
-  /*
-   * Whether to use ahot.
-   *
-   * This defaults to runtime option values, and is only changed if we're using
-   * ahot and it runs out of space.
-   */
-  bool useAHot() const;
-  void setUseAHot(bool val);
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -292,15 +277,10 @@ struct Translator {
   /////////////////////////////////////////////////////////////////////////////
   // Data members.
 
-public:
-  UniqueStubs uniqueStubs;
-
 private:
   int64_t m_createdTime;
 
-  TransKind m_mode;
   std::unique_ptr<ProfData> m_profData;
-  bool m_useAHot;
 
   SrcDB m_srcDB;
 
@@ -421,6 +401,11 @@ public:
  */
 InputInfoVec getInputs(NormalizedInstruction&);
 
+/*
+ * Return the index of op's local immediate.
+ */
+size_t localImmIdx(Op op);
+
 namespace InstrFlags {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -491,7 +476,6 @@ enum Operands {
   FuncdRef        = 1 << 5,  // Input to FPass*
   FStack          = 1 << 6,  // output of FPushFuncD and friends
   Local           = 1 << 7,  // Writes to a local
-  MVector         = 1 << 8,  // Member-vector input
   Iter            = 1 << 9,  // Iterator in imm[0]
   AllLocals       = 1 << 10, // All locals (used by RetC)
   DontGuardStack1 = 1 << 11, // Dont force a guard on behalf of stack1 input
@@ -505,6 +489,7 @@ enum Operands {
   MBase           = 1 << 18, // member operation base
   IdxA            = 1 << 19, // consume 1 A at idx imm[0].u_IVA, preserving an
                              // optional C on top of it
+  MKey            = 1 << 20, // member lookup key
   StackTop2 = Stack1 | Stack2,
   StackTop3 = Stack1 | Stack2 | Stack3,
 };

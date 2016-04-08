@@ -15,9 +15,8 @@
  * types that where inherited from their parents.
  *)
 (*****************************************************************************)
-open Utils
+
 open Typing_defs
-type env = Typing_env.env
 
 type inherited = {
   ih_cstr     : class_elt option * bool;
@@ -30,4 +29,4 @@ type inherited = {
 }
 
 (* Builds the inherited type *)
-val make: Typing_env.env -> Nast.class_ -> env * inherited
+val make: Typing_decl_env.env -> Nast.class_ -> inherited

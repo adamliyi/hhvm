@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -45,7 +45,7 @@ void profiledGuard(IRGS& env,
       gen(env, CheckLoc, type, LocalId(id), failBlock, fp(env));
       return;
     case ProfGuard::CheckStk:
-      // Adjust 'id' to get an offset from the current m_irb->sp().
+      // Adjust 'id' to get an offset from the current m_irb->fs().sp().
       auto const adjOff = offsetFromIRSP(env, BCSPOffset{id});
       gen(env, CheckStk, type,
           RelOffsetData { BCSPOffset{id}, adjOff }, failBlock, sp(env));

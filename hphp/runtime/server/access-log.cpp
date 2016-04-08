@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -152,6 +152,12 @@ void AccessLog::onNewRequest() {
   if (!m_initialized) return;
   ThreadData *threadData = m_fGetThreadData();
   threadData->startTime = TimeStamp::Current();
+}
+
+void AccessLog::flushAllWriters() {
+  if (!m_initialized) return;
+  m_defaultWriter->flush();
+  for (auto& file : m_files) file->flush();
 }
 
 bool AccessLog::setThreadLog(const char *file) {

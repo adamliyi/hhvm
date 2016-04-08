@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,10 +28,11 @@ struct _Unwind_Exception;
 namespace HPHP {
 //////////////////////////////////////////////////////////////////////
 
-class Func;
-class c_Pair;
-class c_Vector;
+struct Func;
+struct Iter;
 struct MInstrState;
+struct c_Pair;
+struct c_Vector;
 
 namespace jit {
 //////////////////////////////////////////////////////////////////////
@@ -215,6 +216,8 @@ void registerLiveObj(ObjectData* obj);
 
 /* Check if a method of the given name exists on the class. */
 bool methodExistsHelper(Class*, StringData*);
+
+int64_t decodeCufIterHelper(Iter* it, TypedValue func);
 
 /*
  * Throw a VMSwitchMode exception.

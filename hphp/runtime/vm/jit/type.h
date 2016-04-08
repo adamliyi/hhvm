@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -173,12 +173,13 @@ constexpr Ptr operator&(Ptr a, Ptr b) {
 constexpr Ptr operator-(Ptr a, Ptr b) {
   return static_cast<Ptr>(static_cast<ptr_t>(a) & ~static_cast<ptr_t>(b));
 }
-constexpr bool operator<=(Ptr a, Ptr b) {
-  return (a & b) == a;
-}
+bool operator<=(Ptr a, Ptr b) = delete;
 bool operator>=(Ptr, Ptr) = delete;
 bool operator<(Ptr, Ptr) = delete;
 bool operator>(Ptr, Ptr) = delete;
+constexpr bool ptrSubsetOf(Ptr a, Ptr b) {
+  return (a & b) == a;
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 

@@ -319,13 +319,13 @@ let get_class_variance root (pos, class_name) =
       [Vcovariant [pos, Rtype_argument (Utils.strip_ns name), Pcovariant]]
   | _ ->
       let dep = Typing_deps.Dep.Class class_name in
-      Typing_deps.add_idep (Some root) dep;
+      Typing_deps.add_idep root dep;
       let tparams =
         if Typing_heap.Typedefs.mem class_name
         then
           match Typing_heap.Typedefs.get class_name with
-          | Some (Typing_heap.Typedef.Ok (_, tparams, _, _, _)) -> tparams
-          | _ -> []
+          | Some {td_tparams; _} -> td_tparams
+          | None -> []
         else
           match Typing_heap.Classes.get class_name with
           | None -> []
@@ -352,14 +352,14 @@ let rec class_ class_name class_type impl =
 
 and typedef type_name =
   match Typing_heap.Typedefs.get type_name with
-  | Some (Typing_heap.Typedef.Ok (_, tparams, _cstr, ty, _)) ->
+  | Some {td_tparams; td_type; td_pos = _; td_constraint = _; td_vis = _}  ->
       let root = Typing_deps.Dep.Class type_name in
       let env = SMap.empty in
-      let pos = Reason.to_pos (fst ty) in
+      let pos = Reason.to_pos (fst td_type) in
       let reason_covariant = [pos, Rtypedef, Pcovariant] in
-      let env = type_ root (Vcovariant reason_covariant) env ty in
-      List.iter tparams (check_variance env)
-  | _ -> ()
+      let env = type_ root (Vcovariant reason_covariant) env td_type in
+      List.iter td_tparams (check_variance env)
+  | None -> ()
 
 and class_member root _member_name member env =
   match member.ce_visibility with
@@ -416,8 +416,7 @@ and type_ root variance env (reason, ty) =
       (* `this` constraints are bivariant (otherwise any class that used the
        * `this` type would not be able to use covariant type params) *)
       env
-  | Tgeneric (_, Some cstr) -> constraint_ root env cstr
-  | Tgeneric (name, None) ->
+  | Tgeneric (name, cstr_opt) ->
       let pos = Reason.to_pos reason in
       (* This section makes the position more precise.
        * Say we find a return type that is a tuple (int, int, T).
@@ -436,7 +435,10 @@ and type_ root variance env (reason, ty) =
         | x -> x
       in
       let env = add_variance env name variance in
-      env
+      begin match cstr_opt with
+        | None -> env
+        | Some cstr -> constraint_ root env cstr
+      end
   | Toption ty ->
       type_ root variance env ty
   | Tprim _ -> env

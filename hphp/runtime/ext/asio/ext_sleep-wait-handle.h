@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -29,8 +29,7 @@ namespace HPHP {
 /**
  * A wait handle that sleeps until a give time passes.
  */
-class c_SleepWaitHandle final : public c_WaitableWaitHandle {
- public:
+struct c_SleepWaitHandle final : c_WaitableWaitHandle {
   WAITHANDLE_CLASSOF(SleepWaitHandle);
   WAITHANDLE_DTOR(SleepWaitHandle);
 
@@ -39,7 +38,8 @@ class c_SleepWaitHandle final : public c_WaitableWaitHandle {
   ~c_SleepWaitHandle() {}
 
  public:
-  void process();
+  bool cancel(const Object& exception);
+  bool process();
   String getName();
   void exitContext(context_idx_t ctx_idx);
   AsioSession::TimePoint getWakeTime() const { return m_waketime; };

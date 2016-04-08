@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -318,9 +318,7 @@ int computeCost(const RegionDesc& region) {
 
       // Add the size of immediate vectors to the cost.
       auto const pc = sk.pc();
-      if (hasMVector(op)) {
-        cost += getMVector(pc).size();
-      } else if (hasImmVector(op)) {
+      if (hasImmVector(op)) {
         cost += getImmVector(pc).size();
       }
     }
@@ -491,8 +489,7 @@ RegionDescPtr selectCalleeTracelet(const Func* callee,
   }
 
   // Produce a tracelet for the callee.
-  return selectTracelet(ctx, maxBCInstrs, false /* profiling */,
-                        true /* inlining */);
+  return selectTracelet(ctx, TransKind::Live, maxBCInstrs, true /* inlining */);
 }
 
 TransID findTransIDForCallee(const Func* callee, const int numArgs,
@@ -504,8 +501,9 @@ TransID findTransIDForCallee(const Func* callee, const int numArgs,
 
   auto const offset = callee->getEntryForNumArgs(numArgs);
   for (auto const id : idvec) {
-    if (profData->transStartBcOff(id) != offset) continue;
-    auto const region = profData->transRegion(id);
+    auto const rec = profData->transRec(id);
+    if (rec->startBcOff() != offset) continue;
+    auto const region = rec->region();
 
     auto const isvalid = [&] () {
       for (auto const& typeloc : region->entry()->typePreConditions()) {
@@ -537,7 +535,7 @@ RegionDescPtr selectCalleeCFG(const Func* callee, const int numArgs,
 
   TransIDSet selectedTIDs;
   TransCFG cfg(callee->getFuncId(), profData, mcg->tx().getSrcDB(),
-               mcg->getJmpToTransIDMap(), true /* inlining */);
+               mcg->jmpToTransIDMap(), true /* inlining */);
 
   HotTransContext ctx;
   ctx.tid = dvID;

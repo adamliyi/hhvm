@@ -22,23 +22,23 @@ type mode =
   | Autocomplete
   | Color
   | Coverage
-  | DumpSymbolInfo
+  | Dump_symbol_info
   | Errors
   | Lint
   | Suggest
-  | NoBuiltins
+  | Dump_deps
 
 type options = {
   filename : string;
   mode : mode;
+  no_builtins : bool;
 }
 
 let builtins_filename =
   Relative_path.create Relative_path.Dummy "builtins.hhi"
 
-let what_builtins mode = match mode with
-  NoBuiltins -> ""
-  | _ -> "<?hh // decl\n"^
+let builtins =
+  "<?hh // decl\n"^
   "interface Traversable<+Tv> {}\n"^
   "interface Container<+Tv> extends Traversable<Tv> {}\n"^
   "interface Iterator<+Tv> extends Traversable<Tv> {}\n"^
@@ -202,6 +202,7 @@ let parse_options () =
   let fn_ref = ref None in
   let usage = Printf.sprintf "Usage: %s filename\n" Sys.argv.(0) in
   let mode = ref Errors in
+  let no_builtins = ref false in
   let set_mode x () =
     if !mode <> Errors
     then raise (Arg.Bad "only a single mode should be specified")
@@ -224,7 +225,7 @@ let parse_options () =
       Arg.Unit (set_mode Coverage),
       "Produce coverage output";
     "--dump-symbol-info",
-      Arg.Unit (set_mode DumpSymbolInfo),
+      Arg.Unit (set_mode Dump_symbol_info),
       "Dump all symbol information";
     "--lint",
       Arg.Unit (set_mode Lint),
@@ -233,15 +234,20 @@ let parse_options () =
       Arg.Unit (set_mode Suggest),
       "Suggest missing typehints";
     "--no-builtins",
-      Arg.Unit (set_mode NoBuiltins),
+      Arg.Set no_builtins,
       "Don't use builtins (e.g. ConstSet)";
+    "--dump-deps",
+      Arg.Unit (set_mode Dump_deps),
+      "Print dependencies";
   ] in
+  let options = Arg.align options in
   Arg.parse options (fun fn -> fn_ref := Some fn) usage;
   let fn = match !fn_ref with
     | Some fn -> fn
     | None -> die usage in
   { filename = fn;
     mode = !mode;
+    no_builtins = !no_builtins;
   }
 
 let suggest_and_print fn { FileInfo.funs; classes; typedefs; consts; _ } =
@@ -263,7 +269,7 @@ let suggest_and_print fn { FileInfo.funs; classes; typedefs; consts; _ } =
       List.iter ~f: (ServerConvert.print_patch fn) l
     end
 
-(* This allows to fake having multiple files in one file. This
+(* This allows one to fake having multiple files in one file. This
  * is used only in unit test files.
  * Indeed, there are some features that require mutliple files to be tested.
  * For example, newtype has a different meaning depending on the file.
@@ -330,7 +336,7 @@ let print_coverage fn type_acc =
   let counts = ServerCoverageMetric.count_exprs fn type_acc in
   ClientCoverageMetric.go ~json:false (Some (Leaf counts))
 
-let handle_mode mode filename tcopt files_contents files_info errors ai_results =
+let handle_mode mode filename tcopt files_contents files_info errors =
   match mode with
   | Ai _ -> ()
   | Autocomplete ->
@@ -358,7 +364,7 @@ let handle_mode mode filename tcopt files_contents files_info errors ai_results 
           print_coverage fn type_acc;
         end
       end files_info
-  | DumpSymbolInfo ->
+  | Dump_symbol_info ->
       begin match Relative_path.Map.get filename files_info with
         | Some fileinfo ->
             let raw_result =
@@ -385,8 +391,12 @@ let handle_mode mode filename tcopt files_contents files_info errors ai_results 
         exit 2
       end
       else Printf.printf "No lint errors\n"
+  | Dump_deps ->
+    Relative_path.Map.iter begin fun _ fileinfo ->
+      ignore @@ Typing_check_utils.check_defs tcopt fileinfo
+    end files_info;
+    Typing_deps.dump_deps stdout
   | Suggest
-  | NoBuiltins
   | Errors ->
       let errors = Relative_path.Map.fold begin fun _ fileinfo errors ->
         errors @ Typing_check_utils.check_defs tcopt fileinfo
@@ -401,67 +411,56 @@ let handle_mode mode filename tcopt files_contents files_info errors ai_results 
 (* Main entry point *)
 (*****************************************************************************)
 
-let main_hack { filename; mode; } =
+let decl_and_run_mode {filename; mode; no_builtins} =
+  if mode = Dump_deps then Typing_deps.debug_trace := true;
+  let builtins = if no_builtins then "" else builtins in
+  let filename = Relative_path.create Relative_path.Dummy filename in
+  let files_contents = file_to_files filename in
+  let tcopt = TypecheckerOptions.default in
+
+  let errors, files_info = Errors.do_ begin fun () ->
+    let parsed_files =
+      Relative_path.Map.mapi Parser_hack.program files_contents in
+    let parsed_builtins = Parser_hack.program builtins_filename builtins in
+    let parsed_files =
+      Relative_path.Map.add builtins_filename parsed_builtins parsed_files
+    in
+
+    let files_info =
+      Relative_path.Map.mapi begin fun fn parsed_file ->
+        let {Parser_hack.file_mode; comments; ast} = parsed_file in
+        Parser_heap.ParserHeap.add fn ast;
+        let funs, classes, typedefs, consts = Ast_utils.get_defs ast in
+        { FileInfo.
+          file_mode; funs; classes; typedefs; consts; comments;
+          consider_names_just_for_autoload = false }
+      end parsed_files in
+
+    Relative_path.Map.iter begin fun fn fileinfo ->
+      let {FileInfo.funs; classes; typedefs; consts; _} = fileinfo in
+      NamingGlobal.make_env ~funs ~classes ~typedefs ~consts
+    end files_info;
+
+    Relative_path.Map.iter begin fun fn _ ->
+      Typing_decl.make_env tcopt fn
+    end files_info;
+
+    files_info
+  end in
+  handle_mode mode filename tcopt files_contents files_info errors
+
+let main_hack ({filename; mode; no_builtins;} as opts) =
   Sys_utils.signal Sys.sigusr1
     (Sys.Signal_handle Typing.debug_print_last_pos);
   EventLogger.init (Daemon.devnull ()) 0.0;
   SharedMem.(init default_config);
   let tmp_hhi = Path.concat Path.temp_dir_name "hhi" in
   Hhi.set_hhi_root_for_unit_test tmp_hhi;
-  let outer_do f = match mode with
-    | Ai ai_options ->
-        let ai_results, inner_results =
-          Ai.do_ Typing_check_utils.check_defs filename ai_options in
-        ai_results, inner_results
-    | _ ->
-        let inner_results = f () in
-        [], inner_results
-  in
-  let builtins = what_builtins mode in
-  let filename = Relative_path.create Relative_path.Dummy filename in
-  let files_contents = file_to_files filename in
-  let tcopt = TypecheckerOptions.default in
-
-  let ai_results, (errors, files_info) =
-    outer_do begin fun () ->
-      Errors.do_ begin fun () ->
-        let parsed_files =
-          Relative_path.Map.mapi Parser_hack.program files_contents in
-        let parsed_builtins = Parser_hack.program builtins_filename builtins in
-        let parsed_files =
-          Relative_path.Map.add builtins_filename parsed_builtins parsed_files
-        in
-
-        let files_info =
-          Relative_path.Map.mapi begin fun fn parsed_file ->
-            let {Parser_hack.file_mode; comments; ast} = parsed_file in
-            Parser_heap.ParserHeap.add fn ast;
-            let funs, classes, typedefs, consts = Ast_utils.get_defs ast in
-            { FileInfo.
-              file_mode; funs; classes; typedefs; consts; comments;
-              consider_names_just_for_autoload = false }
-          end parsed_files in
-
-        Relative_path.Map.iter begin fun fn fileinfo ->
-          let {FileInfo.funs; classes; typedefs; consts; _} = fileinfo in
-          NamingGlobal.make_env ~funs ~classes ~typedefs ~consts
-        end files_info;
-
-        let all_classes =
-          Relative_path.Map.fold begin fun fn {FileInfo.classes; _} acc ->
-            List.fold_left ~f: begin fun acc (_, cname) ->
-              SMap.add cname (Relative_path.Set.singleton fn) acc
-            end ~init: acc classes
-          end files_info SMap.empty in
-
-        Relative_path.Map.iter begin fun fn _ ->
-          Typing_decl.make_env tcopt all_classes fn
-        end files_info;
-
-        files_info
-      end
-    end in
-  handle_mode mode filename tcopt files_contents files_info errors ai_results
+  match mode with
+  | Ai ai_options ->
+    Ai.do_ Typing_check_utils.check_defs filename ai_options
+  | _ ->
+    decl_and_run_mode opts
 
 (* command line driver *)
 let _ =

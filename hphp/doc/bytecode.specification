@@ -200,7 +200,7 @@ documented much here. See class.h.
 Closures
 --------
 
-Closures are implemented in hhbc as subclassses of Closure, in conjunction with
+Closures are implemented in hhbc as subclasses of Closure, in conjunction with
 the CreateCl opcode. It is legal hhbc to create other subclasses of Closure (to
 represent user code that attempts to do the same), but attempting to
 instantiate one will result in a fatal error. The documentation of the CreateCl
@@ -244,7 +244,7 @@ the result is wrapped into a succeeded StaticWaitHandle and returned to the
 caller. If an exception is thrown, it is wrapped into a failed StaticWaitHandle
 and returned to the caller. Otherwise, if an Await opcode was reached and the
 provided child WaitHandle has not finished, the current execution state is
-suspended into an AsyncFunctionWaitHandle object and retured to the caller.
+suspended into an AsyncFunctionWaitHandle object and returned to the caller.
 This mechanism allows fast execution if no blocking asynchronous operation was
 reached.
 
@@ -680,10 +680,8 @@ other FPI region. An FPI region may not contain backward jumps, nor may it
 contain forward jumps that jump past the end of the FPI region.
 
 Each function has an "FPI region table". Each row in the FPI region table
-consists of the starting offset of the FPI region (the bytecode offset
-immediately following the FPush* instruction), the ending offset of the FPI
-region (the bytecode offset of the FCall* instruction), and the number of
-parameters being passed.
+consists of offset of the FPush* instruction that begins the region, the FCall
+instruction that ends the region, and the number of parameters being passed.
 
 
 Flavor descriptors
@@ -1043,6 +1041,12 @@ NewArray <capacity hint>    []  ->  [C:Arr]
 NewMixedArray <capacity hint>    []  ->  [C:Arr]
 
   New array in mixed mode, with a capacity hint. Creates a new array and pushes
+  it onto the stack. The implementation may make use of the hint in %1 to
+  pre-size the array. The hint %1 must be greater than or equal to 0.
+
+NewDictArray <capacity hint>    []  ->  [C:Arr]
+
+  New array in dict mode, with a capacity hint. Creates a new array and pushes
   it onto the stack. The implementation may make use of the hint in %1 to
   pre-size the array. The hint %1 must be greater than or equal to 0.
 
@@ -3478,9 +3482,6 @@ variable-length vector of subops, or a variable-length series of bytecodes,
 each representing a single operation. Work is underway to replace the member
 vector instructions with the smaller, simpler bytecodes.
 
-10.1 New member instructions
-----------------------------
-
 All bytecodes in this section produce and/or consume a value in the member base
 register (often referred to as MBR or just "member base"). The MBR is live
 starting after a Base* bytecode, modified by zero or more Dim* bytecodes, then
@@ -3493,32 +3494,42 @@ finally consumed by a final operation:
   Final Ops | live         | dead
 
 The bytecodes in this section also refer to member operations in section 9 to
-describe their semantics. Once the bytecodes in section 10.2 are eliminated,
-the documentation from section 9 can be folded into this section.
+describe their semantics.
 
-10.1a Base Operations
+10.1 Base Operations
 ---------------------
 
 BaseNC <stack index> <member op flags>    []  ->  []
 BaseNL <local id>    <member op flags>    []  ->  []
 
-  BaseN{C,L}{,W,D,WD} member operation, depending on the flags immediate.
+FPassBaseNC <param id> <stack index>    []  ->  []
+FPassBaseNL <param id> <local id>       []  ->  []
+
+  BaseN{C,L}{,W,D,WD} member operation, depending on the flags immediate or
+  reffiness of the specified parameter.
 
 BaseGC <stack index> <member op flags>    []  ->  []
 BaseGL <local id>    <member op flags>    []  ->  []
 
-  BaseG{C,L}{,W,D,WD} member operation, depending on the flags immediate.
+FPassBaseGC <param id> <stack index>    []  ->  []
+FPassBaseGL <param id> <local id>       []  ->  []
 
-BaseSC <stack index> <stack index>    [A C?]  ->  [C?]
-BaseSL <local id>    <stack index>    [A C?]  ->  [C?]
+  BaseG{C,L}{,W,D,WD} member operation, depending on the flags immediate or
+  reffiness of the specified parameter.
+
+BaseSC <stack index> <stack index>    [A CV?]  ->  [CV?]
+BaseSL <local id>    <stack index>    [A CV?]  ->  [CV?]
 
   BaseS{C,L} member operation. %1 gives the location of the static property
   name, and %2 gives the index of the class input. The class is consumed from
-  the stack, leaving an optional cell above the class undisturbed.
+  the stack, leaving an optional cell or var above the class undisturbed.
 
 BaseL <local id> <member op flags>    []  ->  []
 
-  Base{L,LW,LD,LWD} member operation, depending on the flags immediate.
+FPassBaseL <param id> <local id>    []  ->  []
+
+  Base{L,LW,LD,LWD} member operation, depending on the flags immediate or
+  reffiness of the specified parameter.
 
 BaseC <stack index>    []  ->  []
 BaseR <stack index>    []  ->  []
@@ -3529,7 +3540,7 @@ BaseH    []  ->  []
 
   BaseH member operation.
 
-10.1b Intermediate operations
+10.2 Intermediate operations
 -----------------------------
 
 DimL   <local id>    <prop/elem op> <member op flags>    []  ->  []
@@ -3537,248 +3548,68 @@ DimC   <stack index> <prop/elem op> <member op flags>    []  ->  []
 DimInt <int64>       <prop/elem op> <member op flags>    []  ->  []
 DimStr <litstr id>   <prop/elem op> <member op flags>    []  ->  []
 
-  {Prop,Elem}{L,C,I,T}{W,D,WD,U} member operation, depending on the prop/elem
-  op and flags immediates.
+FPassDimL   <param id> <local id>    <prop/elem op>    []  ->  []
+FPassDimC   <param id> <stack index> <prop/elem op>    []  ->  []
+FPassDimInt <param id> <int64>       <prop/elem op>    []  ->  []
+FPassDimStr <param id> <litstr id>   <prop/elem op>    []  ->  []
 
-10.1c Final operations
+  {Prop,Elem}{L,C,I,T}{W,D,WD,U} member operation, depending on the prop/elem
+  op and flags immediates or reffiness of the specified parameter.
+
+DimNewElem <member op flags>    []  ->  []
+
+FPassDimNewElem <param id>    []  ->  []
+
+  Fatal error or NewElem operation, depending on the flags immediate or
+  reffiness of the specified parameter.
+
+10.3 Final operations
 ----------------------
 
 All final operations take a <stack count> immediate as %0, which indicates the
 number of member keys on the eval stack that must be consumed before pushing
 the final result, if any.
 
-QueryML   <stack count> <query op> <prop/elem op> <local id>    [...]  ->  [C]
-QueryMC   <stack count> <query op> <prop/elem op>               [...]  ->  [C]
-QueryMInt <stack count> <query op> <prop/elem op> <int64>       [...]  ->  [C]
-QueryMStr <stack count> <query op> <prop/elem op> <litstr id>   [...]  ->  [C]
+QueryM <stack count> <query op> <member key>    [...]  ->  [C]
 
-  {CGet,Isset,Empty}{Prop,Elem}{L,C,I,T} member operation, depending on the
-  query op and prop/elem op immediates.
+  {CGet,Isset,Empty}{Prop,Elem}{L,C,I,T} member operation.
 
-SetML   <stack count> <prop/elem op> <local id>     [... C]  ->  [C]
-SetMC   <stack count> <prop/elem op>                [... C]  ->  [C]
-SetMInt <stack count> <prop/elem op> <int64>        [... C]  ->  [C]
-SetMStr <stack count> <prop/elem op> <litstr id>    [... C]  ->  [C]
+VGetM <stack count> <member key>    [...]  ->  [V]
 
-  Set{Prop,Elem}{L,C,I,T} member operation, depending on the prop/elem op
-  immediate.
+  {VGet}{Prop,Elem}{L,C,I,T} or VGetNewElem member operation.
 
-SetMNewElem <stack count>
+FPassM <param id> <stack count> <member key>    [...]  ->  [V]
 
-  SetNewElem member operation.
+  {CGet,VGet}{Prop,Elem}{L,C,I,T} or VGetNewElem, member operation, depending
+  on the reffiness of the specified parameter.
 
-10.2 Legacy member instructions
--------------------------------
+SetM <stack count> <member key>    [... C]  ->  [C]
 
-The member codes that represent immediate literal data (ET, EI, PT) are
-implemented using the corresponding EC or PC intermediate operation: they
-behave exactly as though that literal data had been pushed on the stack as a
-cell, then consumed by an ElemC* or PropC* operation.
+  Set{Prop,Elem}{L,C,I,T} or SetNewElem member operation.
 
-CGetM <loc-desc/M-vector>    [C..C]  ->  [C]
+IncDecM <stack count> <op> <member key>    [...]  ->  [C]
 
-  Get member as cell.
+  IncDec{Prop,Elem}{L,C,I,T} or IncDecNewElem member operation.
 
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+----------
-    C          | BaseC      EC     | ElemCW       | CGetElemC
-    R          | BaseR      PC     | PropCW       | CGetPropC
-    L          | BaseLW     EL     | ElemLW       | CGetElemL
-    NC         | BaseNCW    PL     | PropLW       | CGetPropL
-    NL         | BaseNLW    W      | N/A          | N/A
-    GC         | BaseGCW
-    GL         | BaseGLW
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
+SetOpM <stack count> <op> <member key>    [... C]  ->  [C]
 
-VGetM <loc-desc/M-vector>    [C..C]  ->  [V]
+  SetOp{Prop,Elem}{L,C,I,T} or SetOpNewElem member operation.
 
-  Get member as ref.
+BindM <stack count> <member key>    [... V]  ->  [V]
 
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+------------
-    C          | BaseC      EC     |  ElemCD      | VGetElemC
-    R          | BaseR      PC     |  PropCD      | VGetPropC
-    L          | BaseLD     EL     |  ElemLD      | VGetElemL
-    NC         | BaseNCD    PL     |  PropLD      | VGetPropL
-    NL         | BaseNLD    W      |  NewElem     | VGetNewElem
-    GC         | BaseGCD
-    GL         | BaseGLD
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
+  Bind{Prop,Elem}{L,C,I,T} or BindNewElem member operation.
 
-FPassM <param id> <loc-desc/M-vector>    [C..C]  ->  [F]
+UnsetM <stack count> <member key>    [...]  ->  []
 
-  FPI pass parameter. This instruction behaves as CGetM if parameter %1 is pass
-  by value, or it behaves like VGetM if parameter %1 is pass by reference. Then
-  it passes the value produced to the callee.
+  Unset{Prop,Elem}{L,C,I,T} member operation.
 
-IssetM <loc-desc/M-vector>    [C..C]  ->  [C:Bool]
+SetWithRefLML <local id> <local id>    []  ->  []
 
-  Isset member.
+  Set member %1, preserving reffiness of value in %2.
 
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+-----------
-    C          | BaseC      EC     | ElemC        | IssetElemC
-    R          | BaseR      PC     | PropC        | IssetPropC
-    L          | BaseL      EL     | ElemL        | IssetElemL
-    NC         | BaseNC     PL     | PropL        | IssetPropL
-    NL         | BaseNL     W      | N/A          | N/A
-    GC         | BaseGC
-    GL         | BaseGL
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
+SetWithRefRML <local id>    [R]  ->  []
 
-EmptyM <loc-desc/M-vector>    [C..C]  ->  [C:Bool]
-
-  Empty member.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+-----------
-    C          | BaseC      EC     | ElemC        | EmptyElemC
-    R          | BaseR      PC     | PropC        | EmptyPropC
-    L          | BaseL      EL     | ElemL        | EmptyElemL
-    NC         | BaseNC     PL     | PropL        | EmptyPropL
-    NL         | BaseNL     W      | N/A          | N/A
-    GC         | BaseGC
-    GL         | BaseGL
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
-SetM <loc-desc/M-vector>    [C..C C]  ->  [C]
-
-  Set member.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+-----------
-    C          | BaseC      EC     | ElemCD       | SetElemC
-    R          | BaseR      PC     | PropCD       | SetPropC
-    L          | BaseLD     EL     | ElemLD       | SetElemL
-    NC         | BaseNCD    PL     | PropLD       | SetPropL
-    NL         | BaseNLD    W      | NewElem      | SetNewElem
-    GC         | BaseGCD
-    GL         | BaseGLD
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
-SetWithRefLM <loc-desc/M-vector> <local variable id> [C..C] -> []
-
-  Set member preserving the reffiness of the local.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+-----------
-    C          | BaseC      EC     | ElemCD       | SetWithRefElemC
-    R          | BaseR      PC     | PropCD       | SetPropC
-    L          | BaseLD     EL     | ElemLD       | SetWithRefElemL
-    NC         | BaseNCD    PL     | PropLD       | SetPropL
-    NL         | BaseNLD    W      | NewElem      | SetWithRefNewElem
-    GC         | BaseGCD
-    GL         | BaseGLD
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
-SetWithRefRM <loc-desc/M-vector> [C..C R] -> []
-
-  Set member preserving the reffiness of the stack element.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+-----------
-    C          | BaseC      EC     | ElemCD       | SetWithRefElemC
-    R          | BaseR      PC     | PropCD       | SetPropC
-    L          | BaseLD     EL     | ElemLD       | SetWithRefElemL
-    NC         | BaseNCD    PL     | PropLD       | SetPropL
-    NL         | BaseNLD    W      | NewElem      | SetWithRefNewElem
-    GC         | BaseGCD
-    GL         | BaseGLD
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
-SetOpM <op> <loc-desc/M-vector>    [C..C C]  ->  [C]
-
-  Set op member.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+-------------
-    C          | BaseC      EC     | ElemCWD      | SetOpElemC
-    R          | BaseR      PC     | PropCWD      | SetOpPropC
-    L          | BaseLWD    EL     | ElemLWD      | SetOpElemL
-    NC         | BaseNCWD   PL     | PropLWD      | SetOpPropL
-    NL         | BaseNLWD   W      | NewElem      | SetOpNewElem
-    GC         | BaseGCWD
-    GL         | BaseGLWD
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
-IncDecM <op> <loc-desc/M-vector>    [C..C]  ->  [C]
-
-  Increment/decrement member.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+--------------
-    C          | BaseC      EC     | ElemCWD      | IncDecElemC
-    R          | BaseR      PC     | PropCWD      | IncDecPropC
-    L          | BaseLWD    EL     | ElemLWD      | IncDecElemL
-    NC         | BaseNCWD   PL     | PropLWD      | IncDecPropL
-    NL         | BaseNLWD   W      | NewElem      | IncDecNewElem
-    GC         | BaseGCWD
-    GL         | BaseGLWD
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
-BindM <loc-desc/M-vector>    [C..C V]  ->  [V]
-
-  Bind member.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+------------
-    C          | BaseC      EC     | ElemCD       | BindElemC
-    R          | BaseR      PC     | PropCD       | BindPropC
-    L          | BaseLD     EL     | ElemLD       | BindElemL
-    NC         | BaseNCD    PL     | PropLD       | BindPropL
-    NL         | BaseNLD    W      | NewElem      | BindNewElem
-    GC         | BaseGCD
-    GL         | BaseGLD
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
-UnsetM <loc-desc/M-vector>    [C..C]  ->  []
-
-  Unset member.
-
-    location     Base*      member   intermediate   final
-    descriptor   operation  code     operation      operation
-    -----------+----------  -------+--------------+-----------
-    C          | BaseC      EC     | ElemCU       | UnsetElemC
-    R          | BaseR      PC     | PropCU       | UnsetPropC
-    L          | BaseL      EL     | ElemLU       | UnsetElemL
-    NC         | BaseNC     PL     | PropLU       | UnsetPropL
-    NL         | BaseNL     W      | N/A          | N/A
-    GC         | BaseGC
-    GL         | BaseGL
-    SC         | BaseSC
-    SL         | BaseSL
-    H          | BaseH
-
+  Set member %1, preserving reffiness of stack input.
 
 11. Iterator instructions
 -------------------------

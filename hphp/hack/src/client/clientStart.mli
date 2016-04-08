@@ -10,8 +10,8 @@
 
 type env = {
   root: Path.t;
-  wait: bool;
   no_load: bool;
+  silent: bool;
 }
 
 val main : env -> Exit_status.t

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | (c) Copyright IBM Corporation 2015                                   |
+   | (c) Copyright IBM Corporation 2015-2016                              |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -23,16 +23,16 @@
 
 namespace ppc64_asm {
 
-struct Dissasembler {
+struct Disassembler {
  public:
-  Dissasembler()
+  Disassembler()
    : print_encoding_(false)
    , print_address_(false)
    , indent_level_(0)
    , color_(nullptr)
    {}
 
-  Dissasembler(bool print_enc,
+  Disassembler(bool print_enc,
      bool print_addr, int indent_level, std::string color)
    : print_encoding_(print_enc)
    , print_address_(print_addr)
@@ -40,9 +40,9 @@ struct Dissasembler {
    , color_(color)
    {}
 
-  ~Dissasembler() {}
+  ~Disassembler() {}
 
-  void dissasembly(std::ostream& out, uint8_t* instr);
+  void disassembly(std::ostream& out, uint8_t* instr);
 
  private:
   bool print_encoding_;

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -156,7 +156,7 @@ PhysReg forceAlloc(const SSATmp& tmp) {
 // a known DataType only get one register. Assign "wide" locations when
 // possible (when all uses and defs can be wide). These will be assigned
 // SIMD registers later.
-void assignRegs(IRUnit& unit, Vunit& vunit, irlower::IRLS& state,
+void assignRegs(const IRUnit& unit, Vunit& vunit, irlower::IRLS& state,
                 const BlockList& blocks) {
   // visit instructions to find tmps eligible to use SIMD registers
   auto const try_wide = RuntimeOption::EvalHHIRAllocSIMDRegs;
@@ -227,9 +227,9 @@ void getEffects(const Abi& abi, const Vinstr& i,
       defs = abi.all() - (abi.calleeSaved | rvmfp());
 
       switch (arch()) {
-      case Arch::ARM: defs.add(PhysReg(arm::rLinkReg)); break;
-      case Arch::X64: break;
-      case Arch::PPC64: break;
+        case Arch::ARM: defs |= PhysReg(arm::rLinkReg); break;
+        case Arch::X64: break;
+        case Arch::PPC64: break;
       }
       break;
 
@@ -240,9 +240,9 @@ void getEffects(const Abi& abi, const Vinstr& i,
     case Vinstr::callphp:
       defs = abi.all();
       switch (arch()) {
-      case Arch::ARM: break;
-      case Arch::X64: defs.remove(rvmtl()); break;
-      case Arch::PPC64: break;
+        case Arch::ARM: break;
+        case Arch::X64: defs -= rvmtl(); break;
+        case Arch::PPC64: break;
       }
       break;
 
@@ -250,9 +250,9 @@ void getEffects(const Abi& abi, const Vinstr& i,
     case Vinstr::contenter:
       defs = abi.all() - RegSet(rvmfp());
       switch (arch()) {
-      case Arch::ARM: break;
-      case Arch::X64: defs.remove(rvmtl()); break;
-      case Arch::PPC64: break;
+        case Arch::ARM: break;
+        case Arch::X64: defs -= rvmtl(); break;
+        case Arch::PPC64: break;
       }
       break;
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -156,7 +156,11 @@ void FixupMap::fixup(ExecutionContext* ec) const {
     // Start looking for fixup entries at the current (C++) frame.  This
     // will walk the frames upward until we find a TC frame.
     DECLARE_FRAME_POINTER(framePtr);
-    fixupWork(ec, framePtr);
+    // In order to avoid tail call elimination optimization issues, grab the
+    // parent frame pointer in order make sure this pointer is valid. The
+    // fixupWork() looks for a TC frame, and we never call fixup() directly
+    // from the TC, so skipping this frame isn't a problem.
+    fixupWork(ec, framePtr->m_sfp);
   }
 }
 

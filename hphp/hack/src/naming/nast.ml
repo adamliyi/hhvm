@@ -8,8 +8,6 @@
  *
  *)
 
-open Utils
-
 module SN = Naming_special_names
 
 type id = Pos.t * Ident.t
@@ -41,7 +39,7 @@ module ShapeField = struct
 
 end
 
-module ShapeMap = MyMap(ShapeField)
+module ShapeMap = MyMap.Make (ShapeField)
 
 type hint = Pos.t * hint_
 and hint_ =
@@ -207,6 +205,7 @@ and fun_ = {
 }
 
 and typedef = {
+  t_pos : Pos.t;
   t_tparams : tparam list;
   t_constraint : hint option;
   t_kind : hint;
@@ -287,6 +286,7 @@ and expr_ =
   | Id of sid
   | Lvar of id
   | Lplaceholder of Pos.t
+  | Dollardollar of id
   | Fun_id of sid
   | Method_id of expr * pstring
   (* meth_caller('Class name', 'method name') *)
@@ -317,6 +317,8 @@ and expr_ =
   | Cast of hint * expr
   | Unop of Ast.uop * expr
   | Binop of Ast.bop * expr * expr
+  (** The ID of the $$ that is implicitly declared by this pipe. *)
+  | Pipe of id * expr * expr
   | Eif of expr * expr option * expr
   | NullCoalesce of expr * expr
   | InstanceOf of expr * class_id

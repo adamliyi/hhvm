@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -228,7 +228,7 @@ String HHVM_FUNCTION(serialize, const Variant& value) {
       sb.append(';');
       return sb.detach();
     }
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString: {
       StringData *str = value.getStringData();
       StringBuffer sb;
@@ -404,7 +404,7 @@ int64_t extract_impl(VRefParam vref_array,
       }
       int count = 0;
       for (ArrayIter iter(arr); iter; ++iter) {
-        String name = iter.first();
+        auto name = iter.first().toString();
         if (!modify_extract_name(varEnv, name, extract_type, prefix)) continue;
         // The const_cast is safe because we escalated the array.  We can't use
         // arr.lvalAt(name), because arr may have been modified as a side
@@ -425,7 +425,7 @@ int64_t extract_impl(VRefParam vref_array,
 
   int count = 0;
   for (ArrayIter iter(carr); iter; ++iter) {
-    String name = iter.first();
+    auto name = iter.first().toString();
     if (!modify_extract_name(varEnv, name, extract_type, prefix)) continue;
     g_context->setVar(name.get(), iter.secondRef().asTypedValue());
     ++count;

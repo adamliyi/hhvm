@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -19,6 +19,8 @@
 #define incl_HPHP_EXT_COLLECTION_H_
 
 #include "hphp/runtime/ext/extension.h"
+#include "hphp/runtime/ext/collections/ext_collections.h"
+#include "hphp/runtime/ext/collections/ext_collections-pair.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/collections.h"
 #include "hphp/runtime/base/mixed-array-defs.h"
@@ -48,28 +50,16 @@ namespace HPHP {
 
 namespace collections{
 void deepCopy(TypedValue*);
-class PairIterator;
-class VectorIterator;
-class MapIterator;
-class SetIterator;
-}
-
-/*
- * All native collection class have their m_size field at the same
- * offset in the object.
- */
-constexpr ptrdiff_t FAST_COLLECTION_SIZE_OFFSET = use_lowptr ? 16 : 24;
-inline size_t getCollectionSize(const ObjectData* od) {
-  assert(od->isCollection());
-  return *reinterpret_cast<const uint32_t*>(
-    reinterpret_cast<const char*>(od) + FAST_COLLECTION_SIZE_OFFSET
-  );
+struct PairIterator;
+struct VectorIterator;
+struct MapIterator;
+struct SetIterator;
 }
 
 /**
  * Called by the JIT on an emitVectorSet().
  */
-class c_Vector;
+struct c_Vector;
 void triggerCow(c_Vector* vec);
 ArrayIter getArrayIterHelper(const Variant& v, size_t& sz);
 
@@ -90,8 +80,7 @@ ATTRIBUTE_NORETURN void throwOOB(int64_t key);
 // class BaseVector: encapsulates functionality that is common to both
 // c_Vector and c_ImmVector. It doesn't map to any PHP-land class.
 
-class BaseVector : public ExtCollectionObjectData {
- public:
+struct BaseVector : ExtCollectionObjectData {
   void t___construct(const Variant& iterable = null_variant);
 
   // ConstCollection
@@ -497,16 +486,16 @@ class BaseVector : public ExtCollectionObjectData {
     // For performance, all native collection classes have their m_size field
     // at the same offset.
     static_assert(
-      offsetof(BaseVector, m_size) == FAST_COLLECTION_SIZE_OFFSET, "");
+      offsetof(BaseVector, m_size) == collections::FAST_SIZE_OFFSET, "");
   }
 
   // Friends
 
-  friend class collections::VectorIterator;
-  friend class BaseMap;
-  friend class BaseSet;
-  friend class c_Pair;
-  friend class c_AwaitAllWaitHandle;
+  friend struct collections::VectorIterator;
+  friend struct BaseMap;
+  friend struct BaseSet;
+  friend struct c_Pair;
+  friend struct c_AwaitAllWaitHandle;
 
   friend void collections::deepCopy(TypedValue*);
 
@@ -517,8 +506,7 @@ class BaseVector : public ExtCollectionObjectData {
 ///////////////////////////////////////////////////////////////////////////////
 // class Vector
 
-class c_Vector : public BaseVector {
- public:
+struct c_Vector : BaseVector {
   DECLARE_CLASS_NO_SWEEP(Vector)
 
  public:
@@ -593,16 +581,15 @@ class c_Vector : public BaseVector {
   friend void collections::append(ObjectData* obj, TypedValue* val);
   friend void triggerCow(c_Vector* vec);
 
-  friend class BaseMap;
-  friend class c_Pair;
-  friend class ArrayIter;
+  friend struct BaseMap;
+  friend struct c_Pair;
+  friend struct ArrayIter;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 // class ImmVector
 
-class c_ImmVector : public BaseVector {
- public:
+struct c_ImmVector : BaseVector {
   DECLARE_CLASS_NO_SWEEP(ImmVector)
 
  public:
@@ -648,8 +635,8 @@ class c_ImmVector : public BaseVector {
 
   static c_ImmVector* Clone(ObjectData* obj);
 
-  friend class c_Vector;
-  friend class c_Pair;
+  friend struct c_Vector;
+  friend struct c_Pair;
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -1247,7 +1234,7 @@ struct HashCollection : ExtCollectionObjectData {
  * It doesn't represent any PHP-land class; that job is delegated to its
  * c_-prefixed child classes.
  */
-class BaseMap : public HashCollection {
+struct BaseMap : HashCollection {
  protected:
   ATTRIBUTE_NORETURN static void throwOOB(int64_t key);
   ATTRIBUTE_NORETURN static void throwOOB(StringData* key);
@@ -1365,19 +1352,19 @@ class BaseMap : public HashCollection {
  private:
   friend void collections::deepCopy(TypedValue*);
 
-  friend class collections::MapIterator;
-  friend class c_Vector;
-  friend class c_Map;
-  friend class c_ImmMap;
-  friend class ArrayIter;
-  friend class c_AwaitAllWaitHandle;
-  friend class c_GenMapWaitHandle;
+  friend struct collections::MapIterator;
+  friend struct c_Vector;
+  friend struct c_Map;
+  friend struct c_ImmMap;
+  friend struct ArrayIter;
+  friend struct c_AwaitAllWaitHandle;
+  friend struct c_GenMapWaitHandle;
 
   static void compileTimeAssertions() {
     // For performance, all native collection classes have their m_size field
     // at the same offset.
     static_assert(offsetof(BaseMap, m_size)
-                  == FAST_COLLECTION_SIZE_OFFSET, "");
+                  == collections::FAST_SIZE_OFFSET, "");
   }
 
  protected:
@@ -1507,8 +1494,7 @@ class BaseMap : public HashCollection {
 ///////////////////////////////////////////////////////////////////////////////
 // class Map
 
-class c_Map : public BaseMap {
- public:
+struct c_Map : BaseMap {
   DECLARE_CLASS_NO_SWEEP(Map)
 
  public:
@@ -1557,15 +1543,14 @@ class c_Map : public BaseMap {
  protected:
   Object getImmutableCopy();
 
-  friend class BaseMap;
-  friend class c_ImmMap;
+  friend struct BaseMap;
+  friend struct c_ImmMap;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 // class ImmMap
 
-class c_ImmMap : public BaseMap {
- public:
+struct c_ImmMap : BaseMap {
   DECLARE_CLASS_NO_SWEEP(ImmMap)
 
  public:
@@ -1601,8 +1586,8 @@ class c_ImmMap : public BaseMap {
   Object t_immutable();
   String t___tostring();
 
-  friend class BaseMap;
-  friend class c_Map;
+  friend struct BaseMap;
+  friend struct c_Map;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1611,8 +1596,7 @@ class c_ImmMap : public BaseMap {
  * BaseSet is a hash-table implementation of the Set ADT. It doesn't represent
  * any PHP-land class. That job is delegated to its c_-prefixed child classes.
  */
-class BaseSet : public HashCollection {
- public:
+struct BaseSet : HashCollection {
   void addAllKeysOf(Cell container);
   void addAll(const Variant& t);
 
@@ -1826,24 +1810,24 @@ class BaseSet : public HashCollection {
 
  private:
 
-  friend class collections::SetIterator;
-  friend class c_Vector;
-  friend class c_Set;
-  friend class c_Map;
-  friend class ArrayIter;
+  friend struct collections::SetIterator;
+  friend struct c_Vector;
+  friend struct c_Set;
+  friend struct c_Map;
+  friend struct ArrayIter;
 
   static void compileTimeAssertions() {
     // For performance, all native collection classes have their m_size field
     // at the same offset.
-    static_assert(offsetof(BaseSet, m_size) == FAST_COLLECTION_SIZE_OFFSET, "");
+    static_assert(offsetof(BaseSet, m_size) ==
+                  collections::FAST_SIZE_OFFSET, "");
   }
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 // class Set
 
-class c_Set : public BaseSet {
- public:
+struct c_Set : BaseSet {
   DECLARE_CLASS_NO_SWEEP(Set)
 
  public:
@@ -1898,8 +1882,7 @@ class c_Set : public BaseSet {
 ///////////////////////////////////////////////////////////////////////////////
 // class ImmSet
 
-class c_ImmSet : public BaseSet {
- public:
+struct c_ImmSet : BaseSet {
   DECLARE_CLASS_NO_SWEEP(ImmSet)
 
  public:
@@ -1939,184 +1922,6 @@ class c_ImmSet : public BaseSet {
     : c_ImmSet(cls, cap) { }
 
   static c_ImmSet* Clone(ObjectData* obj);
-};
-
-///////////////////////////////////////////////////////////////////////////////
-// class Pair
-
-class c_Pair : public ExtObjectDataFlags<ObjectData::IsCollection|
-                                         ObjectData::UseGet|
-                                         ObjectData::UseSet|
-                                         ObjectData::UseIsset|
-                                         ObjectData::UseUnset|
-                                         ObjectData::HasClone|
-                                         ObjectData::NoDestructor> {
- public:
-  DECLARE_CLASS_NO_SWEEP(Pair)
-
- public:
-  enum class NoInit {};
-
-  explicit c_Pair(Class* cls = c_Pair::classof())
-    : ExtObjectDataFlags(cls, HeaderKind::Pair)
-    , m_size(2)
-  {
-    tvWriteNull(&elm0);
-    tvWriteNull(&elm1);
-  }
-  explicit c_Pair(NoInit, Class* cls = c_Pair::classof())
-    : ExtObjectDataFlags(cls, HeaderKind::Pair)
-    , m_size(0)
-  {}
-
-  void reserve(int64_t sz) { assertx(sz == 2); }
-  ~c_Pair();
-  void t___construct(int _argc, const Array& _argv = null_array);
-  bool t_isempty();
-  int64_t t_count();
-  Object t_items();
-  Object t_keys();
-  Object t_values();
-  Object t_lazy();
-  Variant t_at(const Variant& key);
-  Variant t_get(const Variant& key);
-  bool t_containskey(const Variant& key);
-  Array t_toarray();
-  Array t_tokeysarray();
-  Array t_tovaluesarray();
-  DECLARE_KEYEDITERABLE_MATERIALIZE_METHODS();
-  Object t_getiterator();
-  int64_t t_linearsearch(const Variant& search_value);
-  Object t_map(const Variant& callback);
-  Object t_mapwithkey(const Variant& callback);
-  Object t_filter(const Variant& callback);
-  Object t_filterwithkey(const Variant& callback);
-  Object t_zip(const Variant& iterable);
-  Object t_take(const Variant& n);
-  Object t_takewhile(const Variant& callback);
-  Object t_skip(const Variant& n);
-  Object t_skipwhile(const Variant& fn);
-  Object t_slice(const Variant& start, const Variant& len);
-  Object t_concat(const Variant& iterable);
-  Variant t_firstvalue();
-  Variant t_firstkey();
-  Variant t_lastvalue();
-  Variant t_lastkey();
-  DECLARE_COLLECTION_MAGIC_METHODS();
-  Object t_immutable();
-  String t___tostring();
-
-  ATTRIBUTE_NORETURN static void throwOOB(int64_t key);
-
-  /**
-   * Most methods that operate on Pairs can safely assume that all Pairs have
-   * two elements that have been initialized. However, methods that deal with
-   * initializing and destructing Pairs needs to handle intermediate states
-   * where one or both of the elements is uninitialized.
-   */
-  bool isFullyConstructed() const {
-    return m_size == 2;
-  }
-
-  TypedValue* at(int64_t key) {
-    assert(isFullyConstructed());
-    if (UNLIKELY(uint64_t(key) >= uint64_t(2))) {
-      throwOOB(key);
-      return NULL;
-    }
-    return &getElms()[key];
-  }
-  TypedValue* get(int64_t key) {
-    assert(isFullyConstructed());
-    if (uint64_t(key) >= uint64_t(2)) {
-      return NULL;
-    }
-    return &getElms()[key];
-  }
-  void initAdd(const TypedValue* val) {
-    assert(!isFullyConstructed());
-    assert(val->m_type != KindOfRef);
-    cellDup(*val, getElms()[m_size]);
-    ++m_size;
-  }
-  void initAdd(const Variant& val) {
-    initAdd(val.asCell());
-  }
-  bool contains(int64_t key) const {
-    assert(isFullyConstructed());
-    return (uint64_t(key) < uint64_t(2));
-  }
-
-  Array toArrayImpl() const;
-
-  static c_Pair* Clone(ObjectData* obj);
-  static bool ToBool(const ObjectData* obj) {
-    assertx(obj->getVMClass() == c_Pair::classof());
-    assertx(static_cast<const c_Pair*>(obj)->isFullyConstructed());
-    return true;
-  }
-  static Array ToArray(const ObjectData* obj);
-  template <bool throwOnMiss>
-  static TypedValue* OffsetAt(ObjectData* obj, const TypedValue* key) {
-    assertx(key->m_type != KindOfRef);
-    auto pair = static_cast<c_Pair*>(obj);
-    assertx(pair->isFullyConstructed());
-    if (key->m_type == KindOfInt64) {
-      return throwOnMiss ? pair->at(key->m_data.num)
-                         : pair->get(key->m_data.num);
-    }
-    throwBadKeyType();
-    return nullptr;
-  }
-  static bool OffsetIsset(ObjectData* obj, const TypedValue* key);
-  static bool OffsetEmpty(ObjectData* obj, const TypedValue* key);
-  static bool OffsetContains(ObjectData* obj, const TypedValue* key);
-  static bool Equals(const ObjectData* obj1, const ObjectData* obj2);
-
-  int64_t size() const {
-    assert(isFullyConstructed());
-    return 2;
-  }
-
-  TypedValue* initForUnserialize() {
-    m_size = 2;
-    elm0.m_type = KindOfNull;
-    elm1.m_type = KindOfNull;
-    return getElms();
-  }
-
-  static constexpr uint32_t dataOffset() { return offsetof(c_Pair, elm0); }
-
- private:
-  ATTRIBUTE_NORETURN static void throwBadKeyType();
-
-#ifndef USE_LOWPTR
-  // Add 4 bytes here to keep m_size aligned the same way as in BaseVector and
-  // HashCollection.
-  UNUSED uint32_t dummy;
-#endif
-  uint32_t m_size;
-
-  TypedValue elm0;
-  TypedValue elm1;
-
-  TypedValue* getElms() { return &elm0; }
-  const TypedValue* getElms() const { return &elm0; }
-
-  int getVersion() const { return 0; }
-
-  friend void collections::deepCopy(TypedValue*);
-  friend class collections::PairIterator;
-  friend class c_Vector;
-  friend class BaseVector;
-  friend class BaseMap;
-  friend class ArrayIter;
-
-  static void compileTimeAssertions() {
-    // For performance, all native collection classes have their m_size field
-    // at the same offset.
-    static_assert(offsetof(c_Pair, m_size) == FAST_COLLECTION_SIZE_OFFSET, "");
-  }
 };
 
 ///////////////////////////////////////////////////////////////////////////////

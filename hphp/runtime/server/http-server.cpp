@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,7 +21,6 @@
 #include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/memory-manager.h"
-#include "hphp/runtime/base/pprof-server.h"
 #include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/init-fini-node.h"
@@ -131,11 +130,7 @@ HttpServer::HttpServer()
     auto info = RuntimeOption::SatelliteServerInfos[i];
     auto satellite(SatelliteServer::Create(info));
     if (satellite) {
-      if (info->getType() == SatelliteServer::Type::KindOfDanglingPageServer) {
-        m_danglings.push_back(std::move(satellite));
-      } else {
-        m_satellites.push_back(std::move(satellite));
-      }
+      m_satellites.push_back(std::move(satellite));
     }
   }
 
@@ -178,7 +173,7 @@ HttpServer::HttpServer()
   }
 }
 
-// Synchronously stop satellites and start danglings
+// Synchronously stop satellites
 void HttpServer::onServerShutdown() {
   InitFiniNode::ServerFini();
 
@@ -187,32 +182,21 @@ void HttpServer::onServerShutdown() {
     Logger::Info("debugger server stopped");
   }
 
-  XboxServer::Stop();
-
   // When a new instance of HPHP has taken over our page server socket,
-  // stop our admin server and satellites so it can acquire those ports.
+  // stop our admin server and satellites so it can acquire those
+  // ports.
+  if (RuntimeOption::AdminServerPort) {
+    m_adminServer->stop();
+  }
   for (unsigned int i = 0; i < m_satellites.size(); i++) {
     std::string name = m_satellites[i]->getName();
     m_satellites[i]->stop();
     Logger::Info("satellite server %s stopped", name.c_str());
   }
+  XboxServer::Stop();
   if (RuntimeOption::AdminServerPort) {
-    m_adminServer->stop();
     m_adminServer->waitForEnd();
     Logger::Info("admin server stopped");
-  }
-
-  // start dangling servers, so they can serve old version of pages
-  for (unsigned int i = 0; i < m_danglings.size(); i++) {
-    std::string name = m_danglings[i]->getName();
-    try {
-      m_danglings[i]->start();
-      Logger::Info("dangling server %s started", name.c_str());
-    } catch (Exception &e) {
-      Logger::Error("Unable to start danglings server %s: %s",
-                    name.c_str(), e.getMessage().c_str());
-      // it's okay not able to start them
-    }
   }
 }
 
@@ -243,8 +227,6 @@ HttpServer::~HttpServer() {
 }
 
 void HttpServer::runOrExitProcess() {
-  StartTime = time(0);
-
   auto startupFailure = [] (const std::string& msg) {
     Logger::Error(msg);
     Logger::Error("Shutting down due to failure(s) to bind in "
@@ -263,6 +245,8 @@ void HttpServer::runOrExitProcess() {
     }
     Logger::Info("page server started");
   }
+
+  StartTime = time(nullptr);
 
   if (RuntimeOption::AdminServerPort) {
     if (!startServer(false)) {
@@ -286,16 +270,6 @@ void HttpServer::runOrExitProcess() {
     }
   }
 
-  if (RuntimeOption::HHProfServerEnabled) {
-    try {
-      HeapProfileServer::Server = std::make_shared<HeapProfileServer>();
-    } catch (FailedToListenException &e) {
-      startupFailure("Unable to start profiling server");
-      not_reached();
-    }
-    Logger::Info("profiling server started");
-  }
-
   if (!Eval::Debugger::StartServer()) {
     startupFailure("Unable to start debugger server");
     not_reached();
@@ -311,7 +285,8 @@ void HttpServer::runOrExitProcess() {
     createPid();
     Lock lock(this);
     BootTimer::done();
-    // continously running until /stop is received on admin server
+    // continously running until /stop is received on admin server, or
+    // takeover is requested.
     while (!m_stopped) {
       wait();
     }
@@ -323,27 +298,13 @@ void HttpServer::runOrExitProcess() {
       Logger::Info("page server killed");
       return;
     }
-    Logger::Info("page server stopped");
   }
 
-  onServerShutdown(); // dangling server already started here
-  time_t t0 = time(0);
   if (RuntimeOption::ServerPort) {
+    Logger::Info("stopping page server");
     m_pageServer->stop();
   }
-  time_t t1 = time(0);
-  if (!m_danglings.empty() && RuntimeOption::ServerDanglingWait > 0) {
-    int elapsed = t1 - t0;
-    if (RuntimeOption::ServerDanglingWait > elapsed) {
-      sleep(RuntimeOption::ServerDanglingWait - elapsed);
-    }
-  }
-
-  for (unsigned int i = 0; i < m_danglings.size(); i++) {
-    m_danglings[i]->stop();
-    Logger::Info("dangling server %s stopped",
-                 m_danglings[i]->getName().c_str());
-  }
+  onServerShutdown();
 
   waitForServers();
   m_watchDog.waitForEnd();
@@ -358,9 +319,6 @@ void HttpServer::waitForServers() {
   if (RuntimeOption::AdminServerPort) {
     m_adminServer->waitForEnd();
   }
-  if (RuntimeOption::HHProfServerEnabled) {
-    HeapProfileServer::Server.reset();
-  }
   // all other servers invoke waitForEnd on stop
 }
 
@@ -374,10 +332,18 @@ static void exit_on_timeout(int sig) {
 
 void HttpServer::stop(const char* stopReason) {
   if (m_stopped) return;
+  // we're shutting down flush http logs
+  Logger::FlushAll();
+  HttpRequestHandler::GetAccessLog().flushAllWriters();
 
-  if (RuntimeOption::ServerGracefulShutdownWait) {
+  int totalWait =
+    RuntimeOption::ServerPreShutdownWait +
+    RuntimeOption::ServerShutdownListenWait +
+    RuntimeOption::ServerGracefulShutdownWait;
+
+  if (totalWait > 0) {
     signal(SIGALRM, exit_on_timeout);
-    alarm(RuntimeOption::ServerGracefulShutdownWait);
+    alarm(totalWait);
   }
 
   Lock lock(this);
@@ -387,6 +353,9 @@ void HttpServer::stop(const char* stopReason) {
 }
 
 void HttpServer::stopOnSignal(int sig) {
+  // we're shutting down flush http logs
+  Logger::FlushAll();
+  HttpRequestHandler::GetAccessLog().flushAllWriters();
   // Signal to the main server thread to exit immediately if
   // we want to die on SIGTERM
   if (RuntimeOption::ServerKillOnSIGTERM && sig == SIGTERM) {

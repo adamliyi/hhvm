@@ -8,7 +8,7 @@
  *
  *)
 
-open Utils
+open Core
 open Typing_defs
 
 module Env = Typing_env
@@ -115,7 +115,7 @@ end
  * traverses the type by going inside Tunresolved *)
 class virtual tunresolved_type_mapper = object(this)
   method on_tunresolved env r tyl: result =
-    let env, tyl = lmap (this#on_type) env tyl in
+    let env, tyl = List.map_env env tyl (this#on_type) in
     env, (r, Tunresolved tyl)
 
   method virtual on_type : env -> locl ty -> result
@@ -125,7 +125,7 @@ end
  * type.
  * NOTE: by default it doesn't to anything to Tvars. Include one of the mixins
  * below to specify how you want to treat type variables. *)
-class deep_type_mapper =  object(this)
+class deep_type_mapper = object(this)
   inherit shallow_type_mapper
   inherit! tunresolved_type_mapper
 
@@ -147,7 +147,7 @@ class deep_type_mapper =  object(this)
     let env, fields = IMap.map_env (this#on_type) env fields in
     env, (r, Tarraykind (AKtuple fields))
   method! on_ttuple env r tyl =
-    let env, tyl = lmap this#on_type env tyl in
+    let env, tyl = List.map_env env tyl this#on_type in
     env, (r, Ttuple tyl)
   method! on_toption env r ty =
     let env, ty = this#on_type env ty in
@@ -156,7 +156,7 @@ class deep_type_mapper =  object(this)
     let on_param env (name, ty) =
       let env, ty = this#on_type env ty in
       env, (name, ty) in
-    let env, params = lmap on_param env ft.ft_params in
+    let env, params = List.map_env env ft.ft_params on_param in
     let env, ret = this#on_type env ft.ft_ret in
     let env, arity = match ft.ft_arity with
       | Fvariadic (min, (p_n, p_ty)) ->
@@ -176,14 +176,14 @@ class deep_type_mapper =  object(this)
           let env, cstr = this#on_opt_type env cstr in
           env, (r, Tabstract (AKgeneric (x, super), cstr))
       | AKnewtype (x, tyl) ->
-          let env, tyl = lmap this#on_type env tyl in
+          let env, tyl = List.map_env env tyl this#on_type in
           let env, cstr = this#on_opt_type env cstr in
           env, (r, Tabstract (AKnewtype (x, tyl), cstr))
       | _ ->
           let env, cstr = this#on_opt_type env cstr in
           env, (r, Tabstract (ak, cstr))
   method! on_tclass env r x tyl =
-    let env, tyl = lmap this#on_type env tyl in
+    let env, tyl = List.map_env env tyl this#on_type in
     env, (r, Tclass (x, tyl))
   method! on_tshape env r fields_known fdm =
     let env, fdm = Nast.ShapeMap.map_env this#on_type env fdm in
@@ -209,7 +209,7 @@ class virtual tvar_expanding_type_mapper = object(this)
 end
 
 (* Mixin that maps across the type inside the typevar, and then changes
- * it's value to the result. *)
+ * its value to the result. *)
 class virtual tvar_substituting_type_mapper = object(this)
   method on_tvar ((env, seen) : env) (r : Reason.t) n =
     let env, ty = Env.get_type env r n in

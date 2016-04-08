@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -78,6 +78,7 @@
 #define ALWAYS_INLINE      inline __attribute__((__always_inline__))
 #define EXTERNALLY_VISIBLE __attribute__((__externally_visible__))
 #define FLATTEN            __attribute__((__flatten__))
+#define INLINE_FLATTEN     inline __attribute__((__always_inline__,__flatten__))
 #define NEVER_INLINE       __attribute__((__noinline__))
 #define UNUSED             __attribute__((__unused__))
 #endif
@@ -223,10 +224,9 @@
 # include "hphp/util/portability/glob.h"
 # include "hphp/util/portability/rand_r.h"
 # include "hphp/util/portability/strfmon.h"
-# include "hphp/util/portability/strptime.h"
 #endif
 
-#if defined(_MSC_VER) && _MSC_FULL_VER <= 190023419 // 2015 Update 1 RC or below
+#if defined(_MSC_VER) && _MSC_FULL_VER <= 190023506 // 2015 Update 1 or below
 // MSVC2015 has an issue with getting function pointers to templated functions
 // if the expected result type isn't auto. Unfortunately, when I made the
 // initial bug report, I oversimplified the use-case, and, while the case I

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -32,7 +32,7 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class Array;
+struct Array;
 struct Variant;
 
 /**
@@ -52,8 +52,7 @@ using CookieList = std::vector<std::pair<std::string, std::string>>;
  * Note that one transport object is created for each request, and
  * one transport is ONLY accessed from one single thread.
  */
-class Transport : public IDebuggable {
-public:
+struct Transport : IDebuggable {
   enum class Method {
     Unknown,
 
@@ -151,9 +150,9 @@ public:
   /**
    * POST request's data.
    */
-  virtual const void *getPostData(int &size) = 0;
+  virtual const void *getPostData(size_t &size) = 0;
   virtual bool hasMorePostData() { return false; }
-  virtual const void *getMorePostData(int &size) { size = 0; return nullptr; }
+  virtual const void *getMorePostData(size_t &size) { size = 0;return nullptr; }
   virtual bool getFiles(std::string &files) { return false; }
   /**
    * Is this a GET, POST or anything?
@@ -170,7 +169,7 @@ public:
   /**
    * Get http request size.
    */
-  virtual int getRequestSize() const;
+  virtual size_t getRequestSize() const;
 
   /**
    * Get request header(s).
@@ -215,8 +214,9 @@ public:
    * Set cookie response header.
    */
   bool setCookie(const String& name, const String& value, int64_t expire = 0,
-                 const String& path = "", const String& domain = "", bool secure = false,
-                 bool httponly = false, bool encode_url = true);
+                 const String& path = "", const String& domain = "",
+                 bool secure = false, bool httponly = false,
+                 bool encode_url = true);
 
   /**
    * Add/remove a response header.
@@ -428,8 +428,8 @@ protected:
    * token's start char * addresses in ParamMaps. Therefore, this entire
    * process is very efficient without excessive string copying.
    */
-  typedef hphp_hash_map<const char*, std::vector<const char*>,
-                        cstr_hash, eqstr> ParamMap;
+  using ParamMap = hphp_hash_map<const char*, std::vector<const char*>,
+                                 cstr_hash, eqstr>;
 
   // timers
   timespec m_queueTime;

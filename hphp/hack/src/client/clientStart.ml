@@ -21,8 +21,8 @@ let get_hhserver () =
 
 type env = {
   root: Path.t;
-  wait: bool;
   no_load : bool;
+  silent : bool;
 }
 
 let start_server env =
@@ -45,13 +45,10 @@ let start_server env =
        * it doesn't, and shouldn't, use it. *)
       [| "--waiting-client"; string_of_int (Handle.get_handle out_fd) |]
     ] in
-  Printf.eprintf "Server launched with the following command:\n\t%s\n%!"
-    (String.concat " "
-       (Array.to_list (Array.map Filename.quote hh_server_args)));
-
-  let rec wait_loop () =
-    let msg = input_line ic in
-    if env.wait && msg <> "ready" then wait_loop () in
+  if not env.silent then
+    Printf.eprintf "Server launched with the following command:\n\t%s\n%!"
+      (String.concat " "
+         (Array.to_list (Array.map Filename.quote hh_server_args)));
 
   try
     let server_pid =
@@ -60,31 +57,32 @@ let start_server env =
 
     match Unix.waitpid [] server_pid with
     | _, Unix.WEXITED 0 ->
-        wait_loop ();
-        close_in ic
+      assert (input_line ic = ServerMonitorUtils.ready);
+      close_in ic
     | _, Unix.WEXITED i ->
-        Printf.fprintf stderr
-          "Starting hh_server failed. Exited with status code: %d!\n" i;
-        exit 77
+      Printf.eprintf
+        "Starting hh_server failed. Exited with status code: %d!\n" i;
+      exit 77
     | _ ->
-        Printf.fprintf stderr "Could not start hh_server!\n";
-        exit 77
+      Printf.eprintf "Could not start hh_server!\n";
+      exit 77
   with _ ->
-    Printf.fprintf stderr "Could not start hh_server!\n";
+    Printf.eprintf "Could not start hh_server!\n";
     exit 77
 
 
 let should_start env =
   let root_s = Path.to_string env.root in
   match ServerUtils.connect_to_monitor
-    env.root HhServerMonitorConfig.Program.name with
+    env.root HhServerMonitorConfig.Program.hh_server with
   | Result.Ok _conn -> false
   | Result.Error
       ( SMUtils.Server_missing
       | SMUtils.Build_id_mismatched
       | SMUtils.Server_died
       ) -> true
-  | Result.Error SMUtils.Server_busy ->
+  | Result.Error SMUtils.Server_busy
+  | Result.Error SMUtils.Monitor_connection_failure ->
     Printf.eprintf "Replacing unresponsive server for %s\n%!" root_s;
     ClientStop.kill_server env.root;
     true

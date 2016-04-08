@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -46,7 +46,6 @@
 #include "hphp/runtime/ext/std/ext_std_function.h"
 #include "hphp/runtime/ext/std/ext_std_misc.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
-#include "hphp/system/constants.h"
 #include "hphp/util/process.h"
 
 namespace HPHP {
@@ -75,9 +74,9 @@ const int64_t k_ASSERT_EXCEPTION   = 6;
 
 struct OptionData final : RequestEventHandler {
   void requestInit() override {
-    assertActive = 0;
+    assertActive = 1;
     assertException = 0;
-    assertWarning = 0;
+    assertWarning = 1;
     assertBail = 0;
     assertQuietEval = false;
   }
@@ -104,11 +103,11 @@ IMPLEMENT_STATIC_REQUEST_LOCAL(OptionData, s_option_data);
 
 void StandardExtension::requestInitOptions() {
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
-    "assert.active", "0", &s_option_data->assertActive);
+    "assert.active", "1", &s_option_data->assertActive);
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
     "assert.exception", "0", &s_option_data->assertException);
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
-    "assert.warning", "0", &s_option_data->assertWarning);
+    "assert.warning", "1", &s_option_data->assertWarning);
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
     "assert.bail", "0", &s_option_data->assertBail);
 }
@@ -240,7 +239,7 @@ static Variant impl_assert(const Variant& assertion,
     if (message.isObject()) {
       Object exn = message.toObject();
       if (exn.instanceof(SystemLib::s_AssertionErrorClass)) {
-        throw exn;
+        throw_object(exn);
       }
     }
 

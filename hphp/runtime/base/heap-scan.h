@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -29,10 +29,12 @@
 #include "hphp/runtime/base/apc-local-array.h"
 #include "hphp/runtime/base/apc-local-array-defs.h"
 #include "hphp/runtime/base/thread-info.h"
-#include "hphp/runtime/vm/globals-array.h"
 #include "hphp/runtime/base/rds-header.h"
 #include "hphp/runtime/base/imarker.h"
 #include "hphp/runtime/base/memory-manager.h"
+#include "hphp/runtime/base/req-root.h"
+#include "hphp/runtime/base/heap-graph.h"
+#include "hphp/runtime/vm/globals-array.h"
 #include "hphp/runtime/ext/extension-registry.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/server/server-note.h"
@@ -60,6 +62,7 @@ template<class F> void scanHeader(const Header* h, F& mark) {
     case HeaderKind::Struct:
       return h->struct_.scan(mark);
     case HeaderKind::Mixed:
+    case HeaderKind::Dict:
       return h->mixed_.scan(mark);
     case HeaderKind::Apc:
       return h->apc_.scan(mark);
@@ -72,11 +75,12 @@ template<class F> void scanHeader(const Header* h, F& mark) {
     case HeaderKind::Vector:
     case HeaderKind::Map:
     case HeaderKind::Set:
-    case HeaderKind::Pair:
     case HeaderKind::ImmVector:
     case HeaderKind::ImmMap:
     case HeaderKind::ImmSet:
       return h->obj_.scan(mark);
+    case HeaderKind::Pair:
+      return h->pair_.scan(mark);
     case HeaderKind::Resource:
       return h->res_.data()->scan(mark);
     case HeaderKind::Ref:
@@ -157,7 +161,7 @@ template<class F> void scan_ezc_resources(F& mark) {
 #endif
 }
 
-template<class F> void ExtendedException::scan(F& mark) const {
+template<class F> void req::root_handle::scan(F& mark) const {
   ExtMarker<F> bridge(mark);
   vscan(bridge);
 }
@@ -206,14 +210,14 @@ template<class F> void scanRds(F& mark, rds::Header* rds) {
   auto markSection = [&](folly::Range<const char*> r) {
     mark(r.begin(), r.size());
   };
-  mark.where("rds-normal");
+  mark.where(RootKind::RdsNormal);
   markSection(rds::normalSection());
-  mark.where("rds-local");
+  mark.where(RootKind::RdsLocal);
   markSection(rds::localSection());
-  mark.where("rds-persistent");
+  mark.where(RootKind::RdsPersistent);
   markSection(rds::persistentSection());
   // php stack TODO #6509338 exactly scan the php stack.
-  mark.where("php-stack");
+  mark.where(RootKind::PhpStack);
   auto stack_end = (TypedValue*)rds->vmRegs.stack.getStackHighAddress();
   auto sp = rds->vmRegs.stack.top();
   mark(sp, (stack_end - sp) * sizeof(*sp));
@@ -248,7 +252,7 @@ void MemoryManager::scanRootMaps(F& m) const {
       scan(root.second, m);
     }
   }
-  for (const auto& root : m_exceptionRoots) {
+  for (const auto root : m_root_handles) {
     root->scan(m);
   }
 }
@@ -257,9 +261,11 @@ template<class F>
 void ThreadLocalManager::scan(F& mark) const {
   auto list = getList(pthread_getspecific(m_key));
   if (!list) return;
+  // Skip MemoryManager. TODO(9923909): Type-specific scan, cf. NativeData.
+  auto mm = (void*)&MM();
   for (auto p = list->head; p != nullptr;) {
     auto node = static_cast<ThreadLocalNode<void>*>(p);
-    if (node->m_p) mark(node->m_p, node->m_size);
+    if (node->m_p && node->m_p != mm) mark(node->m_p, node->m_size);
     p = node->m_next;
   }
 }
@@ -272,21 +278,21 @@ template<class F> void scanRoots(F& mark) {
   }
   // ExecutionContext
   if (!g_context.isNull()) {
-    mark.where("g_context");
+    mark.where(RootKind::ExecutionContext);
     g_context->scan(mark);
   }
   // ThreadInfo
-  mark.where("ThreadInfo");
+  mark.where(RootKind::ThreadInfo);
   if (!ThreadInfo::s_threadInfo.isNull()) {
     TI().scan(mark);
   }
   // C++ stack
-  mark.where("cpp-stack");
+  mark.where(RootKind::CppStack);
   CALLEE_SAVED_BARRIER(); // ensure stack contains callee-saved registers
   auto sp = stack_top_ptr();
   mark(sp, s_stackLimit + s_stackSize - uintptr_t(sp));
   // C++ threadlocal data, but don't scan MemoryManager
-  mark.where("cpp-tdata");
+  mark.where(RootKind::CppTls);
   auto tdata = getCppTdata(); // tdata = { ptr, size }
   if (tdata.second > 0) {
     auto tm = (char*)tdata.first;
@@ -297,28 +303,28 @@ template<class F> void scanRoots(F& mark) {
     mark(tm, mm - tm);
     mark(mm_end, tm_end - mm_end);
   }
-  // ThreadLocal nodes
-  mark.where("ThreadLocalManager");
+  // ThreadLocal nodes (but skip MemoryManager)
+  mark.where(RootKind::ThreadLocalManager);
   ThreadLocalManager::GetManager().scan(mark);
   // Extension thread locals
-  mark.where("extensions");
+  mark.where(RootKind::Extensions);
   ExtMarker<F> xm(mark);
   ExtensionRegistry::scanExtensions(xm);
   // Root maps
-  mark.where("rootmaps");
+  mark.where(RootKind::RootMaps);
   MM().scanRootMaps(mark);
   // treat sweep lists as roots until we are ready to test what happens
   // when we start calling various sweep() functions early.
-  mark.where("sweeplists");
+  mark.where(RootKind::SweepLists);
   MM().scanSweepLists(mark);
   // these have rogue thread_local stuff
   if (auto asio = AsioSession::Get()) {
-    mark.where("AsioSession");
+    mark.where(RootKind::AsioSession);
     asio->scan(mark);
   }
-  mark.where("get_server_note");
+  mark.where(RootKind::GetServerNote);
   get_server_note()->scan(mark);
-  mark.where("ezc resources");
+  mark.where(RootKind::EzcResources);
   scan_ezc_resources(mark);
 }
 

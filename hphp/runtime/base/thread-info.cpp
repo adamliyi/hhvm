@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -180,7 +180,6 @@ size_t check_request_surprise() {
   auto const flags = fetchAndClearSurpriseFlags();
   auto const do_timedout = (flags & TimedOutFlag) && !p.getDebuggerAttached();
   auto const do_memExceeded = flags & MemExceededFlag;
-  auto const do_memThreshold = flags & MemThresholdFlag;
   auto const do_signaled = flags & SignaledFlag;
   auto const do_cpuTimedOut =
     (flags & CPUTimedOutFlag) && !p.getDebuggerAttached();
@@ -214,20 +213,10 @@ size_t check_request_surprise() {
       pendingException = generate_memory_exceeded_exception();
     }
   }
-  if (do_memThreshold) {
-    clearSurpriseFlag(MemThresholdFlag);
-    if (!g_context->m_memThresholdCallback.isNull()) {
-      VMRegAnchor _;
-      try {
-        vm_call_user_func(g_context->m_memThresholdCallback, empty_array());
-      } catch (Object& ex) {
-        raise_error("Uncaught exception escaping mem Threshold callback: %s",
-                    ex.toString().data());
-      }
-    }
-  }
   if (do_GC) {
-    VMRegAnchor _;
+    if (StickyFlags & PendingGCFlag) {
+      clearSurpriseFlag(PendingGCFlag);
+    }
     if (RuntimeOption::EvalEnableGC) {
       MM().collect("surprise");
     } else {

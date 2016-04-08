@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -41,6 +41,7 @@
 #include "hphp/runtime/vm/native-prop-handler.h"
 
 #include <functional>
+#include <boost/algorithm/string/predicate.hpp>
 
 namespace HPHP {
 
@@ -466,12 +467,8 @@ Array HHVM_FUNCTION(type_structure,
   if (!cns_sd) {
     auto name = cls_or_obj.toString();
 
-    auto ne = NamedEntity::get(name.get(), /* allowCreate = */ false);
-    if (!ne) {
-      raise_error("Non-existent type alias %s", name.get()->data());
-    }
+    auto const typeAlias = Unit::loadTypeAlias(name.get());
 
-    auto const typeAlias = ne->getCachedTypeAlias();
     if (!typeAlias) {
       raise_error("Non-existent type alias %s", name.get()->data());
     }
@@ -520,7 +517,8 @@ String HHVM_FUNCTION(hphp_get_original_class_name, const String& name) {
   return cls->nameStr();
 }
 
-Object Reflection::AllocReflectionExceptionObject(const Variant& message) {
+ATTRIBUTE_NORETURN
+void Reflection::ThrowReflectionExceptionObject(const Variant& message) {
   Object inst{s_ReflectionExceptionClass};
   TypedValue ret;
   g_context->invokeFunc(&ret,
@@ -528,7 +526,7 @@ Object Reflection::AllocReflectionExceptionObject(const Variant& message) {
                         make_packed_array(message),
                         inst.get());
   tvRefcountedDecRef(&ret);
-  return inst;
+  throw_object(inst);
 }
 
 
@@ -684,6 +682,16 @@ static Array get_function_param_info(const Func* func) {
       )
     ) {
       param.set(s_type_hint_builtin, true_varNR);
+      // If we are in <?php and in PHP 7 mode w.r.t. scalar types, then we want
+      // the types to come back as PHP 7 style scalar types, not HH\ style
+      // scalar types.
+      if (!(func->unit()->isHHFile() || RuntimeOption::EnableHipHopSyntax) &&
+          RuntimeOption::PHP7_ScalarTypes &&
+          boost::starts_with(typeHint->toCppString(), "HH\\")) {
+        String no_hh_type_hint(typeHint->toCppString());
+        no_hh_type_hint = no_hh_type_hint.substr(3);
+        param.set(s_type_hint, no_hh_type_hint);
+      }
     } else {
       param.set(s_type_hint_builtin, false_varNR);
     }
@@ -800,6 +808,14 @@ static Array HHVM_METHOD(ReflectionFunctionAbstract, getRetTypeInfo) {
       )
     ) {
       retTypeInfo.set(s_type_hint_builtin, true_varNR);
+      // If we are in <?php and in PHP 7 mode w.r.t. scalar types, then we want
+      // the types to come back as PHP 7 style scalar types, not HH\ style
+      // scalar types.
+      if (!(func->unit()->isHHFile() || RuntimeOption::EnableHipHopSyntax) &&
+          RuntimeOption::PHP7_ScalarTypes &&
+          boost::starts_with(name.toCppString(), "HH\\")) {
+          name = name.substr(3);
+      }
     } else {
       retTypeInfo.set(s_type_hint_builtin, false_varNR);
     }
@@ -818,7 +834,7 @@ static Array get_function_user_attributes(const Func* func) {
 
   ArrayInit ai(userAttrs.size(), ArrayInit::Mixed{});
   for (auto it = userAttrs.begin(); it != userAttrs.end(); ++it) {
-    ai.set(String(StrNR(it->first)).toKey(), tvAsCVarRef(&it->second));
+    ai.set(VarNR::MakeKey(String(StrNR(it->first))), tvAsCVarRef(&it->second));
   }
   return ai.toArray();
 }
@@ -1536,21 +1552,21 @@ static String HHVM_METHOD(ReflectionClass, getConstructorName) {
 }
 
 void ReflectionClassHandle::wakeup(const Variant& content, ObjectData* obj) {
-    if (!content.isString()) {
-      throw Exception("Native data of ReflectionClass should be a class name");
-    }
+  if (!content.isString()) {
+    throw Exception("Native data of ReflectionClass should be a class name");
+  }
 
-    String clsName = content.toString();
-    String result = init(clsName);
-    if (result.empty()) {
-      auto msg = folly::format("Class {} does not exist", clsName).str();
-      throw Reflection::AllocReflectionExceptionObject(String(msg));
-    }
+  String clsName = content.toString();
+  String result = init(clsName);
+  if (result.empty()) {
+    auto msg = folly::format("Class {} does not exist", clsName).str();
+    Reflection::ThrowReflectionExceptionObject(String(msg));
+  }
 
-    // It is possible that $name does not get serialized. If a class derives
-    // from ReflectionClass and the return value of its __sleep() function does
-    // not contain 'name', $name gets ignored. So, we restore $name here.
-    obj->o_set(s_name, result);
+  // It is possible that $name does not get serialized. If a class derives
+  // from ReflectionClass and the return value of its __sleep() function does
+  // not contain 'name', $name gets ignored. So, we restore $name here.
+  obj->o_set(s_name, result);
 }
 
 static Variant reflection_extension_name_get(const Object& this_) {
@@ -1759,10 +1775,8 @@ const StaticString s_ReflectionTypeAliasHandle("ReflectionTypeAliasHandle");
 // helper for __construct:
 // caller throws exception when return value is false
 static bool HHVM_METHOD(ReflectionTypeAlias, __init, const String& name) {
-  auto ne = NamedEntity::get(name.get(), /* allowCreate = */ false);
-  if (!ne) return false;
+  auto const typeAliasReq = Unit::loadTypeAlias(name.get());
 
-  auto const typeAliasReq = ne->getCachedTypeAlias();
   if (!typeAliasReq) return false;
 
   ReflectionTypeAliasHandle::Get(this_)->setTypeAliasReq(typeAliasReq);
@@ -1798,8 +1812,7 @@ static Array HHVM_METHOD(ReflectionTypeAlias, getAttributes) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-class ReflectionExtension final : public Extension {
- public:
+struct ReflectionExtension final : Extension {
   ReflectionExtension() : Extension("reflection", "$Id$") { }
   void moduleInit() override {
     HHVM_FE(hphp_create_object);

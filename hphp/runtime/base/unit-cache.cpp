@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -38,7 +38,6 @@
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/file-stream-wrapper.h"
-#include "hphp/runtime/base/profile-dump.h"
 #include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/server/source-root-info.h"
@@ -98,24 +97,29 @@ CachedUnit lookupUnitRepoAuth(const StringData* path) {
     return acc->second;
   }
 
-  /*
-   * Insert path.  Find the Md5 for this path, and then the unit for
-   * this Md5.  If either aren't found we return the
-   * default-constructed cache entry.
-   *
-   * NB: we're holding the CHM lock on this bucket while we're doing
-   * this.
-   */
-  MD5 md5;
-  if (!Repo::get().findFile(path->data(),
-                            RuntimeOption::SourceRoot,
-                            md5)) {
-    return acc->second;
-  }
+  try {
+    /*
+     * Insert path.  Find the Md5 for this path, and then the unit for
+     * this Md5.  If either aren't found we return the
+     * default-constructed cache entry.
+     *
+     * NB: we're holding the CHM lock on this bucket while we're doing
+     * this.
+     */
+    MD5 md5;
+    if (!Repo::get().findFile(path->data(),
+                              RuntimeOption::SourceRoot,
+                              md5)) {
+      return acc->second;
+    }
 
-  acc->second.unit = Repo::get().loadUnit(path->data(), md5).release();
-  if (acc->second.unit) {
-    acc->second.rdsBitId = rds::allocBit();
+    acc->second.unit = Repo::get().loadUnit(path->data(), md5).release();
+    if (acc->second.unit) {
+      acc->second.rdsBitId = rds::allocBit();
+    }
+  } catch (...) {
+    s_repoUnitCache.erase(acc);
+    throw;
   }
   return acc->second;
 }
@@ -425,7 +429,6 @@ const std::string mangleUnitPHP7Options() {
 std::string mangleUnitMd5(const std::string& fileMd5) {
   std::string t = fileMd5 + '\0'
     + (RuntimeOption::EvalEmitSwitch ? '1' : '0')
-    + (RuntimeOption::EvalEmitNewMInstrs ? '1' : '0')
     + (RuntimeOption::EnableHipHopExperimentalSyntax ? '1' : '0')
     + (RuntimeOption::EnableHipHopSyntax ? '1' : '0')
     + (RuntimeOption::EnableXHP ? '1' : '0')

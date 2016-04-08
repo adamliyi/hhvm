@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -13,6 +13,8 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+
+#include "hphp/runtime/vm/jit/code-gen-helpers.h"
 
 #include "hphp/runtime/base/countable.h"
 #include "hphp/runtime/base/datatype.h"
@@ -38,6 +40,7 @@
 #include "hphp/util/immed.h"
 #include "hphp/util/low-ptr.h"
 #include "hphp/util/ringbuffer.h"
+#include "hphp/util/thread-local.h"
 #include "hphp/util/trace.h"
 
 namespace HPHP { namespace jit {
@@ -166,7 +169,7 @@ void emitIncRefWork(Vout& v, Vreg data, Vreg type) {
   });
 }
 
-void emitDecRefObj(Vout& v, Vreg obj) {
+void emitDecRefWorkObj(Vout& v, Vreg obj) {
   auto const shouldRelease = v.makeReg();
   v << cmplim{1, obj[FAST_REFCOUNT_OFFSET], shouldRelease};
   ifThenElse(
@@ -316,6 +319,12 @@ void emitRB(Vout& v, Trace::RingBufferType t, const char* msg) {
   v << vcall{CallSpec::direct(Trace::ringbufferMsg),
              v.makeVcallArgs({{v.cns(msg), v.cns(strlen(msg)), v.cns(t)}}),
              v.makeTuple({})};
+}
+
+void emitIncStat(Vout& v, Stats::StatCounter stat, int n, bool force) {
+  if (!force && !Stats::enabled()) return;
+  intptr_t disp = uintptr_t(&Stats::tl_counters[stat]) - tlsBase();
+  v << addqim{n, Vptr{baseless(disp), Vptr::FS}, v.makeReg()};
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -33,10 +33,10 @@ BCMarker initial_marker(TransContext ctx) {
 
 //////////////////////////////////////////////////////////////////////
 
-IRGS::IRGS(TransContext context, TransFlags flags)
-  : context(context)
-  , transFlags(flags)
-  , unit(context)
+IRGS::IRGS(IRUnit& unit)
+  : context(unit.context())
+  , transFlags(unit.context().flags)
+  , unit(unit)
   , irb(new IRBuilder(unit, initial_marker(context)))
   , bcStateStack { context.srcKey() }
 {
@@ -56,7 +56,7 @@ std::string show(const IRGS& irgs) {
   const int32_t frameCells = irgen::resumed(irgs)
     ? 0
     : irgen::curFunc(irgs)->numSlotsInFrame();
-  auto const stackDepth = irgs.irb->syncedSpLevel().offset - frameCells;
+  auto const stackDepth = irgs.irb->fs().syncedSpLevel().offset - frameCells;
   assertx(stackDepth >= 0);
   auto spOffset = stackDepth;
   auto elem = [&](const std::string& str) {
@@ -139,7 +139,7 @@ std::string show(const IRGS& irgs) {
                                     : irgs.irb->localType(i, DataTypeGeneric);
     auto str = localValue ? localValue->inst()->toString()
                           : localTy.toString();
-    auto const predicted = irgs.irb->predictedLocalType(i);
+    auto const predicted = irgs.irb->fs().local(i).predictedType;
     if (predicted < localTy) str += folly::sformat(" (predict: {})", predicted);
 
     if (localTy <= TBoxedCell) {

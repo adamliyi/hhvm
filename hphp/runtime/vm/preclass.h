@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -104,7 +104,7 @@ using BuiltinDtorFunction = LowPtr<void(ObjectData*, const Class*)>;
  *
  */
 struct PreClass : AtomicCountable {
-  friend class PreClassEmitter;
+  friend struct PreClassEmitter;
 
   /////////////////////////////////////////////////////////////////////////////
   // Types.
@@ -381,6 +381,8 @@ public:
   DEF_ACCESSORS(Prop, Prop, properties, Properties)
 
 #undef DEF_ACCESSORS
+
+  const ConstMap& constantsMap() const { return m_constants; }
 
   /*
    * NativeData type declared in <<__NativeData("Type")>>.

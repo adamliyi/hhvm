@@ -88,16 +88,6 @@ module Make(S : SearchUtils.Searchable) = struct
     (* trie used to store ONLY KEYS to give a typeahead feeling for searching *)
     let trie = ref (Trie.create ())
 
-    let marshal chan =
-      Marshal.to_channel chan !removal_index [];
-      Marshal.to_channel chan !main_index [];
-      Marshal.to_channel chan !trie []
-
-    let unmarshal chan =
-      removal_index := Marshal.from_channel chan;
-      main_index := Marshal.from_channel chan;
-      trie := Marshal.from_channel chan
-
     let lookup str =
      try
        Hashtbl.find !main_index str
@@ -165,7 +155,7 @@ module Make(S : SearchUtils.Searchable) = struct
       SSet.iter (Trie.remove !trie) removed_keys
 
     let index_files fns =
-      Relative_path.Set.iter process_file fns
+      List.iter fns process_file
 
     (* Note: the score should be able to compare to the scoring in
      * Fuzzy so that the results can be merged and the ordering still

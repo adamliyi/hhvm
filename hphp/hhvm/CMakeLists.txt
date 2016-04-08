@@ -7,10 +7,14 @@ if(CYGWIN OR MSVC OR MINGW)
   list(APPEND CXX_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/embed.rc)
 endif()
 
-find_package(Gold)
+option(ENABLE_LD_GOLD "Enable Hot Linker script using ld-gold" On)
+set(SECTION_ORDERING_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../tools/oss_hot_section_ordering CACHE FILEPATH "File used by ld-gold for the relocation of sections")
+if (ENABLE_LD_GOLD)
+  find_package(Gold)
+endif()
 
-if (GOLD_FOUND)
-  SET(LINKER_SCRIPT -fuse-ld=gold -Wl,--section-ordering-file,${CMAKE_CURRENT_SOURCE_DIR}/../tools/oss_hot_section_ordering,--icf=all,--gc-sections)
+if (GOLD_FOUND AND ENABLE_LD_GOLD)
+  SET(LINKER_SCRIPT -fuse-ld=gold -Wl,--section-ordering-file,${SECTION_ORDERING_FILE},--icf=all,--gc-sections)
   add_executable(hhvm ${CXX_SOURCES})
   target_link_libraries(hhvm ${HHVM_LINK_LIBRARIES} ${LINKER_SCRIPT})
 else()
@@ -51,7 +55,7 @@ add_dependencies(hhvm systemlib)
 
 if (CMAKE_HOST_UNIX)
   add_custom_command(TARGET hhvm POST_BUILD
-    COMMAND INSTALL_DIR=${CMAKE_CURRENT_BINARY_DIR} sh "${CMAKE_CURRENT_SOURCE_DIR}/symlinks.sh"
+    COMMAND INSTALL_DIR=${CMAKE_CURRENT_BINARY_DIR} sh ${CMAKE_CURRENT_SOURCE_DIR}/symlinks.sh ${CMAKE_CURRENT_BINARY_DIR}/hhvm
     COMMENT "Creating symlinks for hhvm")
 endif()
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -34,9 +34,9 @@ namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
-class APCString;
-class Array;
-class String;
+struct APCString;
+struct Array;
+struct String;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -70,7 +70,7 @@ enum CopyStringMode { CopyString };
  *   Proxy  |        |          |    X
  */
 struct StringData {
-  friend class APCString;
+  friend struct APCString;
   friend StringData* allocFlatSmallImpl(size_t len);
   friend StringData* allocFlatSlowImpl(size_t len);
 
@@ -93,8 +93,8 @@ struct StringData {
    *
    * Most strings are created this way.
    */
-  static StringData* Make(const char* data);
-  static StringData* Make(const std::string& data);
+  static StringData* Make(folly::StringPiece);
+
   static StringData* Make(const char* data, CopyStringMode);
   static StringData* Make(const char* data, size_t len, CopyStringMode);
   static StringData* Make(const StringData* s, CopyStringMode);
@@ -538,7 +538,8 @@ ALWAYS_INLINE StringData* staticEmptyString() {
 }
 
 namespace folly {
-template<> struct FormatValue<const HPHP::StringData*> {
+template<> class FormatValue<const HPHP::StringData*> {
+ public:
   explicit FormatValue(const HPHP::StringData* str) : m_val(str) {}
 
   template<typename Callback>
@@ -551,7 +552,8 @@ template<> struct FormatValue<const HPHP::StringData*> {
   const HPHP::StringData* m_val;
 };
 
-template<> struct FormatValue<HPHP::StringData*> {
+template<> class FormatValue<HPHP::StringData*> {
+ public:
   explicit FormatValue(const HPHP::StringData* str) : m_val(str) {}
 
   template<typename Callback>

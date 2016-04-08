@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,8 +28,8 @@
 
 namespace HPHP {
 
-class Array;
-class String;
+struct Array;
+struct String;
 struct ResourceData;
 
 namespace req {
@@ -182,8 +182,7 @@ inline const ResourceHdr* safehdr(const ResourceData* data) {
  *
  * 1. If a ResourceData is entirely request-allocated, for example,
  *
- *    class EntirelyRequestAllocated : public ResourceData {
- *    public:
+ *    struct EntirelyRequestAllocated : ResourceData {
  *       int number; // primitives are allocated together with "this"
  *       String str; // request-allocated objects are fine
  *    };
@@ -198,8 +197,7 @@ inline const ResourceHdr* safehdr(const ResourceData* data) {
  *
  * 2. If a ResourceData is entirely not request allocated, for example,
  *
- *    class NonRequestAllocated : public SweepableResourceData {
- *    public:
+ *    struct NonRequestAllocated : SweepableResourceData {
  *       int number; // primitives are always not in consideration
  *       std::string str; // this has malloc() in its own
  *       std::vector<int> vec; // all STL collection classes belong here
@@ -227,8 +225,7 @@ inline const ResourceHdr* safehdr(const ResourceData* data) {
  *    no way to free up vector's memory without touching String, which is
  *    request-allocated.
  *
- *    class MixedRequestAllocated : public SweepableResourceData {
- *    public:
+ *    struct MixedRequestAllocated : SweepableResourceData {
  *       int number; // primitives are always not in consideration
  *
  *       // STL classes need to new/delete to have clean sweep
@@ -248,14 +245,8 @@ inline const ResourceHdr* safehdr(const ResourceData* data) {
  *    }
  *
  */
-class SweepableResourceData : public ResourceData, public Sweepable {
+struct SweepableResourceData : ResourceData, Sweepable {
 protected:
-  void sweep() override {
-    // ResourceData objects are globally allocated by default (see
-    // operator delete in ResourceData), so sweeping will destroy the
-    // object and deallocate its seat as well.
-    delete this;
-  }
   void* owner() override {
     return static_cast<ResourceData*>(this)->hdr();
   }

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -430,7 +430,7 @@ std::pair<int, double> tvGetSize(
       }
       break;
     }
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString: {
       StringData* str = tv->m_data.pstr;
       size += str->size();
@@ -487,7 +487,7 @@ void tvGetStrings(
       tvGetStrings((TypedValue*)cell, metrics, path, pointers);
       break;
     }
-    case HPHP::KindOfStaticString:
+    case HPHP::KindOfPersistentString:
     case HPHP::KindOfString: {
       StringData* str = tv->m_data.pstr;
 
@@ -971,8 +971,7 @@ void HHVM_FUNCTION(set_mem_threshold_callback,
 
 }
 
-class objprofExtension final : public Extension {
-public:
+struct objprofExtension final : Extension {
   objprofExtension() : Extension("objprof", "1.0") { }
 
   void moduleInit() override {

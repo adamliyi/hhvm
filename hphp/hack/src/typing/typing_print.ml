@@ -328,7 +328,9 @@ module Full = struct
     Buffer.contents buf
 
   let to_string_decl (x: decl ty) =
-    let env = Typing_env.empty TypecheckerOptions.default Relative_path.default in
+    let env =
+      Typing_env.empty TypecheckerOptions.default Relative_path.default
+        ~droot:None in
     to_string env x
 end
 
@@ -451,6 +453,11 @@ module PrintClass = struct
       | Some ce -> class_elt ce
     in ce_str^consist_str
 
+  let req_ancestors xs =
+    List.fold_left xs ~init:"" ~f:begin fun acc (_p, x) ->
+      acc ^ Full.to_string_decl x ^ ", "
+    end
+
   let class_type c =
     let tc_need_init = bool c.tc_need_init in
     let tc_members_fully_known = bool c.tc_members_fully_known in
@@ -467,7 +474,7 @@ module PrintClass = struct
     let tc_smethods = class_elt_smap_with_breaks c.tc_smethods in
     let tc_construct = constructor c.tc_construct in
     let tc_ancestors = ancestors_smap c.tc_ancestors in
-    let tc_req_ancestors = ancestors_smap c.tc_req_ancestors in
+    let tc_req_ancestors = req_ancestors c.tc_req_ancestors in
     let tc_req_ancestors_extends = sset c.tc_req_ancestors_extends in
     let tc_extends = sset c.tc_extends in
     let tc_user_attributes = user_attribute_list c.tc_user_attributes in
@@ -529,14 +536,13 @@ end
 module PrintTypedef = struct
 
   let typedef = function
-    | Typing_heap.Typedef.Error -> "[Error]"
-    | Typing_heap.Typedef.Ok (_vis, tparaml, constr_opt, ty, pos) ->
-      let tparaml_s = PrintClass.tparam_list tparaml in
-      let constr_s = match constr_opt with
+    | {td_pos; td_vis = _; td_tparams; td_constraint; td_type} ->
+      let tparaml_s = PrintClass.tparam_list td_tparams in
+      let constr_s = match td_constraint with
         | None -> "[None]"
         | Some constr -> Full.to_string_decl constr in
-      let ty_s = Full.to_string_decl ty in
-      let pos_s = PrintClass.pos pos in
+      let ty_s = Full.to_string_decl td_type in
+      let pos_s = PrintClass.pos td_pos in
       "ty: "^ty_s^"\n"^
       "tparaml: "^tparaml_s^"\n"^
       "constraint: "^constr_s^"\n"^
@@ -561,9 +567,3 @@ let class_ c = PrintClass.class_type c
 let gconst gc = Full.to_string_decl gc
 let fun_ f = PrintFun.fun_type f
 let typedef td = PrintTypedef.typedef td
-let strip_ns env phase_ty =
-  match phase_ty with
-  | Typing_defs.DeclTy type_ ->
-      full_strip_ns env type_
-  | Typing_defs.LoclTy type_ ->
-      full_strip_ns env type_

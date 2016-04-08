@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -27,7 +27,7 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class Variant;
+struct Variant;
 DECLARE_BOOST_TYPES(Expression);
 DECLARE_BOOST_TYPES(StatementList);
 DECLARE_BOOST_TYPES(IParseHandler);
@@ -37,14 +37,13 @@ DECLARE_BOOST_TYPES(ClassScope);
 DECLARE_BOOST_TYPES(FunctionScope);
 DECLARE_BOOST_TYPES(FileScope);
 
-class AstWalkerStateVec;
+struct AstWalkerStateVec;
 
-class IParseHandler {
+struct IParseHandler {
   /**
    * To avoid iteration of parse tree, we move any work that can be done
    * in parse phase into this function, so to speed up static analysis.
    */
-public:
   virtual ~IParseHandler() {}
 
   /**
@@ -113,6 +112,7 @@ public:
   x(AssignmentExpression,       Store) \
   x(SimpleVariable,              Load) \
   x(DynamicVariable,             Load) \
+  x(PipeVariable,                Load) \
   x(StaticMemberExpression,      Load) \
   x(ArrayElementExpression,      Load) \
   x(DynamicFunctionCall,         Call) \
@@ -143,9 +143,8 @@ public:
 /**
  * Base class of Expression and Statement.
  */
-class Construct : public std::enable_shared_from_this<Construct>,
-                  public JSON::CodeError::ISerializable {
-public:
+struct Construct : std::enable_shared_from_this<Construct>,
+                   JSON::CodeError::ISerializable {
   virtual ~Construct() {}
 
 #define DEC_STATEMENT_ENUM(x) KindOf##x,
@@ -339,8 +338,7 @@ protected:
   mutable int m_effectsTag;
 };
 
-class LocalEffectsContainer {
-public:
+struct LocalEffectsContainer {
   int getLocalEffects() const { return m_localEffects; }
   virtual void effectsCallback() = 0;
 protected:

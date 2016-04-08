@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -118,6 +118,7 @@ static const struct {
   { OpArray,       {None,             Stack1,       OutArrayImm     }},
   { OpNewArray,    {None,             Stack1,       OutArray        }},
   { OpNewMixedArray,  {None,          Stack1,       OutArray        }},
+  { OpNewDictArray,   {None,          Stack1,       OutArray        }},
   { OpNewLikeArrayL,  {Local,         Stack1,       OutArray        }},
   { OpNewPackedArray, {StackN,        Stack1,       OutArray        }},
   { OpNewStructArray, {StackN,        Stack1,       OutArray        }},
@@ -226,7 +227,6 @@ static const struct {
   { OpCGetG,       {Stack1,           Stack1,       OutUnknown      }},
   { OpCGetQuietG,  {Stack1,           Stack1,       OutUnknown      }},
   { OpCGetS,       {StackTop2,        Stack1,       OutUnknown      }},
-  { OpCGetM,       {MVector,          Stack1,       OutUnknown      }},
   { OpVGetL,       {Local,            Stack1|Local, OutVInputL      }},
   { OpVGetN,       {Stack1,           Stack1|Local, OutVUnknown     }},
   // TODO: In pseudo-main, the VGetG instruction invalidates what we know
@@ -235,7 +235,6 @@ static const struct {
   // analysis to deal with this properly.
   { OpVGetG,       {Stack1,           Stack1,       OutVUnknown     }},
   { OpVGetS,       {StackTop2,        Stack1,       OutVUnknown     }},
-  { OpVGetM,       {MVector,          Stack1|Local, OutVUnknown     }},
   { OpAGetC,       {Stack1,           Stack1,       OutClassRef     }},
   { OpAGetL,       {Local,            Stack1,       OutClassRef     }},
 
@@ -246,12 +245,10 @@ static const struct {
   { OpIssetN,      {Stack1,           Stack1,       OutBoolean      }},
   { OpIssetG,      {Stack1,           Stack1,       OutBoolean      }},
   { OpIssetS,      {StackTop2,        Stack1,       OutBoolean      }},
-  { OpIssetM,      {MVector,          Stack1,       OutBoolean      }},
   { OpEmptyL,      {Local,            Stack1,       OutBoolean      }},
   { OpEmptyN,      {Stack1,           Stack1,       OutBoolean      }},
   { OpEmptyG,      {Stack1,           Stack1,       OutBoolean      }},
   { OpEmptyS,      {StackTop2,        Stack1,       OutBoolean      }},
-  { OpEmptyM,      {MVector,          Stack1,       OutBoolean      }},
   { OpIsTypeC,     {Stack1|
                     DontGuardStack1,  Stack1,       OutBoolean      }},
   { OpIsTypeL,     {Local,            Stack1,       OutIsTypeL      }},
@@ -262,29 +259,22 @@ static const struct {
   { OpSetN,        {StackTop2,        Stack1|Local, OutSameAsInput  }},
   { OpSetG,        {StackTop2,        Stack1,       OutSameAsInput  }},
   { OpSetS,        {StackTop3,        Stack1,       OutSameAsInput  }},
-  { OpSetM,        {MVector|Stack1,   Stack1|Local, OutUnknown      }},
-  { OpSetWithRefLM,{MVector|Local ,   Local,        OutNone         }},
-  { OpSetWithRefRM,{MVector|Stack1,   Local,        OutNone         }},
   { OpSetOpL,      {Stack1|Local,     Stack1|Local, OutSetOp        }},
   { OpSetOpN,      {StackTop2,        Stack1|Local, OutUnknown      }},
   { OpSetOpG,      {StackTop2,        Stack1,       OutUnknown      }},
   { OpSetOpS,      {StackTop3,        Stack1,       OutUnknown      }},
-  { OpSetOpM,      {MVector|Stack1,   Stack1|Local, OutUnknown      }},
   { OpIncDecL,     {Local,            Stack1|Local, OutIncDec       }},
   { OpIncDecN,     {Stack1,           Stack1|Local, OutUnknown      }},
   { OpIncDecG,     {Stack1,           Stack1,       OutUnknown      }},
   { OpIncDecS,     {StackTop2,        Stack1,       OutUnknown      }},
-  { OpIncDecM,     {MVector,          Stack1|Local, OutUnknown      }},
   { OpBindL,       {Stack1|Local|
                     IgnoreInnerType,  Stack1|Local, OutSameAsInput  }},
   { OpBindN,       {StackTop2,        Stack1|Local, OutSameAsInput  }},
   { OpBindG,       {StackTop2,        Stack1,       OutSameAsInput  }},
   { OpBindS,       {StackTop3,        Stack1,       OutSameAsInput  }},
-  { OpBindM,       {MVector|Stack1,   Stack1|Local, OutSameAsInput  }},
   { OpUnsetL,      {Local,            Local,        OutNone         }},
   { OpUnsetN,      {Stack1,           Local,        OutNone         }},
   { OpUnsetG,      {Stack1,           None,         OutNone         }},
-  { OpUnsetM,      {MVector,          Local,        OutNone         }},
 
   /*** 8. Call instructions ***/
 
@@ -318,7 +308,6 @@ static const struct {
   { OpFPassG,      {Stack1|FuncdRef,  Stack1,       OutUnknown      }},
   { OpFPassS,      {StackTop2|FuncdRef,
                                       Stack1,       OutUnknown      }},
-  { OpFPassM,      {MVector|FuncdRef, Stack1|Local, OutUnknown      }},
   /*
    * FCall is special. Like the Ret* instructions, its manipulation of the
    * runtime stack are outside the boundaries of the tracelet abstraction.
@@ -439,31 +428,40 @@ static const struct {
   { OpBaseNL,      {Local,            MBase,        OutNone         }},
   { OpBaseGC,      {StackI,           MBase,        OutNone         }},
   { OpBaseGL,      {Local,            MBase,        OutNone         }},
+  { OpFPassBaseNC, {StackI|FuncdRef,  MBase,        OutNone         }},
+  { OpFPassBaseNL, {Local|FuncdRef,   MBase,        OutNone         }},
+  { OpFPassBaseGC, {StackI|FuncdRef,  MBase,        OutNone         }},
+  { OpFPassBaseGL, {Local|FuncdRef,   MBase,        OutNone         }},
   { OpBaseSC,      {StackI|IdxA,      MBase|IdxA,   OutUnknown      }},
   { OpBaseSL,      {Local|IdxA,       MBase|IdxA,   OutUnknown      }},
   { OpBaseL,       {Local,            MBase,        OutNone         }},
+  { OpFPassBaseL,  {Local|FuncdRef,   MBase,        OutNone         }},
   { OpBaseC,       {StackI,           MBase,        OutNone         }},
   { OpBaseR,       {StackI,           MBase,        OutNone         }},
   { OpBaseH,       {None,             MBase,        OutNone         }},
-  { OpDimL,        {Local|MBase,      MBase,        OutNone         }},
-  { OpDimC,        {StackI|MBase,     MBase,        OutNone         }},
-  { OpDimInt,      {MBase,            MBase,        OutNone         }},
-  { OpDimStr,      {MBase,            MBase,        OutNone         }},
-  { OpDimNewElem,  {MBase,            MBase,        OutNone         }},
-  { OpQueryML,     {BStackN|Local|MBase,
+  { OpDim,         {MBase|MKey,       MBase,        OutNone         }},
+  { OpFPassDim,    {MBase|MKey|FuncdRef,
+                                      MBase,        OutNone         }},
+  { OpQueryM,      {BStackN|MBase|MKey,
                                       Stack1,       OutUnknown      }},
-  { OpQueryMC,     {BStackN|MBase,    Stack1,       OutUnknown      }},
-  { OpQueryMInt,   {BStackN|MBase,    Stack1,       OutUnknown      }},
-  { OpQueryMStr,   {BStackN|MBase,    Stack1,       OutUnknown      }},
-  { OpSetML,       {Stack1|BStackN|Local|MBase,
+  { OpVGetM,       {BStackN|MBase|MKey,
+                                      Stack1,       OutVUnknown     }},
+  { OpFPassM,      {BStackN|MBase|MKey|FuncdRef,
                                       Stack1,       OutUnknown      }},
-  { OpSetMC,       {Stack1|BStackN|MBase,
+  { OpSetM,        {Stack1|BStackN|MBase|MKey,
                                       Stack1,       OutUnknown      }},
-  { OpSetMInt,     {Stack1|BStackN|MBase,
+  { OpIncDecM,     {BStackN|MBase|MKey,
                                       Stack1,       OutUnknown      }},
-  { OpSetMStr,     {Stack1|BStackN|MBase,
+  { OpSetOpM,      {Stack1|BStackN|MBase|MKey,
                                       Stack1,       OutUnknown      }},
-  { OpSetMNewElem, {Stack1|MBase,     Stack1,       OutUnknown      }},
+  { OpBindM,       {Stack1|BStackN|MBase|MKey,
+                                      Stack1,       OutSameAsInput  }},
+  { OpUnsetM,      {BStackN|MBase|MKey,
+                                      None,         OutNone         }},
+  { OpSetWithRefLML,
+                   {MBase,            None,         OutNone         }},
+  { OpSetWithRefRML,
+                   {Stack1|MBase,     None,         OutNone         }},
 };
 
 static hphp_hash_map<Op, InstrInfo> instrInfo;
@@ -493,7 +491,7 @@ namespace {
 int64_t countOperands(uint64_t mask) {
   const uint64_t ignore = FuncdRef | Local | Iter | AllLocals |
     DontGuardStack1 | IgnoreInnerType | DontGuardAny | This |
-    MBase | StackI | IdxA;
+    MBase | StackI | IdxA | MKey;
   mask &= ~ignore;
 
   static const uint64_t counts[][2] = {
@@ -525,15 +523,23 @@ int64_t getStackPopped(PC pc) {
     case Op::FCallAwait:   return getImm(pc, 0).u_IVA + kNumActRecCells;
     case Op::FCallArray:   return kNumActRecCells + 1;
 
-    case Op::QueryML:   case Op::QueryMC:
-    case Op::QueryMInt: case Op::QueryMStr:
+    case Op::QueryM:
+    case Op::VGetM:
+    case Op::IncDecM:
+    case Op::UnsetM:
     case Op::NewPackedArray:
     case Op::ConcatN:
     case Op::FCallBuiltin:
-    case Op::CreateCl:     return getImm(pc, 0).u_IVA;
+    case Op::CreateCl:
+      return getImm(pc, 0).u_IVA;
 
-    case Op::SetML:   case Op::SetMC:
-    case Op::SetMInt: case Op::SetMStr: case Op::SetMNewElem:
+    case Op::FPassM:
+      // imm[0] is argument index
+      return getImm(pc, 1).u_IVA;
+
+    case Op::SetM:
+    case Op::SetOpM:
+    case Op::BindM:
       return getImm(pc, 0).u_IVA + 1;
 
     case Op::NewStructArray: return getImmVector(pc).size();
@@ -548,11 +554,6 @@ int64_t getStackPopped(PC pc) {
 
   // All instructions with these properties are handled above
   assertx((mask & (StackN | BStackN)) == 0);
-
-  if (mask & MVector) {
-    count += getImmVector(pc).numStackValues();
-    mask &= ~MVector;
-  }
 
   return count + countOperands(mask);
 }
@@ -582,107 +583,74 @@ bool isAlwaysNop(Op op) {
   }
 }
 
-static void addMVectorInputs(NormalizedInstruction& ni,
-                             BCSPOffset& spOff,
-                             InputInfoVec& inputs) {
-  assertx(ni.immVec.isValid());
-  ni.immVecM.reserve(ni.immVec.size());
+#define NA
+#define ONE(a) a(0)
+#define TWO(a, b) a(0) b(1)
+#define THREE(a, b, c) a(0) b(1) c(2)
+#define FOUR(a, b, c, d) a(0) b(1) c(2) d(3)
+// Iterator bytecodes have multiple local immediates but not the Local flag, so
+// they should never flow through this function.
+#define LA(n) assert(idx == 0xff); idx = n;
+#define MA(n)
+#define BLA(n)
+#define SLA(n)
+#define ILA(n)
+#define IVA(n)
+#define I64A(n)
+#define IA(n)
+#define DA(n)
+#define SA(n)
+#define AA(n)
+#define RATA(n)
+#define BA(n)
+#define OA(op) BA
+#define VSA(n)
+#define KA(n)
+#define O(name, imm, ...) case Op::name: imm break;
 
-  int UNUSED stackCount = 0;
-  int UNUSED localCount = 0;
-
-  spOff += ni.immVec.numStackValues();
-  auto localSpOff = spOff - 1;
-
-  auto push_stack = [&] {
-    ++stackCount;
-    inputs.emplace_back(Location(localSpOff--));
-  };
-  auto push_local = [&] (int imm) {
-    ++localCount;
-    inputs.emplace_back(Location(Location::Local, imm));
-  };
-
-  /*
-   * Note that we have to push as we go so that the arguments come in
-   * the order expected for the M-vector.
-   */
-
-  /*
-   * Also note: if we eventually have immediates that are not local
-   * ids (i.e. string ids), this analysis step is going to have to be
-   * a bit wiser.
-   */
-  auto opPtr = ni.source.pc();
-  auto const location = getMLocation(opPtr);
-  auto const lcode = location.lcode;
-
-  const bool trailingClassRef = lcode == LSL || lcode == LSC;
-
-  switch (numLocationCodeStackVals(lcode)) {
-  case 0: {
-    if (lcode == LH) {
-      inputs.emplace_back(Location(Location::This));
-    } else {
-      assertx(lcode == LL || lcode == LGL || lcode == LNL);
-      if (location.hasImm()) {
-        push_local(location.imm);
-      }
-    }
-  } break;
-  case 1:
-    if (lcode == LSL) {
-      // We'll get the trailing stack value after pushing all the
-      // member vector elements.
-      assertx(location.hasImm());
-      push_local(location.imm);
-    } else {
-      push_stack();
-    }
-    break;
-  case 2:
-    push_stack();
-    if (!trailingClassRef) {
-      // This one is actually at the back.
-      push_stack();
-    }
-    break;
-  default: not_reached();
+size_t localImmIdx(Op op) {
+  size_t idx = 0xff;
+  switch (op) {
+    OPCODES
   }
-
-  // Now push all the members in the correct order.
-  for (auto const& member : getMVector(opPtr)) {
-    auto const mcode = member.mcode;
-    ni.immVecM.push_back(mcode);
-
-    if (mcode == MW) {
-      // No stack and no locals.
-      continue;
-    } else if (member.hasImm()) {
-      int64_t imm = member.imm;
-      if (memberCodeImmIsLoc(mcode)) {
-        push_local(imm);
-      } else if (memberCodeImmIsString(mcode)) {
-        inputs.emplace_back(Location(Location::Litstr, imm));
-      } else {
-        assertx(memberCodeImmIsInt(mcode));
-        inputs.emplace_back(Location(Location::Litint, imm));
-      }
-    } else {
-      push_stack();
-    }
-    inputs.back().dontGuardInner = true;
-  }
-
-  if (trailingClassRef) {
-    push_stack();
-  }
-
-  assertx(stackCount == ni.immVec.numStackValues());
-
-  SKTRACE(2, ni.source, "M-vector using %d hidden stack "
-                        "inputs, %d locals\n", stackCount, localCount);
+  assert(idx != 0xff);
+  return idx;
 }
+
+size_t memberKeyImmIdx(Op op) {
+  size_t idx = 0xff;
+  switch (op) {
+#undef LA
+#undef KA
+#define LA(n)
+#define KA(n) assert(idx == 0xff); idx = n;
+    OPCODES
+  }
+  assert(idx != 0xff);
+  return idx;
+}
+
+#undef ONE
+#undef TWO
+#undef THREE
+#undef FOUR
+#undef LA
+#undef MA
+#undef BLA
+#undef SLA
+#undef ILA
+#undef IVA
+#undef I64A
+#undef IA
+#undef DA
+#undef SA
+#undef AA
+#undef RATA
+#undef BA
+#undef OA
+#undef VSA
+#undef KA
+#undef O
 
 /*
  * getInputs --
@@ -749,34 +717,28 @@ InputInfoVec getInputs(NormalizedInstruction& ni) {
       inputs.emplace_back(Location(spOff++));
     }
   }
-  if (input & MVector) {
-    addMVectorInputs(ni, spOff, inputs);
-  }
   if (input & Local) {
     // (Almost) all instructions that take a Local have its index at
     // their first immediate.
-    int loc;
-    auto insertAt = inputs.end();
-    switch (ni.op()) {
-      case OpSetWithRefLM:
-        insertAt = inputs.begin();
-        // fallthrough
-      case OpFPassL:
-        loc = ni.imm[1].u_IVA;
+    auto const loc = ni.imm[localImmIdx(ni.op())].u_IVA;
+    SKTRACE(1, sk, "getInputs: local %d\n", loc);
+    inputs.emplace_back(Location(Location::Local, loc));
+  }
+  if (input & MKey) {
+    auto mk = ni.imm[memberKeyImmIdx(ni.op())].u_KA;
+    switch (mk.mcode) {
+      case MEL: case MPL:
+        inputs.emplace_back(Location(Location::Local, mk.iva));
         break;
-      case OpQueryML:
-      case OpSetML:
-        loc = ni.imm[3].u_IVA;
+      case MEC: case MPC:
+        inputs.emplace_back(Location(BCSPOffset{int32_t(mk.iva)}));
         break;
-
-      default:
-        loc = ni.imm[0].u_IVA;
+      case MW: case MEI: case MET: case MPT: case MQT:
+        // The inputs vector is only used for deciding when to break the
+        // tracelet, which can never happen for these cases.
         break;
     }
-    SKTRACE(1, sk, "getInputs: local %d\n", loc);
-    inputs.emplace(insertAt, Location(Location::Local, loc));
   }
-
   if (input & AllLocals) {
     ni.ignoreInnerType = true;
   }
@@ -816,18 +778,6 @@ bool dontGuardAnyInputs(Op op) {
   case Op::JmpNZ:
   case Op::Jmp:
   case Op::JmpNS:
-  case Op::BindM:
-  case Op::CGetM:
-  case Op::EmptyM:
-  case Op::FPassM:
-  case Op::IncDecM:
-  case Op::IssetM:
-  case Op::SetM:
-  case Op::SetOpM:
-  case Op::SetWithRefLM:
-  case Op::SetWithRefRM:
-  case Op::UnsetM:
-  case Op::VGetM:
   case Op::FCallArray:
   case Op::FCall:
   case Op::FCallD:
@@ -967,6 +917,7 @@ bool dontGuardAnyInputs(Op op) {
   case Op::NewCol:
   case Op::NewLikeArrayL:
   case Op::NewMixedArray:
+  case Op::NewDictArray:
   case Op::NewPackedArray:
   case Op::Not:
   case Op::Null:
@@ -1007,26 +958,29 @@ bool dontGuardAnyInputs(Op op) {
   case Op::BaseNL:
   case Op::BaseGC:
   case Op::BaseGL:
+  case Op::FPassBaseNC:
+  case Op::FPassBaseNL:
+  case Op::FPassBaseGC:
+  case Op::FPassBaseGL:
   case Op::BaseSC:
   case Op::BaseSL:
   case Op::BaseL:
+  case Op::FPassBaseL:
   case Op::BaseC:
   case Op::BaseR:
   case Op::BaseH:
-  case Op::DimL:
-  case Op::DimC:
-  case Op::DimInt:
-  case Op::DimStr:
-  case Op::DimNewElem:
-  case Op::QueryML:
-  case Op::QueryMC:
-  case Op::QueryMInt:
-  case Op::QueryMStr:
-  case Op::SetML:
-  case Op::SetMC:
-  case Op::SetMInt:
-  case Op::SetMStr:
-  case Op::SetMNewElem:
+  case Op::Dim:
+  case Op::FPassDim:
+  case Op::QueryM:
+  case Op::VGetM:
+  case Op::FPassM:
+  case Op::SetM:
+  case Op::IncDecM:
+  case Op::SetOpM:
+  case Op::BindM:
+  case Op::UnsetM:
+  case Op::SetWithRefLML:
+  case Op::SetWithRefRML:
     return false;
 
   // These are instructions that are always interp-one'd, or are always no-ops.
@@ -1103,11 +1057,8 @@ bool instrBreaksProfileBB(const NormalizedInstruction* inst) {
 }
 
 Translator::Translator()
-  : uniqueStubs{}
-  , m_createdTime(HPHP::Timer::GetCurrentTimeMicros())
-  , m_mode(TransKind::Invalid)
+  : m_createdTime(HPHP::Timer::GetCurrentTimeMicros())
   , m_profData(nullptr)
-  , m_useAHot(RuntimeOption::RepoAuthoritative && CodeCache::AHotSize > 0)
 {
   initInstrInfo();
   if (RuntimeOption::EvalJitPGO) {
@@ -1156,18 +1107,8 @@ Translator::addDbgBLPC(PC pc) {
   return true;
 }
 
-const char* show(TranslateResult r) {
-  switch (r) {
-  case TranslateResult::Failure: return "Failure";
-  case TranslateResult::Retry:   return "Retry";
-  case TranslateResult::Success: return "Success";
-  }
-  not_reached();
-}
-
 //////////////////////////////////////////////////////////////////////
 
-#define IMM_MA(n)      0 /* ignored, but we need something (for commas) */
 #define IMM_BLA(n)     ni.immVec
 #define IMM_SLA(n)     ni.immVec
 #define IMM_ILA(n)     ni.immVec
@@ -1183,6 +1124,7 @@ const char* show(TranslateResult r) {
 #define IMM_BA(n)      ni.imm[n].u_BA
 #define IMM_OA_IMPL(n) ni.imm[n].u_OA
 #define IMM_OA(subop)  (subop)IMM_OA_IMPL
+#define IMM_KA(n)      ni.imm[n].u_KA
 
 #define ONE(x0)           , IMM_##x0(0)
 #define TWO(x0,x1)        , IMM_##x0(0), IMM_##x1(1)
@@ -1203,7 +1145,6 @@ static void translateDispatch(IRGS& irgs,
 #undef ONE
 #undef NA
 
-#undef IMM_MA
 #undef IMM_BLA
 #undef IMM_SLA
 #undef IMM_ILA
@@ -1219,6 +1160,7 @@ static void translateDispatch(IRGS& irgs,
 #undef IMM_OA_IMPL
 #undef IMM_OA
 #undef IMM_VSA
+#undef IMM_KA
 
 //////////////////////////////////////////////////////////////////////
 
@@ -1275,10 +1217,6 @@ void translateInstr(
   irgen::emitIncStat(irgs, Stats::Instr_TC, 1);
   if (Stats::enableInstrCount()) {
     irgen::emitIncStat(irgs, Stats::opToTranslStat(ni.op()), 1);
-  }
-  if (Trace::moduleEnabledRelease(Trace::llvm_count, 1) ||
-      RuntimeOption::EvalJitLLVMCounters) {
-    irgen::gen(irgs, CountBytecode);
   }
 
   if (isAlwaysNop(ni.op())) return;

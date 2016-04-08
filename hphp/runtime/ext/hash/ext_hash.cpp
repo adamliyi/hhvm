@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -36,7 +36,6 @@
 #include "hphp/runtime/ext/hash/hash_murmur.h"
 #include "hphp/runtime/ext/hash/hash_keccak.h"
 #include "hphp/runtime/ext/hash/hash_joaat.h"
-#include "hphp/system/constants.h"
 
 #if defined(HPHP_OSS)
 #define furc_hash furc_hash_internal
@@ -46,8 +45,7 @@
 
 namespace HPHP {
 
-static class HashExtension final : public Extension {
- public:
+static struct HashExtension final : Extension {
   HashExtension() : Extension("hash", "1.0") { }
   void moduleInit() override {
     HHVM_FE(hash);
@@ -73,8 +71,7 @@ static class HashExtension final : public Extension {
 static HashEngineMap HashEngines;
 using HashEnginePtr = std::shared_ptr<HashEngine>;
 
-class HashEngineMapInitializer {
-public:
+struct HashEngineMapInitializer {
   HashEngineMapInitializer() {
     HashEngines["md2"]        = HashEnginePtr(new hash_md2());
     HashEngines["md4"]        = HashEnginePtr(new hash_md4());

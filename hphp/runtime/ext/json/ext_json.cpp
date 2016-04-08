@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -218,8 +218,7 @@ Variant HHVM_FUNCTION(json_decode, const String& json, bool assoc /* = false */,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class JsonExtension final : public Extension {
- public:
+struct JsonExtension final : Extension {
   JsonExtension() : Extension("json", "1.2.1") {}
   void moduleInit() override {
     HHVM_RC_INT(JSON_HEX_TAG, k_JSON_HEX_TAG);
@@ -258,7 +257,13 @@ class JsonExtension final : public Extension {
     loadSystemlib();
   }
 
-  void requestInit() override { json_parser_init(); }
+  void requestInit() override {
+    json_parser_init();
+  }
+
+  void vscan(IMarker& mark) const override {
+    json_parser_scan(mark);
+  }
 
 } s_json_extension;
 

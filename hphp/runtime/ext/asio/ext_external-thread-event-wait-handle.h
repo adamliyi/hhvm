@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -30,7 +30,7 @@ namespace HPHP {
  *
  * See asio-external-thread-event.h for more details.
  */
-class AsioExternalThreadEvent;
+struct AsioExternalThreadEvent;
 struct c_ExternalThreadEventWaitHandle final : c_WaitableWaitHandle {
   WAITHANDLE_CLASSOF(ExternalThreadEventWaitHandle);
   WAITHANDLE_DTOR(ExternalThreadEventWaitHandle);
@@ -56,6 +56,7 @@ struct c_ExternalThreadEventWaitHandle final : c_WaitableWaitHandle {
   ObjectData* getPrivData() { return m_privData.get(); }
 
   void abandon(bool sweeping);
+  bool cancel(const Object& exception);
   void process();
   String getName();
   void exitContext(context_idx_t ctx_idx);

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -132,7 +132,7 @@ static bool variantToGMPData(const char* const fnCaller,
   }
 
   case KindOfString:
-  case KindOfStaticString:
+  case KindOfPersistentString:
     if (!setMpzFromString(gmpData, data.toString(), base)) {
       raise_warning(cs_GMP_INVALID_STRING, fnCaller);
       return false;
@@ -1397,8 +1397,7 @@ void GMPData::setGMPMpz(const mpz_t data) {
 
 ///////////////////////////////////////////////////////////////////////////////
 // extension
-class GMPExtension final : public Extension {
-public:
+struct GMPExtension final : Extension {
   GMPExtension() : Extension("gmp", "2.0.0-hhvm") { };
   void moduleInit() override {
     HHVM_RC_INT_SAME(GMP_MAX_BASE);

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -182,7 +182,7 @@ void StringBuffer::append(const Variant& v) {
     case KindOfInt64:
       append(cell->m_data.num);
       break;
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       append(cell->m_data.pstr);
       break;
@@ -321,13 +321,6 @@ void StringBuffer::growBy(int spaceRequired) {
   auto const s = m_str->bufferSlice();
   m_buffer = s.data();
   m_cap = s.size();
-}
-
-//////////////////////////////////////////////////////////////////////
-
-void StringBufferLimitException::vscan(IMarker& mark) const {
-  FatalErrorException::vscan(mark);
-  mark(m_result);
 }
 
 //////////////////////////////////////////////////////////////////////

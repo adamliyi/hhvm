@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -41,8 +41,7 @@ namespace sz {
 typedef uint8_t* Address;
 typedef uint8_t* CodeAddress;
 
-class DataBlockFull : public std::runtime_error {
- public:
+struct DataBlockFull : std::runtime_error {
   std::string name;
 
   DataBlockFull(const std::string& blockName, const std::string msg)
@@ -60,7 +59,7 @@ class DataBlockFull : public std::runtime_error {
  * Memory is allocated from the end of the block unless specifically allocated
  * using allocInner.
  *
- * Unused memory can be freed using free(), if the memory is at the end of the
+ * Unused memory can be freed using free(). If the memory is at the end of the
  * block, the frontier will be moved back.
  *
  * Free memory is coalesced and allocation is done by best-fit.
@@ -142,16 +141,11 @@ struct DataBlock {
   }
 
   void assertCanEmit(size_t nBytes) {
-    if (!canEmit(nBytes)) {
-      throw DataBlockFull(m_name, folly::format(
-        "Attempted to emit {} byte(s) into a {} byte DataBlock with {} bytes "
-        "available. This almost certainly means the TC is full. If this is "
-        "the case, increasing Eval.JitASize, Eval.JitAColdSize, "
-        "Eval.JitAFrozenSize and Eval.JitGlobalDataSize in the configuration "
-        "file when running this script or application should fix this problem.",
-        nBytes, m_size, m_size - (m_frontier - m_base)).str());
-    }
+    if (!canEmit(nBytes)) reportFull(nBytes);
   }
+
+  ATTRIBUTE_NORETURN
+  void reportFull(size_t nbytes) const;
 
   bool isValidAddress(const CodeAddress tca) const {
     return tca >= m_base && tca < (m_base + m_size);
@@ -217,6 +211,7 @@ struct DataBlock {
   std::string name() const { return m_name; }
 
   void setFrontier(Address addr) {
+    assertx(m_base <= addr && addr <= (m_base + m_size));
     m_frontier = addr;
   }
 
@@ -281,10 +276,7 @@ using CodeBlock = DataBlock;
 
 //////////////////////////////////////////////////////////////////////
 
-class UndoMarker {
-  CodeBlock& m_cb;
-  CodeAddress m_oldFrontier;
-  public:
+struct UndoMarker {
   explicit UndoMarker(CodeBlock& cb)
     : m_cb(cb)
     , m_oldFrontier(cb.frontier()) {
@@ -293,13 +285,16 @@ class UndoMarker {
   void undo() {
     m_cb.setFrontier(m_oldFrontier);
   }
+
+private:
+  CodeBlock& m_cb;
+  CodeAddress m_oldFrontier;
 };
 
 /*
  * RAII bookmark for scoped rewinding of frontier.
  */
-class CodeCursor : public UndoMarker {
- public:
+struct CodeCursor : UndoMarker {
   CodeCursor(CodeBlock& cb, CodeAddress newFrontier) : UndoMarker(cb) {
     cb.setFrontier(newFrontier);
   }

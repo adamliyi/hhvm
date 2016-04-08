@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -41,25 +41,6 @@ inline SrcRec* Translator::getSrcRec(SrcKey sk) {
   }
 
   return rec;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Translator configuration.
-
-inline TransKind Translator::mode() const {
-  return m_mode;
-}
-
-inline void Translator::setMode(TransKind mode) {
-  m_mode = mode;
-}
-
-inline bool Translator::useAHot() const {
-  return m_useAHot;
-}
-
-inline void Translator::setUseAHot(bool val) {
-  m_useAHot = val;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -105,8 +86,12 @@ inline Lease& Translator::WriteLease() {
 ///////////////////////////////////////////////////////////////////////////////
 // TransContext.
 
-inline TransContext::TransContext(TransID id, SrcKey sk, FPInvOffset spOff)
+inline TransContext::TransContext(
+  TransID id, TransKind kind, TransFlags flags, SrcKey sk, FPInvOffset spOff
+)
   : transID(id)
+  , kind(kind)
+  , flags(flags)
   , initSpOffset(spOff)
   , func(sk.valid() ? sk.func() : nullptr)
   , initBcOffset(sk.offset())

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -58,8 +58,8 @@ PageletTransport::PageletTransport(
   m_remoteHost.append(remoteHost.data(), remoteHost.size());
 
   for (ArrayIter iter(headers); iter; ++iter) {
-    Variant key = iter.first();
-    String header = iter.second();
+    auto const key = iter.first();
+    auto const header = iter.second().toString();
     if (key.isString() && !key.toString().empty()) {
       m_requestHeaders[key.toString().data()].push_back(header.data());
     } else {
@@ -98,7 +98,7 @@ uint16_t PageletTransport::getRemotePort() {
   return 0;
 }
 
-const void *PageletTransport::getPostData(int &size) {
+const void *PageletTransport::getPostData(size_t &size) {
   size = m_postData.size();
   return m_postData.data();
 }
@@ -310,8 +310,7 @@ struct PageletWorker
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class PageletTask : public SweepableResourceData {
-public:
+struct PageletTask : SweepableResourceData {
   DECLARE_RESOURCE_ALLOCATION(PageletTask)
 
   PageletTask(const String& url, const Array& headers, const String& post_data,

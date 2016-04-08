@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,6 +17,7 @@
 #ifndef incl_HPHP_STACKTRACE_H_
 #define incl_HPHP_STACKTRACE_H_
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,10 +35,8 @@ namespace HPHP {
 /**
  * Taking a stacktrace at current execution location.
  */
-class StackTraceBase {
-public:
-  class Frame {
-  public:
+struct StackTraceBase {
+  struct Frame {
     explicit Frame(void *_bt) : bt(_bt), lineno(0), offset(0) {}
 
     void *bt;
@@ -75,10 +74,8 @@ protected:
 
 };
 
-class StackTrace : public StackTraceBase {
-public:
-  class Frame : public StackTraceBase::Frame {
-  public:
+struct StackTrace : StackTraceBase {
+  struct Frame : StackTraceBase::Frame {
     explicit Frame(void *_bt) : StackTraceBase::Frame(_bt) {}
     std::string filename;
     std::string funcname;
@@ -161,8 +158,7 @@ private:
 };
 
 // Do not use heap here, so this will still work if called during a heap error
-class StackTraceNoHeap : public StackTraceBase {
-public:
+struct StackTraceNoHeap : StackTraceBase {
   /**
    * Constructor, and this will save current stack trace if trace is true.
    * It can be false for an empty stacktrace.
@@ -181,8 +177,7 @@ public:
   static void AddExtraLogging(const char *name, const std::string &value);
   static void ClearAllExtraLogging();
 
-  class ExtraLoggingClearer {
-  public:
+  struct ExtraLoggingClearer {
     ExtraLoggingClearer() {}
     ~ExtraLoggingClearer() { StackTraceNoHeap::ClearAllExtraLogging();}
   };

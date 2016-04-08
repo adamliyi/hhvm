@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -255,8 +255,7 @@ Block* GraphBuilder::at(PC target) {
  * higher-numbered DV entry points, the last of which ultimately jumps to
  * the primary function body.
  */
-class RpoSort {
- public:
+struct RpoSort {
   explicit RpoSort(Graph* g);
  private:
   void visit(Block* b);

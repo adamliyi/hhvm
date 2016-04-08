@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -64,7 +64,9 @@ extern const StaticString
   s_val,
   s_elem,
   s_var,
+  s_union,
   s_type,
+  s__type,
   s_ktype,
   s_vtype,
   s_etype,
@@ -262,8 +264,7 @@ private:
   void refill(size_t len) {
     assert(buffer_used == 0);
     len = std::max<size_t>(len, SIZE);
-    buffer =
-      m_transport->o_invoke_few_args(s_read, 1, (int64_t)len);
+    buffer = m_transport->o_invoke_few_args(s_read, 1, (int64_t)len).toString();
     buffer_used = buffer.size();
     buffer_ptr = buffer.data();
   }

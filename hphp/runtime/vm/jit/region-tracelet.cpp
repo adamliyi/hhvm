@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -53,10 +53,10 @@ namespace {
 
 struct Env {
   Env(const RegionContext& ctx,
+      TransKind kind,
       InterpSet& interp,
       SrcKey& breakAt,
       int32_t maxBCInstrs,
-      bool profiling,
       bool inlining)
     : ctx(ctx)
     , interp(interp)
@@ -68,11 +68,12 @@ struct Env {
     , blockFinished(false)
     // TODO(#5703534): this is using a different TransContext than actual
     // translation will use.
-    , irgs(TransContext{kInvalidTransID, sk, ctx.spOffset}, TransFlags{0})
+    , unit(TransContext{kInvalidTransID, kind, TransFlags{}, sk, ctx.spOffset})
+    , irgs(unit)
     , arStates(1)
     , numJmps(0)
     , numBCInstrs(maxBCInstrs)
-    , profiling(profiling)
+    , profiling(kind == TransKind::Profile)
     , inlining(inlining)
   {}
 
@@ -85,6 +86,7 @@ struct Env {
   RegionDescPtr region;
   RegionDesc::Block* curBlock;
   bool blockFinished;
+  IRUnit unit;
   IRGS irgs;
   jit::vector<ActRecState> arStates;
   RefDeps refDeps;
@@ -225,14 +227,15 @@ bool prepareInstruction(Env& env) {
 
   if (inputInfos.needsRefCheck) {
     // Reffiness guards are always at the beginning of the trace for now, so
-    // calculate the delta from the original sp to the ar.
+    // calculate the delta from the original sp to the ar. The FPI delta from
+    // instrFpToArDelta includes locals and iterators, so when we're in a
+    // resumed context we have to adjust for the fact that they're in a
+    // different place.
     auto argNum = env.inst.imm[0].u_IVA;
-    size_t entryArDelta = instrSpToArDelta(env.inst.pc()) -
-      (irgen::logicalStackDepth(env.irgs) - env.ctx.spOffset);
-    FTRACE(5, "entryArDelta info: {} {} {}\n",
-      instrSpToArDelta(env.inst.pc()),
-      irgen::logicalStackDepth(env.irgs).offset,
-      env.ctx.spOffset.offset);
+    auto entryArDelta = env.ctx.spOffset.offset -
+      instrFpToArDelta(curFunc(env), env.inst.pc());
+    if (env.sk.resumed()) entryArDelta += curFunc(env)->numSlotsInFrame();
+
     try {
       env.inst.preppedByRef =
         env.arStates.back().checkByRef(argNum, entryArDelta, &env.refDeps);
@@ -613,8 +616,8 @@ RegionDescPtr form_region(Env& env) {
 ///////////////////////////////////////////////////////////////////////////////
 }
 
-RegionDescPtr selectTracelet(const RegionContext& ctx, int32_t maxBCInstrs,
-                             bool profiling, bool inlining /* = false */) {
+RegionDescPtr selectTracelet(const RegionContext& ctx, TransKind kind,
+                             int32_t maxBCInstrs, bool inlining /* = false */) {
   Timer _t(Timer::selectTracelet);
   InterpSet interp;
   SrcKey breakAt;
@@ -624,7 +627,7 @@ RegionDescPtr selectTracelet(const RegionContext& ctx, int32_t maxBCInstrs,
   FTRACE(1, "selectTracelet: starting with maxBCInstrs = {}\n", maxBCInstrs);
 
   do {
-    Env env{ctx, interp, breakAt, maxBCInstrs, profiling, inlining};
+    Env env{ctx, kind, interp, breakAt, maxBCInstrs, inlining};
     region = form_region(env);
     ++tries;
   } while (!region);
@@ -643,7 +646,7 @@ RegionDescPtr selectTracelet(const RegionContext& ctx, int32_t maxBCInstrs,
   if (RuntimeOption::EvalRegionRelaxGuards) {
     FTRACE(1, "selectTracelet: before optimizeGuards:\n{}\n",
            show(*region));
-    optimizeGuards(*region, profiling);
+    optimizeGuards(*region, kind == TransKind::Profile);
   }
 
   FTRACE(1, "selectTracelet returning, {}, {} tries:\n{}\n",

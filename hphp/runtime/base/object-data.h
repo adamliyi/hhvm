@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -346,6 +346,24 @@ struct ObjectData {
 
   PropLookup<TypedValue*> getPropImpl(const Class*, const StringData*,
                                       bool copyDynArray);
+
+  struct PropAccessInfo {
+    struct Hash;
+
+    bool operator==(const PropAccessInfo& o) const {
+      return obj == o.obj && attr == o.attr && key->same(o.key);
+    }
+
+    ObjectData* obj;
+    const StringData* key;      // note: not necessarily static
+    ObjectData::Attribute attr;
+  };
+
+  struct PropRecurInfo {
+    using RecurSet = req::hash_set<PropAccessInfo, PropAccessInfo::Hash>;
+    const PropAccessInfo* activePropInfo;
+    RecurSet* activeSet;
+  };
 
  private:
   template <bool warn, bool define>

@@ -18,12 +18,9 @@ type process_data =
     in_fd: Unix.file_descr;
     (** Send client's File Descriptors to the typechecker over this. *)
     out_fd : Unix.file_descr;
-    log_file: string;
     last_request_handoff : float ref;
   }
 
 type server_process =
   | Alive of process_data
-  (** Typechecker exited because of an RPC kill command. *)
-  | Killed_intentionally
   | Died_unexpectedly of Unix.process_status * bool

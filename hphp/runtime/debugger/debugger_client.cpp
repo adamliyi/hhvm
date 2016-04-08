@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -78,11 +78,10 @@ static String wordwrap(const String& str, int width /* = 75 */,
   args.append(width);
   args.append(wordbreak);
   args.append(cut);
-  return vm_call_user_func("wordwrap", args);
+  return vm_call_user_func("wordwrap", args).toString();
 }
 
-class DebuggerExtension final : public Extension {
- public:
+struct DebuggerExtension final : Extension {
   DebuggerExtension() : Extension("hhvm.debugger", NO_EXTENSION_VERSION_YET) {}
 } s_debugger_extension;
 
@@ -173,8 +172,7 @@ int DebuggerClient::pollSignal() {
 /**
  * Initialization and shutdown.
  */
-class ReadlineApp {
-public:
+struct ReadlineApp {
   ReadlineApp() {
     TRACE(2, "ReadlineApp::ReadlineApp\n");
     DebuggerClient::AdjustScreenMetrics();
@@ -203,8 +201,7 @@ public:
 /**
  * Displaying a spinning wait icon.
  */
-class ReadlineWaitCursor {
-public:
+struct ReadlineWaitCursor {
   ReadlineWaitCursor()
       : m_thread(this, &ReadlineWaitCursor::animate), m_waiting(true) {
     TRACE(2, "ReadlineWaitCursor::ReadlineWaitCursor\n");

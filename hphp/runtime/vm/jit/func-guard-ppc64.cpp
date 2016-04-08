@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | (c) Copyright IBM Corporation 2015                                   |
+   | (c) Copyright IBM Corporation 2015-2016                              |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -20,7 +20,6 @@
 #include "hphp/runtime/vm/jit/abi-ppc64.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/smashable-instr-ppc64.h"
-#include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
 
 #include "hphp/ppc64-asm/asm-ppc64.h"
@@ -35,10 +34,10 @@ namespace {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-constexpr auto kFuncGuardLen = 0x38;
+constexpr auto kFuncGuardLen = 0x40;
 
 ALWAYS_INLINE bool isPrologueStub(TCA addr) {
-  return addr == mcg->tx().uniqueStubs.fcallHelperThunk;
+  return addr == mcg->ustubs().fcallHelperThunk;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -47,7 +46,7 @@ ALWAYS_INLINE bool isPrologueStub(TCA addr) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void emitFuncGuard(const Func* func, CodeBlock& cb) {
+void emitFuncGuard(const Func* func, CodeBlock& cb, CGMeta& fixups) {
   ppc64_asm::Assembler a { cb };
 
   const auto tmp1 = ppc64_asm::reg::r3;
@@ -56,11 +55,11 @@ void emitFuncGuard(const Func* func, CodeBlock& cb) {
   assertx(ppc64::abi(CodeKind::CrossTrace).gpUnreserved.contains(tmp1));
   assertx(ppc64::abi(CodeKind::CrossTrace).gpUnreserved.contains(tmp2));
 
-  emitSmashableMovq(a.code(), uint64_t(func), tmp1);
+  emitSmashableMovq(a.code(), fixups, uint64_t(func), tmp1);
   a.  ld     (tmp2, rvmfp()[AROFF(m_func)]);
   a.  cmpd   (tmp1, tmp2);
 
-  a.  branchAuto(mcg->tx().uniqueStubs.funcPrologueRedispatch,
+  a.  branchAuto(mcg->ustubs().funcPrologueRedispatch,
                   ppc64_asm::BranchConditions::NotEqual);
 
   DEBUG_ONLY auto guard = funcGuardFromPrologue(a.frontier(), func);

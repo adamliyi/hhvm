@@ -294,9 +294,6 @@ std::string show(Vconst c) {
     case Vconst::Double:
       str += 'd';
       break;
-    case Vconst::ThreadLocal:
-      str += "tl";
-      break;
   }
   return str;
 }
@@ -326,7 +323,7 @@ void printBlock(std::ostream& out, const Vunit& unit,
   auto& block = unit.blocks[b];
   out << '\n' << color(ANSI_COLOR_MAGENTA);
   out << folly::format(" B{: <6} {}", size_t(b),
-           area_names[int(block.area)]);
+           area_names[int(block.area_idx)]);
   for (auto p : preds[b]) out << ", B" << size_t(p);
   out << color(ANSI_COLOR_END) << '\n';
 

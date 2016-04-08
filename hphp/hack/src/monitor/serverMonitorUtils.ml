@@ -16,15 +16,39 @@ type monitor_config =
     lock_file: string;
   }
 
+(**
+ * Function that initializes the common state and returns a list of individual
+ * processes starters.
+ *)
+type monitor_starter =
+   (unit -> (ServerProcess.process_data list))
+
 type connection_error =
   | Server_missing
   | Server_busy
   | Server_died
   | Build_id_mismatched
+  | Monitor_connection_failure
 
 type connection_state =
   | Connection_ok
   | Build_id_mismatch
 
+(** Result of a shutdown monitor RPC. *)
+type shutdown_result =
+  (** Request sent and channel hung up, indicating the process has exited. *)
+  | SHUTDOWN_VERIFIED
+  (** Request sent, but channel hasn't hung up. *)
+  | SHUTDOWN_UNVERIFIED
+
 exception Server_shutting_down
 exception Last_server_died
+
+(* Message we send to the --waiting-client *)
+let ready = "ready"
+
+let exit_if_parent_dead () =
+(** Cross-platform compatible way; parent PID becomes 1 when parent dies. *)
+  if Unix.getppid() = 1 then
+    (Hh_logger.log "Server's parent has died; exiting.\n";
+     Exit_status.exit Exit_status.Lost_parent_monitor);

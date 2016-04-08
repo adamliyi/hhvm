@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -68,9 +68,6 @@ private:
   void cgInterpOneCommon(IRInstruction* inst);
 
   void emitTrashTV(Vreg, int32_t, char fillByte);
-
-  void emitLoad(SSATmp* dst, Vloc dstLoc, Vptr base);
-  void emitLoadTypedValue(SSATmp* dst, Vloc dstLoc, Vptr ref);
 
   template <class JmpFn>
   void emitReffinessTest(IRInstruction* inst, Vreg sf, JmpFn doJcc);
@@ -165,23 +162,6 @@ private:
 private:
   IRLS& m_state;
 };
-
-// Helpers to compute a reference to a TypedValue type and data
-inline Vptr refTVType(Vreg reg) {
-  return reg[TVOFF(m_type)];
-}
-
-inline Vptr refTVData(Vreg reg) {
-  return reg[TVOFF(m_data)];
-}
-
-inline Vptr refTVType(Vptr ref) {
-  return ref + TVOFF(m_type);
-}
-
-inline Vptr refTVData(Vptr ref) {
-  return ref + TVOFF(m_data);
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 

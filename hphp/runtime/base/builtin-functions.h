@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -136,6 +136,24 @@ void check_collection_cast_to_array();
 Object create_object_only(const String& s);
 Object create_object(const String& s, const Array &params, bool init = true);
 Object init_object(const String& s, const Array &params, ObjectData* o);
+
+ATTRIBUTE_NORETURN void throw_object(const Object& e);
+ATTRIBUTE_NORETURN void throw_object(Object&& e);
+
+ATTRIBUTE_NORETURN ALWAYS_INLINE
+void throw_object_inl(const Object& e) {
+  throw e;
+}
+
+ATTRIBUTE_NORETURN ALWAYS_INLINE
+void throw_object_inl(Object&& e) {
+  throw e;
+}
+
+ATTRIBUTE_NORETURN inline
+void throw_object(const String& s, const Array& params, bool init = true) {
+  throw_object(create_object(s, params, init));
+}
 
 /**
  * Argument count handling.

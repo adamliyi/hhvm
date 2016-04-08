@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -18,6 +18,7 @@
 #include "hphp/runtime/ext/zlib/ext_zlib.h"
 #include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/base/file.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/mem-file.h"
 #include "hphp/runtime/ext/zlib/zip-file.h"
 #include "hphp/runtime/base/stream-wrapper.h"
@@ -45,8 +46,7 @@ namespace {
 ///////////////////////////////////////////////////////////////////////////////
 // compress.zlib:// stream wrapper
 
-static class ZlibStreamWrapper : public Stream::Wrapper {
- public:
+static struct ZlibStreamWrapper : Stream::Wrapper {
   virtual req::ptr<File> open(const String& filename,
                               const String& mode,
                               int options,
@@ -101,6 +101,10 @@ const int64_t k_FORCE_DEFLATE         = k_ZLIB_ENCODING_DEFLATE;
 
 Variant HHVM_FUNCTION(readgzfile, const String& filename,
                                   int64_t use_include_path /* = 0 */) {
+  if (!FileUtil::checkPathAndWarn(filename, __FUNCTION__ + 2, 1)) {
+    return init_null();
+  }
+
   Variant stream = HHVM_FN(gzopen)(filename, "rb", use_include_path);
   if (stream.isBoolean() && !stream.toBoolean()) {
     return false;
@@ -110,6 +114,10 @@ Variant HHVM_FUNCTION(readgzfile, const String& filename,
 
 Variant HHVM_FUNCTION(gzfile, const String& filename,
                               int64_t use_include_path /* = 0 */) {
+  if (!FileUtil::checkPathAndWarn(filename, __FUNCTION__ + 2, 1)) {
+    return init_null();
+  }
+
   Variant stream = HHVM_FN(gzopen)(filename, "rb", use_include_path);
   if (stream.isBoolean() && !stream.toBoolean()) {
     return false;
@@ -313,6 +321,10 @@ String HHVM_FUNCTION(zlib_get_coding_type) {
 
 Variant HHVM_FUNCTION(gzopen, const String& filename, const String& mode,
                               int64_t use_include_path /* = 0 */) {
+  if (!FileUtil::checkPathAndWarn(filename, __FUNCTION__ + 2, 1)) {
+    return init_null();
+  }
+
   auto file = req::make<ZipFile>();
   bool ret = file->open(File::TranslatePath(filename), mode);
   if (!ret) {
@@ -343,7 +355,7 @@ bool HHVM_FUNCTION(gzrewind, const Resource& zp) {
 Variant HHVM_FUNCTION(gzgetc, const Resource& zp) {
   return HHVM_FN(fgetc)(zp);
 }
-Variant HHVM_FUNCTION(gzgets, const Resource& zp, int64_t length /* = 1024 */) {
+Variant HHVM_FUNCTION(gzgets, const Resource& zp, int64_t length /* = 0 */) {
   return HHVM_FN(fgets)(zp, length);
 }
 Variant HHVM_FUNCTION(gzgetss, const Resource& zp, int64_t length /* = 0 */,
@@ -570,8 +582,7 @@ Variant HHVM_FUNCTION(lz4_uncompress, const String& compressed) {
 
 const StaticString s___SystemLib_ChunkedInflator("__SystemLib_ChunkedInflator");
 
-class __SystemLib_ChunkedInflator {
- public:
+struct __SystemLib_ChunkedInflator {
   __SystemLib_ChunkedInflator(): m_eof(false) {
     m_zstream.zalloc = (alloc_func) Z_NULL;
     m_zstream.zfree = (free_func) Z_NULL;
@@ -648,8 +659,7 @@ String HHVM_METHOD(__SystemLib_ChunkedInflator,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class ZlibExtension final : public Extension {
- public:
+struct ZlibExtension final : Extension {
   ZlibExtension() : Extension("zlib", "2.0") {}
   void moduleLoad(const IniSetting::Map& ini, Hdf hdf) override {
     s_zlib_stream_wrapper.registerAs("compress.zlib");

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,18 +17,24 @@
 #ifndef incl_HPHP_VM_EXTRADATA_H_
 #define incl_HPHP_VM_EXTRADATA_H_
 
-#include <algorithm>
-
 #include "hphp/runtime/base/collections.h"
-#include "hphp/runtime/ext/generator/ext_generator.h"
-
+#include "hphp/runtime/base/typed-value.h"
 #include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/srckey.h"
+
+#include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/ir-opcode.h"
 #include "hphp/runtime/vm/jit/stack-offsets.h"
-#include "hphp/runtime/vm/jit/types.h"
-#include "hphp/runtime/vm/srckey.h"
+
+#include "hphp/runtime/ext/generator/ext_generator.h"
+
 #include "hphp/util/arena.h"
 #include "hphp/util/ringbuffer.h"
+
+#include <folly/Conv.h>
+
+#include <algorithm>
+#include <string>
 
 namespace HPHP { namespace jit {
 

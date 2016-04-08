@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -711,7 +711,8 @@ struct Label;
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-class X64Assembler {
+struct X64Assembler {
+private:
   friend struct Label;
 
   /*
@@ -985,6 +986,7 @@ public:
 
   void jmp(Reg64 r)            { instrR(instr_jmp, r); }
   void jmp(MemoryRef m)        { instrM(instr_jmp, m); }
+  void jmp(RIPRelativeRef m)   { instrM(instr_jmp, m); }
   void call(Reg64 r)           { instrR(instr_call, r); }
   void call(MemoryRef m)       { instrM(instr_call, m); }
   void call(RIPRelativeRef m)  { instrM(instr_call, m); }
@@ -2227,6 +2229,8 @@ CodeBlock& codeBlockChoose(CodeAddress addr, CodeBlock& a, Blocks&... as) {
 
 //////////////////////////////////////////////////////////////////////
 
+namespace x64 {
+
 struct DecodedInstruction {
   explicit DecodedInstruction(uint8_t* ip) { decode(ip); }
   std::string toString();
@@ -2314,6 +2318,6 @@ private:
 #undef logical_const
 #undef CCS
 
-}}
+}}}
 
 #endif

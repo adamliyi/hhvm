@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -13,14 +13,13 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+
 #include "hphp/runtime/vm/jit/srcdb.h"
 
-#include <stdint.h>
-#include <stdarg.h>
-#include <string>
-
+#include "hphp/runtime/vm/debug/debug.h"
 #include "hphp/runtime/vm/treadmill.h"
 
+#include "hphp/runtime/vm/jit/cg-meta.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/recycle-tc.h"
 #include "hphp/runtime/vm/jit/relocation.h"
@@ -30,6 +29,10 @@
 #include "hphp/util/trace.h"
 
 #include <folly/MoveWrapper.h>
+
+#include <cstdarg>
+#include <cstdint>
+#include <string>
 
 namespace HPHP { namespace jit {
 
@@ -57,12 +60,12 @@ void IncomingBranch::patch(TCA dest) {
   switch (type()) {
     case Tag::JMP:
       smashJmp(toSmash(), dest);
-      mcg->getDebugInfo()->recordRelocMap(toSmash(), dest, "Arc-2");
+      mcg->debugInfo()->recordRelocMap(toSmash(), dest, "Arc-2");
       break;
 
     case Tag::JCC:
       smashJcc(toSmash(), dest);
-      mcg->getDebugInfo()->recordRelocMap(toSmash(), dest, "Arc-1");
+      mcg->debugInfo()->recordRelocMap(toSmash(), dest, "Arc-1");
       break;
 
     case Tag::ADDR: {
@@ -89,29 +92,29 @@ TCA IncomingBranch::target() const {
   always_assert(false);
 }
 
-TCA TransLoc::mainStart()   const { return mcg->code.base() + m_mainOff; }
-TCA TransLoc::coldStart()   const { return mcg->code.base() + m_coldOff; }
-TCA TransLoc::frozenStart() const { return mcg->code.base() + m_frozenOff; }
+TCA TransLoc::mainStart()   const { return mcg->code().base() + m_mainOff; }
+TCA TransLoc::coldStart()   const { return mcg->code().base() + m_coldOff; }
+TCA TransLoc::frozenStart() const { return mcg->code().base() + m_frozenOff; }
 
 void TransLoc::setMainStart(TCA newStart) {
-  assert(mcg->code.base() <= newStart &&
-         newStart - mcg->code.base() < std::numeric_limits<uint32_t>::max());
+  assert(mcg->code().base() <= newStart &&
+         newStart - mcg->code().base() < std::numeric_limits<uint32_t>::max());
 
-  m_mainOff = newStart - mcg->code.base();
+  m_mainOff = newStart - mcg->code().base();
 }
 
 void TransLoc::setColdStart(TCA newStart) {
-  assert(mcg->code.base() <= newStart &&
-         newStart - mcg->code.base() < std::numeric_limits<uint32_t>::max());
+  assert(mcg->code().base() <= newStart &&
+         newStart - mcg->code().base() < std::numeric_limits<uint32_t>::max());
 
-  m_coldOff = newStart - mcg->code.base();
+  m_coldOff = newStart - mcg->code().base();
 }
 
 void TransLoc::setFrozenStart(TCA newStart) {
-  assert(mcg->code.base() <= newStart &&
-         newStart - mcg->code.base() < std::numeric_limits<uint32_t>::max());
+  assert(mcg->code().base() <= newStart &&
+         newStart - mcg->code().base() < std::numeric_limits<uint32_t>::max());
 
-  m_frozenOff = newStart - mcg->code.base();
+  m_frozenOff = newStart - mcg->code().base();
 }
 
 void SrcRec::setFuncInfo(const Func* f) {
@@ -139,7 +142,7 @@ FPInvOffset SrcRec::nonResumedSPOff() const {
 
 void SrcRec::chainFrom(IncomingBranch br) {
   assertx(br.type() == IncomingBranch::Tag::ADDR ||
-         mcg->code.isValidCodeAddress(br.toSmash()));
+          mcg->code().isValidCodeAddress(br.toSmash()));
   TCA destAddr = getTopTranslation();
   m_incomingBranches.push_back(br);
   TRACE(1, "SrcRec(%p)::chainFrom %p -> %p (type %d); %zd incoming branches\n",
@@ -153,13 +156,14 @@ void SrcRec::chainFrom(IncomingBranch br) {
   }
 }
 
-void SrcRec::registerFallbackJump(TCA from, ConditionCode cc /* = -1 */) {
+void SrcRec::registerFallbackJump(TCA from, ConditionCode cc,
+                                  CGMeta& fixups) {
   auto incoming = cc < 0 ? IncomingBranch::jmpFrom(from)
                          : IncomingBranch::jccFrom(from);
 
   // We'll need to know the location of this jump later so we can
   // patch it to new translations added to the chain.
-  mcg->cgFixups().m_inProgressTailJumps.push_back(incoming);
+  fixups.inProgressTailJumps.push_back(incoming);
 }
 
 void SrcRec::newTranslation(TransLoc loc,

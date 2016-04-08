@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -65,8 +65,7 @@ enum class ThisContextError {
 ///////////////////////////////////////////////////////////////////////////////
 // scanner
 
-class Token : public ScannerToken {
-public:
+struct Token : ScannerToken {
   ExpressionPtr exp;
   StatementPtr stmt;
   TypeAnnotationPtr typeAnnotation;
@@ -114,8 +113,7 @@ public:
 
 DECLARE_BOOST_TYPES(Parser);
 
-class Parser : public ParserBase {
-public:
+struct Parser : ParserBase {
   static StatementListPtr ParseString(const String& input, AnalysisResultPtr ar,
                                       const char *fileName = nullptr,
                                       bool lambdaMode = false);
@@ -159,6 +157,7 @@ public:
   void onClassAbstractConstant(Token &out, Token *exprs, Token &var);
   void onClassTypeConstant(Token &out, Token &var, Token &value);
   void onSimpleVariable(Token &out, Token &var);
+  void onPipeVariable(Token &out);
   void onSynthesizedVariable(Token &out, Token &var) {
     onSimpleVariable(out, var);
   }
@@ -203,6 +202,7 @@ public:
   void onArray(Token &out, Token &pairs, int op = T_ARRAY);
   void onArrayPair(Token &out, Token *pairs, Token *name, Token &value,
                    bool ref);
+  void onDict(Token &out, Token &pairs);
   void onEmptyCollection(Token &out);
   void onCollectionPair(Token &out, Token *pairs, Token *name, Token &value);
   void onUserAttribute(Token &out, Token *attrList, Token &name, Token &value);

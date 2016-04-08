@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -37,8 +37,7 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class ClassicWriter final : public LogWriter {
-public:
+struct ClassicWriter final : LogWriter {
   ClassicWriter(const AccessLogFileData& alfd, LogChannel chan)
     : LogWriter(chan)
     , m_logdata(alfd)
@@ -55,8 +54,7 @@ private:
   static void skipField(const char*& fmt);
 };
 
-class FieldGenerator {
-public:
+struct FieldGenerator {
   FieldGenerator(Transport* t, const VirtualHost* vh,
                  AccessLog::ThreadData* tdata)
     : transport(t)

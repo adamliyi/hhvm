@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -15,16 +15,20 @@
    +----------------------------------------------------------------------+
 */
 
+#include "hphp/runtime/ext/thrift/ext_thrift.h"
+
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/request-local.h"
-#include "hphp/runtime/ext/thrift/transport.h"
+#include "hphp/runtime/vm/vm-regs.h"
+
 #include "hphp/runtime/ext/collections/ext_collections-idl.h"
 #include "hphp/runtime/ext/reflection/ext_reflection.h"
-#include "hphp/runtime/ext/thrift/ext_thrift.h"
 #include "hphp/runtime/ext/thrift/spec-holder.h"
-#include "hphp/runtime/base/request-event-handler.h"
-#include "hphp/runtime/vm/vm-regs.h"
-#include "hphp/runtime/vm/jit/mc-generator.h"
+#include "hphp/runtime/ext/thrift/transport.h"
+
+#include "hphp/runtime/vm/jit/perf-counters.h"
+
 #include "hphp/util/fixed-vector.h"
 
 #include <folly/AtomicHashMap.h>
@@ -165,8 +169,7 @@ struct CompactRequestData final : RequestEventHandler {
 };
 IMPLEMENT_STATIC_REQUEST_LOCAL(CompactRequestData, s_compact_request_data);
 
-class CompactWriter {
-  public:
+struct CompactWriter {
     explicit CompactWriter(PHPOutputTransport *transport) :
       transport(transport),
       version(VERSION),
@@ -496,8 +499,7 @@ class CompactWriter {
     }
 };
 
-class CompactReader {
-  public:
+struct CompactReader {
     explicit CompactReader(const Object& _transportobj) :
       transport(_transportobj),
       version(VERSION),
@@ -534,7 +536,7 @@ class CompactReader {
         Object exn = create_object(s_TApplicationException, Array());
         Array spec(get_tspec(exn->getVMClass()));
         readStruct(exn, spec);
-        throw exn;
+        throw_object(exn);
       } else {
         thrift_error("Invalid response type", ERR_INVALID_DATA);
       }
@@ -559,6 +561,10 @@ class CompactReader {
             readComplete = true;
             Variant fieldValue = readField(fieldSpec, fieldType);
             dest->o_set(fieldName, fieldValue, dest->getClassName());
+            bool isUnion = spec.rvalAt(s_union).toBoolean();
+            if (isUnion) {
+              dest->o_set(s__type, Variant(fieldNum), dest->getClassName());
+            }
           }
         }
 
@@ -595,6 +601,13 @@ class CompactReader {
             prop[i].name != fields[i].name ||
             !typesAreCompatible(fieldType, fields[i].type)) {
           return readStructSlow(dest, spec, fieldNum, fieldType);
+        }
+        if (fields[i].isUnion) {
+          if (s__type.equal(prop[numFields].name)) {
+            tvAsVariant(&objProp[numFields]) = Variant(fieldNum);
+          } else {
+            return readStructSlow(dest, spec, fieldNum, fieldType);
+          }
         }
         ArrNR fieldSpec(fields[i].spec);
         tvAsVariant(&objProp[i]) = readField(fieldSpec.asArray(), fieldType);

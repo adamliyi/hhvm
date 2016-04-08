@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -213,12 +213,10 @@ bool hasObviousStackOutput(Op op) {
   case Op::IssetN:
   case Op::IssetG:
   case Op::IssetS:
-  case Op::IssetM:
   case Op::EmptyL:
   case Op::EmptyN:
   case Op::EmptyG:
   case Op::EmptyS:
-  case Op::EmptyM:
   case Op::IsTypeC:
   case Op::IsTypeL:
   case Op::OODeclExists:
@@ -336,7 +334,7 @@ bool propagate_constants(const Bytecode& op, const State& state, Gen gen) {
     case KindOfDouble:
       gen(bc::Double { v->m_data.dbl });
       break;
-    case KindOfStaticString:
+    case KindOfPersistentString:
       gen(bc::String { v->m_data.pstr });
       break;
     case KindOfPersistentArray:
@@ -437,6 +435,7 @@ void first_pass(const Index& index,
     } else if (op.op == Op::CGetL3) {
       srcStack.insert(srcStack.end() - 2, op.op);
     } else {
+      FTRACE(2, "   srcStack: pop {} push {}\n", op.numPop(), op.numPush());
       for (int i = 0; i < op.numPop(); i++) {
         srcStack.pop_back();
       }

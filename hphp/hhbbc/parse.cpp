@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -361,6 +361,22 @@ template<class T> void decode(PC& pc, T& val) {
   val = decode<T>(pc);
 }
 
+MKey make_mkey(const php::Func& func, MemberKey mk) {
+  switch (mk.mcode) {
+    case MEL: case MPL:
+      return MKey{mk.mcode, borrow(func.locals[mk.iva])};
+    case MEC: case MPC:
+      return MKey{mk.mcode, mk.iva};
+    case MET: case MPT: case MQT:
+      return MKey{mk.mcode, mk.litstr};
+    case MEI:
+      return MKey{mk.mcode, mk.int64};
+    case MW:
+      return MKey{};
+  }
+  not_reached();
+}
+
 template<class FindBlock>
 void populate_block(ParseUnitState& puState,
                     const FuncEmitter& fe,
@@ -370,41 +386,6 @@ void populate_block(ParseUnitState& puState,
                     PC const past,
                     FindBlock findBlock) {
   auto const& ue = fe.ue();
-
-  auto decode_minstr = [&] {
-    auto const immVec = ImmVector::createFromStream(pc);
-    pc += immVec.size() + sizeof(int32_t) + sizeof(int32_t);
-
-    auto ret = MVector {};
-    auto vec = immVec.vec();
-
-    ret.lcode = static_cast<LocationCode>(*vec++);
-    if (numLocationCodeImms(ret.lcode)) {
-      assert(numLocationCodeImms(ret.lcode) == 1);
-      ret.locBase = borrow(func.locals[decodeVariableSizeImm(&vec)]);
-    }
-
-    while (vec < pc) {
-      auto elm = MElem {};
-      elm.mcode = static_cast<MemberCode>(*vec++);
-      switch (memberCodeImmType(elm.mcode)) {
-      case MCodeImm::None: break;
-      case MCodeImm::Local:
-        elm.immLoc = borrow(func.locals[decodeMemberCodeImm(&vec, elm.mcode)]);
-        break;
-      case MCodeImm::String:
-        elm.immStr = ue.lookupLitstr(decodeMemberCodeImm(&vec, elm.mcode));
-        break;
-      case MCodeImm::Int:
-        elm.immInt = decodeMemberCodeImm(&vec, elm.mcode);
-        break;
-      }
-      ret.mcodes.push_back(elm);
-    }
-    assert(vec == pc);
-
-    return ret;
-  };
 
   auto decode_stringvec = [&] {
     auto const vecLen = decode<int32_t>(pc);
@@ -468,19 +449,18 @@ void populate_block(ParseUnitState& puState,
     puState.createClMap[b.CreateCl.str2].insert(&func);
   };
 
-#define IMM_MA(n)      auto mvec = decode_minstr();
 #define IMM_BLA(n)     auto targets = decode_switch(opPC);
 #define IMM_SLA(n)     auto targets = decode_sswitch(opPC);
 #define IMM_ILA(n)     auto iterTab = decode_itertab();
-#define IMM_IVA(n)     auto arg##n = decodeVariableSizeImm(&pc);
+#define IMM_IVA(n)     auto arg##n = decode_iva(pc);
 #define IMM_I64A(n)    auto arg##n = decode<int64_t>(pc);
 #define IMM_LA(n)      auto loc##n = [&] {                       \
-                         auto id = decodeVariableSizeImm(&pc);   \
+                         auto id = decode_iva(pc);               \
                          always_assert(id < func.locals.size()); \
                          return borrow(func.locals[id]);         \
                        }();
 #define IMM_IA(n)      auto iter##n = [&] {                      \
-                         auto id = decodeVariableSizeImm(&pc);   \
+                         auto id = decode_iva(pc);               \
                          always_assert(id < func.iters.size());  \
                          return borrow(func.iters[id]);          \
                        }();
@@ -494,6 +474,7 @@ void populate_block(ParseUnitState& puState,
 #define IMM_OA_IMPL(n) subop##n; decode(pc, subop##n);
 #define IMM_OA(type)   type IMM_OA_IMPL
 #define IMM_VSA(n)     auto keys = decode_stringvec();
+#define IMM_KA(n)      auto mkey = make_mkey(func, decode_member_key(pc, &ue));
 
 #define IMM_NA
 #define IMM_ONE(x)           IMM_##x(1)
@@ -573,7 +554,6 @@ void populate_block(ParseUnitState& puState,
 
 #undef O
 
-#undef IMM_MA
 #undef IMM_BLA
 #undef IMM_SLA
 #undef IMM_ILA

@@ -78,6 +78,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::fabs:
     case Vinstr::fcmpo:
     case Vinstr::fcmpu:
+    case Vinstr::fctidz:
     case Vinstr::imul:
     case Vinstr::incl:
     case Vinstr::incq:
@@ -182,7 +183,6 @@ bool effectful(Vinstr& inst) {
     case Vinstr::cbcc:
     case Vinstr::contenter:
     case Vinstr::cqo:
-    case Vinstr::countbytecode:
     case Vinstr::debugtrap:
     case Vinstr::declm:
     case Vinstr::decqm:
@@ -233,6 +233,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::storewi:
     case Vinstr::stublogue:
     case Vinstr::stubret:
+    case Vinstr::stubtophp:
     case Vinstr::syncpoint:
     case Vinstr::syncvmsp:
     case Vinstr::tailcallphp:

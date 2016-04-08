@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | (c) Copyright IBM Corporation 2015                                   |
+   | (c) Copyright IBM Corporation 2015-2016                              |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -14,8 +14,8 @@
    +----------------------------------------------------------------------+
 */
 
-#ifndef incl_ASM_PPC64_H_
-#define incl_ASM_PPC64_H_
+#ifndef incl_HPHP_PPC64_ASM_ASM_PPC64_H_
+#define incl_HPHP_PPC64_ASM_ASM_PPC64_H_
 
 #include <cstdint>
 #include <cassert>
@@ -25,13 +25,10 @@
 #include "hphp/util/data-block.h"
 #include "hphp/runtime/vm/jit/types.h"
 
+#include "hphp/ppc64-asm/decoded-instr-ppc64.h"
 #include "hphp/ppc64-asm/isa-ppc64.h"
 #include "hphp/util/asm-x64.h"
 #include "hphp/util/immed.h"
-
-// allow asserts due to performance constraints
-// comment definition to disable
-//#define PPC64_PERFORMANCE 1
 
 namespace ppc64_asm {
 
@@ -39,7 +36,7 @@ namespace ppc64_asm {
 /* using override */ using HPHP::jit::RegXMM;
 /* using override */ using HPHP::jit::RegSF;
 /* using override */ using HPHP::jit::MemoryRef;
-/* using override */ using HPHP::jit::Immed64;
+/* using override */ using HPHP::jit::Immed;
 /* using override */ using HPHP::CodeAddress;
 /* using override */ using HPHP::jit::ConditionCode;
 
@@ -48,8 +45,6 @@ namespace ppc64_asm {
 constexpr int min_callstack_size        = 32;
 // Must be the same value of AROFF(m_savedRip).
 constexpr int lr_position_on_callstack  = 16;
-// Must be the same value of AROFF(m_savedToc).
-constexpr int toc_position_on_callstack = 24;
 
 #define BRANCHES(cr) \
   CR##cr##_LessThan,         \
@@ -89,8 +84,7 @@ enum class BranchConditions {
 
 #undef BRANCHES
 
-class BranchParams {
-  public:
+struct BranchParams {
     /* BO and BI parameter mapping related to BranchConditions */
     enum class BO {
       CRNotSet              = 4,
@@ -271,17 +265,7 @@ class BranchParams {
     /*
      * Get the BranchParams from an emitted conditional branch
      */
-    BranchParams(PPC64Instr instr) {
-      // first, guarantee that is a conditional branch
-      if (((instr >> 26) == 16) || ((instr >> 26) == 19)) {
-        // bc, bclr, bcctr, bctar
-        m_bo = (BranchParams::BO)((instr >> 21) & 0x1F);
-        m_bi = (BranchParams::BI)((instr >> 16) & 0x1F);
-      } else {
-        assert(false && "Not a valid conditional branch instruction");
-        // also possible: defineBoBi(BranchConditions::Always);
-      }
-    }
+    BranchParams(PPC64Instr instr);
 
     ~BranchParams() {}
 
@@ -594,9 +578,9 @@ struct Assembler {
   void addco(const Reg64& rt, const Reg64& ra, const Reg64& rb, bool rc = 0);
   void adde(const Reg64& rt, const Reg64& ra, const Reg64& rb, bool rc = 0);
   void addeo(const Reg64& rt, const Reg64& ra, const Reg64& rb, bool rc = 0);
-  void addi(const Reg64& rt, const Reg64& ra, Immed64 imm);
+  void addi(const Reg64& rt, const Reg64& ra, Immed imm);
   void addic(const Reg64& rt, const Reg64& ra, uint16_t imm, bool rc = 0);
-  void addis(const Reg64& rt, const Reg64& ra, Immed64 imm);
+  void addis(const Reg64& rt, const Reg64& ra, Immed imm);
   void addme(const Reg64& rt, const Reg64& ra, bool rc = 0);
   void addmeo(const Reg64& rt, const Reg64& ra, bool rc = 0);
   void addo(const Reg64& rt, const Reg64& ra, const Reg64& rb, bool rc = 0);
@@ -604,8 +588,8 @@ struct Assembler {
   void addzeo(const Reg64& rt, const Reg64& ra, bool rc = 0);
   void and(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void andc(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
-  void andi(const Reg64& ra, const Reg64& rs, Immed64 imm);
-  void andis(const Reg64& ra, const Reg64& rs, Immed64 imm);
+  void andi(const Reg64& ra, const Reg64& rs, Immed imm);
+  void andis(const Reg64& ra, const Reg64& rs, Immed imm);
   void b(int32_t offset);
   void ba(uint32_t target_addr);
   void bl(int32_t offset);
@@ -622,10 +606,10 @@ struct Assembler {
   void bctarl(uint8_t bo, uint8_t bi, uint16_t bh);
   void bpermd(const Reg64& ra, const Reg64& rs, const Reg64& rv);
   void cmp(uint16_t bf, bool l, const Reg64& ra, const Reg64& rb);
-  void cmpi(uint16_t bf, bool l, const Reg64& ra, Immed64 imm);
+  void cmpi(uint16_t bf, bool l, const Reg64& ra, Immed imm);
   void cmpb(const Reg64& rs, const Reg64& ra, const Reg64& rb);
   void cmpl(uint16_t bf, bool l, const Reg64& ra, const Reg64& rb);
-  void cmpli(uint16_t bf, bool l, const Reg64& ra, Immed64 imm);
+  void cmpli(uint16_t bf, bool l, const Reg64& ra, Immed imm);
   void cntlzd(const Reg64& ra, const Reg64& rs, bool rc = 0);
   void cntlzw(const Reg64& ra, const Reg64& rs, bool rc = 0);
   void crand(uint16_t bt, uint16_t ba, uint16_t bb);
@@ -666,6 +650,9 @@ struct Assembler {
                                                                   bool rc = 0);
   void lfs(const RegXMM& frt, MemoryRef m) {
     EmitDForm(48, rn(frt), rn(m.r.base), m.r.disp);
+  }
+  void lxvd2x(const RegXMM& Xt, const MemoryRef& m) {
+    EmitXX1Form(31, rn(Xt), rn(m.r.base), rn(m.r.index), 844, 0);
   }
   void lxvw4x(const RegXMM& Xt, const MemoryRef& m) {
     EmitXX1Form(31, rn(Xt), rn(m.r.base), rn(m.r.index), 780, 0);
@@ -719,8 +706,8 @@ struct Assembler {
   void nor(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void or(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
   void orc(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
-  void ori(const Reg64& ra, const Reg64& rs, Immed64 imm);
-  void oris(const Reg64& ra, const Reg64& rs, Immed64 imm);
+  void ori(const Reg64& ra, const Reg64& rs, Immed imm);
+  void oris(const Reg64& ra, const Reg64& rs, Immed imm);
   void popcntb(const Reg64& ra, const Reg64& rs);
   void popcntd(const Reg64& ra, const Reg64& rs);
   void popcntw(const Reg64& ra, const Reg64& rs);
@@ -797,8 +784,8 @@ struct Assembler {
   void tw(uint16_t to, const Reg64& ra, const Reg64& rb);
   void twi(uint16_t to, const Reg64& ra, uint16_t imm);
   void xor(const Reg64& ra, const Reg64& rs, const Reg64& rb, bool rc = 0);
-  void xori(const Reg64& ra, const Reg64& rs, Immed64 imm);
-  void xoris(const Reg64& ra, const Reg64& rs, Immed64 imm);
+  void xori(const Reg64& ra, const Reg64& rs, Immed imm);
+  void xoris(const Reg64& ra, const Reg64& rs, Immed imm);
   void xscvdpuxds(const RegXMM& xt, const RegXMM& xb) {
     //TODO(rcardoso): bx tx bits
     EmitXX2Form(60, rn(xt), 0, rn(xb), 328, 0, 0);
@@ -1149,7 +1136,10 @@ struct Assembler {
     EmitXForm(63, rn(frt), rn(0), rn(frb), 264, rc);
   }
   void fadds()          { not_implemented(); }
-  void fcfid()          { not_implemented(); }
+  void fcfid(const RegXMM& frt, const RegXMM& frb, bool rc = 0) {
+    EmitXForm(63, rn(frt), rn(0), rn(frb), 846, rc);
+  }
+
   void fcfids(const RegXMM& frt, const RegXMM& frb, bool rc = 0) {
     EmitXForm(59, rn(frt), rn(0), rn(frb), 846, rc);
   }
@@ -1293,7 +1283,9 @@ struct Assembler {
   void maclhwu()        { not_implemented(); }
   void maclhwuo()       { not_implemented(); }
   void mbar()           { not_implemented(); }
-  void mcrfs()          { not_implemented(); }
+  void mcrfs(uint8_t bf, uint8_t bfa) {
+    EmitXForm(63, (bf << 2), (bfa << 2), 0, 64);
+  }
   void mcrxr()          { not_implemented(); }
   void mfbhrbe()        { not_implemented(); }
   void mfcr(const Reg64& rt) {
@@ -1316,15 +1308,16 @@ struct Assembler {
   void msgclrp()        { not_implemented(); }
   void msgsnd()         { not_implemented(); }
   void msgsndp()        { not_implemented(); }
-  void mtcrf()         { not_implemented(); }
+  void mtcrf(uint16_t fxm, const Reg64& ra) {
+    EmitXFXForm(31, rn(ra), (fxm << 1), 144);
+  }
   void mtocrf(uint16_t fxm, const Reg64& rt)          {
     EmitXFXForm(31, rn(rt), ( ((fxm << 1) & 0x1fe) |0x200), 144);
   }
-
   void mtdcr()          { not_implemented(); }
   void mtdcrux()        { not_implemented(); }
   void mtdcrx ()        { not_implemented(); }
-  void mtfsb0()         { not_implemented(); }
+  void mtfsb0(uint8_t bt) { EmitXForm(63, bt, 0 , 0, 70); }
   void mtfsb1()         { not_implemented(); }
   void mtfsf()          { not_implemented(); }
   void mtfsfi()         { not_implemented(); }
@@ -1836,14 +1829,14 @@ struct Assembler {
   void crclr()          { not_implemented(); }  //Extended crxor Bx,Bx,BX
   void crnot()          { not_implemented(); }  //Extended crnor Bx,By,By
   void crset()          { not_implemented(); }  //Extended creqv Bx,Bx,Bx
-  void li(const Reg64& rt, Immed64 imm) {
+  void li(const Reg64& rt, Immed imm) {
     addi(rt, Reg64(0), imm);
   }
   void la()             { not_implemented(); }  //Extended addi Rx,Ry,disp
-  void subi(const Reg64& rt, const Reg64& ra, Immed64 imm) {
+  void subi(const Reg64& rt, const Reg64& ra, Immed imm) {
     addi(rt, ra, -imm);
   }
-  void lis(const Reg64& rt, Immed64 imm) {
+  void lis(const Reg64& rt, Immed imm) {
     addis(rt, Reg64(0), imm);
   }
   void subis()          { not_implemented(); }  //Extended addis Rx,Ry,-value
@@ -1855,10 +1848,10 @@ struct Assembler {
   }
   void subic()          { not_implemented(); }  //Extended addic Rx,Ry,-value
   void subc()           { not_implemented(); }  //Extended subfc Rx,Rz,Ry
-  void cmpdi(const Reg64& ra, Immed64 imm) {
+  void cmpdi(const Reg64& ra, Immed imm) {
     cmpi(0, 1, ra, imm);
   }
-  void cmpwi(const Reg64& ra, Immed64 imm) {
+  void cmpwi(const Reg64& ra, Immed imm) {
     //Extended cmpi 3,0,Rx,value
     // TODO(CRField): if other CRs than 0 is used, please change this to 3
     cmpi(0, 0, ra, imm);
@@ -1871,10 +1864,10 @@ struct Assembler {
     // TODO(CRField): if other CRs than 0 is used, please change this to 3
     cmp(0, 0, ra, rb);
   }
-  void cmpldi(const Reg64& ra, Immed64 imm, CR CRnum = CR::CR0) {
+  void cmpldi(const Reg64& ra, Immed imm, CR CRnum = CR::CR0) {
     cmpli(static_cast<uint16_t>(CRnum), 1, ra, imm);
   }
-  void cmplwi(const Reg64& ra, Immed64 imm, CR CRnum = CR::CR0) {
+  void cmplwi(const Reg64& ra, Immed imm, CR CRnum = CR::CR0) {
     //Extended cmpli 3,0,Rx,value
     // TODO(CRField): if other CRs than 0 is used, please change this to 3
     cmpli(static_cast<uint16_t>(CRnum), 0, ra, imm);
@@ -1923,14 +1916,16 @@ struct Assembler {
   void srdi(const Reg64& ra, const Reg64& rs, int8_t sh, bool rc = 0) {
     rldicl(ra, rs, 64-sh, sh, rc);
   }
-  void clrldi(const Reg64& ra, const Reg64& rs, int8_t sh, bool rc = 0) {
-    rldicl(ra, rs, 0, sh, rc);
+  void clrldi(const Reg64& ra, const Reg64& rs, int8_t mb, bool rc = 0) {
+    rldicl(ra, rs, 0, mb, rc);
   }
   void extldi()         { not_implemented(); }  //Extended
   void sldi(const Reg64& ra, const Reg64& rs, int8_t sh, bool rc = 0) {
     rldicr(ra, rs, sh, 63-sh, rc);
   }
-  void clrrdi()         { not_implemented(); }  //Extended
+  void clrrdi(const Reg64& ra, const Reg64& rs, int8_t sh, bool rc = 0) {
+    rldicr(ra, rs, 0, 63-sh, rc);
+  }
   void clrrwi(const Reg64& ra, const Reg64& rs, int8_t sh, bool rc = 0) {
     rlwinm(ra, rs, 0, 0, 31-sh, rc);
   }
@@ -1982,28 +1977,51 @@ struct Assembler {
   }
 
   // Auxiliary for loading a complete 64bits immediate into a register
-  void li64 (const Reg64& rt, int64_t imm64);
+  void li64(const Reg64& rt, int64_t imm64, bool fixedSize = true);
+
+  // Destroy a new frame on call stack
+  void popFrame(const Reg64& rsp);
 
   // Create prologue when calling.
-  void prologue (const Reg64& rsp,
-                 const Reg64& rtoc,
-                 const Reg64& rfuncln,
-                 const Reg64& rvmfp);
+  void prologue(const Reg64& rsp,
+                const Reg64& rtoc,
+                const Reg64& rfuncln,
+                const Reg64& rvmfp);
 
   // Create epilogue when calling.
-  void epilogue (const Reg64& rsp, const Reg64& rtoc, const Reg64& rfuncln);
+  void epilogue(const Reg64& rsp,
+                const Reg64& rtoc,
+                const Reg64& rfuncln);
 
-  void call (const Reg64& rsp,
-             const Reg64& rtoc,
-             const Reg64& rfuncln,
-             const Reg64& rvmfp,
-             CodeAddress target);
+  // generic template, for CodeAddress and Label
+  template <typename T>
+  void call(const Reg64& rsp,
+            const Reg64& rtoc,
+            const Reg64& rfuncln,
+            const Reg64& rvmfp,
+            T& target) {
+    prologue(rsp, rtoc, rfuncln, rvmfp);
+    branchAuto(target, BranchConditions::Always, LinkReg::Save);
+    epilogue(rsp, rtoc, rfuncln);
+  }
+
+  // specialization of call for Reg64
+  void call(const Reg64& rsp,
+            const Reg64& rtoc,
+            const Reg64& rfuncln,
+            const Reg64& rvmfp,
+            Reg64 target) {
+    prologue(rsp, rtoc, rfuncln, rvmfp);
+    mr(reg::r12, target);
+    mtctr(reg::r12);
+    bctrl();
+    epilogue(rsp, rtoc, rfuncln);
+  }
 
   // checks if the @inst is pointing to a call
   static inline bool isCall(HPHP::jit::TCA inst) {
-    // a call always begin with a mflr and it's rarely used elsewhere: good tag
-    return ((((inst[3] >> 2) & 0x3F) == 31) &&                          // OPCD
-      ((((inst[1] & 0x3) << 7) | ((inst[0] >> 1) & 0xFF)) == 339));     // XO
+    DecodedInstruction di(inst);
+    return di.isCall();
   }
 
   // Retrieve the target defined by li64 instruction
@@ -2039,34 +2057,8 @@ struct Assembler {
   //Can be used to generate or force a unimplemented opcode exception
   void unimplemented();
 
-  static void patchBc(CodeAddress jmp, CodeAddress dest) {
-    // Opcode located at the 6 most significant bits
-    assert(((jmp[3] >> 2) & 0x3F) == 16);  // B-Form
-    ssize_t diff = dest - jmp;
-    assert(HPHP::jit::deltaFits(diff, HPHP::sz::word) &&
-        "Patching offset is too big");
-    int16_t* BD = (int16_t*)(jmp);    // target address location in instruction
-
-    // Keep AA and LK values
-    *BD = static_cast<int16_t>(diff & 0xFFFC) | ((*BD) & 0x3);
-  }
-
-  static void patchBctr(CodeAddress jmp, CodeAddress dest) {
-    // Check Label::branchAuto for details
-    HPHP::CodeBlock cb2;
-
-#ifndef NDEBUG  // avoid "unused variable 'bctr_addr'" warning on release build
-    // skips the li64 and a mtctr instruction
-    CodeAddress bctr_addr = jmp + kLi64InstrLen + 1 * kBytesPerInstr;
-    // check for instruction opcode
-    assert(((bctr_addr[3] >> 2) & 0x3F) == 19);
-#endif
-
-    // Initialize code block cb2 pointing to li64
-    cb2.init(jmp, kLi64InstrLen, "patched bctr");
-    Assembler b{ cb2 };
-    b.li64(reg::r12, ssize_t(dest));
-  }
+  static void patchBc(CodeAddress jmp, CodeAddress dest);
+  static void patchBctr(CodeAddress jmp, CodeAddress dest);
 
   void emitNop(int nbytes) {
     assert((nbytes % 4 == 0) && "This arch supports only 4 bytes alignment");
@@ -2198,6 +2190,26 @@ protected:
 
       dword(x_formater.instruction);
    }
+
+   void EmitXForm(const uint8_t op,
+                  const uint32_t rt,
+                  const uint32_t ra,
+                  const uint32_t rb,
+                  const uint16_t xop,
+                  const bool rc = 0){
+
+      X_form_t x_formater {
+                            rc,
+                            xop,
+                            static_cast<uint32_t>(rb),
+                            static_cast<uint32_t>(ra),
+                            static_cast<uint32_t>(rt),
+                            op
+                          };
+
+      dword(x_formater.instruction);
+   }
+
 
    void EmitDSForm(const uint8_t op,
                    const RegNumber rt,
@@ -2396,9 +2408,9 @@ protected:
     XFX_form_t xfx_formater {
       rsv,
       xo,
-      static_cast<uint32_t>((mask) & 0x1F),
+
+      static_cast<uint32_t>((mask) & 0x1f),
       static_cast<uint32_t>(((mask) >> 5) & 0x1F),
-      //static_cast<uint32_t>((mask) & 0x1F),
       static_cast<uint32_t>(rs),
       op
     };
@@ -2633,6 +2645,13 @@ struct Label {
     // When branching to another context, r12 need to keep the target address
     // to correctly set r2 (TOC reference).
     a.mtctr(reg::r12);
+    if (bc == BranchConditions::Overflow ||
+        bc == BranchConditions::NoOverflow) {
+      a.xor(reg::r0, reg::r0, reg::r0,false);
+      a.mtspr(Assembler::SpecialReg::XER, reg::r0);
+    } else {
+      a.emitNop(2*Assembler::kBytesPerInstr);
+    }
     if (LinkReg::Save == lr) a.bcctrl(bp.bo(), bp.bi(), 0);
     else                     a.bcctr (bp.bo(), bp.bi(), 0);
   }

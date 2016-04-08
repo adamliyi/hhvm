@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | (c) Copyright IBM Corporation 2015                                   |
+   | (c) Copyright IBM Corporation 2015-2016                              |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,8 +15,41 @@
 */
 
 #include "hphp/ppc64-asm/asm-ppc64.h"
+#include "hphp/ppc64-asm/decoder-ppc64.h"
 
 namespace ppc64_asm {
+
+BranchParams::BranchParams(PPC64Instr instr) {
+  DecoderInfo* dinfo = Decoder::GetDecoder().decode(instr);
+  switch (dinfo->opcode_name()) {
+    case OpcodeNames::op_bc:
+    case OpcodeNames::op_bca:
+    case OpcodeNames::op_bcl:
+    case OpcodeNames::op_bcla:
+    case OpcodeNames::op_bclr:
+      assert(dinfo->form() == Form::kB);
+      B_form_t bform;
+      bform.instruction = dinfo->instruction_image();
+      m_bo = BranchParams::BO(bform.BO);
+      m_bi = BranchParams::BI(bform.BI);
+      break;
+    case OpcodeNames::op_bcctr:
+    case OpcodeNames::op_bcctrl:
+    case OpcodeNames::op_bclrl:
+    case OpcodeNames::op_bctar:
+    case OpcodeNames::op_bctarl:
+      assert(dinfo->form() == Form::kXL);
+      XL_form_t xlform;
+      xlform.instruction = dinfo->instruction_image();
+      m_bo = BranchParams::BO(xlform.BT);
+      m_bi = BranchParams::BI(xlform.BA);
+      break;
+    default:
+      assert(false && "Not a valid conditional branch instruction");
+      // also possible: defineBoBi(BranchConditions::Always);
+      break;
+  }
+}
 
 /*
  * Macro definition for EmitXOForm functions
@@ -106,7 +139,7 @@ ADDS
 
 #undef ADDS
 
-void Assembler::addi(const Reg64& rt, const Reg64& ra, Immed64 imm) {
+void Assembler::addi(const Reg64& rt, const Reg64& ra, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(14, rn(rt), rn(ra), imm.w());
 }
@@ -115,7 +148,7 @@ void Assembler::addic(const Reg64& rt, const Reg64& ra, uint16_t imm, bool rc) {
   EmitDForm(12 + (uint8_t) rc, rn(rt), rn(ra), imm);
 }
 
-void Assembler::addis(const Reg64& rt, const Reg64& ra, Immed64 imm) {
+void Assembler::addis(const Reg64& rt, const Reg64& ra, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(15, rn(rt), rn(ra), imm.w());
 }
@@ -130,12 +163,12 @@ void Assembler::andc(const Reg64& ra, const Reg64& rs, const Reg64& rb,
   EmitXForm(31, rn(rs), rn(ra), rn(rb), 60, rc);
 }
 
-void Assembler::andi(const Reg64& ra, const Reg64& rs, Immed64 imm) {
+void Assembler::andi(const Reg64& ra, const Reg64& rs, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(28, rn(rs), rn(ra), imm.w());
 }
 
-void Assembler::andis(const Reg64& ra, const Reg64& rs, Immed64 imm) {
+void Assembler::andis(const Reg64& ra, const Reg64& rs, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(29, rn(rs), rn(ra), imm.w());
 }
@@ -204,7 +237,7 @@ void Assembler::cmp(uint16_t bf, bool l, const Reg64& ra, const Reg64& rb) {
   EmitXForm(31, rn((bf << 2) | (uint16_t)l), rn(ra), rn(rb), 0);
 }
 
-void Assembler::cmpi(uint16_t bf, bool l, const Reg64& ra, Immed64 imm) {
+void Assembler::cmpi(uint16_t bf, bool l, const Reg64& ra, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(11, rn((bf << 2) | (uint16_t)l), rn(ra), imm.w());
 }
@@ -217,7 +250,7 @@ void Assembler::cmpl(uint16_t bf, bool l, const Reg64& ra, const Reg64& rb) {
   EmitXForm(31, rn((bf << 2) | (uint16_t)l), rn(ra), rn(rb), 32);
 }
 
-void Assembler::cmpli(uint16_t bf, bool l, const Reg64& ra, Immed64 imm) {
+void Assembler::cmpli(uint16_t bf, bool l, const Reg64& ra, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(10, rn((bf << 2) | (uint16_t)l), rn(ra), imm.w());
 }
@@ -441,12 +474,12 @@ void Assembler::orc(const Reg64& ra, const Reg64& rs, const Reg64& rb,
   EmitXForm(31, rn(rs), rn(ra), rn(rb), 412, rc);
 }
 
-void Assembler::ori(const Reg64& ra, const Reg64& rs, Immed64 imm) {
+void Assembler::ori(const Reg64& ra, const Reg64& rs, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(24, rn(rs), rn(ra), imm.w());
 }
 
-void Assembler::oris(const Reg64& ra, const Reg64& rs, Immed64 imm) {
+void Assembler::oris(const Reg64& ra, const Reg64& rs, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(25, rn(rs), rn(ra), imm.w());
 }
@@ -674,12 +707,12 @@ void Assembler::xor(const Reg64& ra, const Reg64& rs, const Reg64& rb,
   EmitXForm(31, rn(rs), rn(ra), rn(rb), 316, rc);
 }
 
-void Assembler::xori(const Reg64& ra, const Reg64& rs, Immed64 imm) {
+void Assembler::xori(const Reg64& ra, const Reg64& rs, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(26, rn(rs), rn(ra), imm.w());
 }
 
-void Assembler::xoris(const Reg64& ra, const Reg64& rs, Immed64 imm) {
+void Assembler::xoris(const Reg64& ra, const Reg64& rs, Immed imm) {
   assert(imm.fits(HPHP::sz::word) && "Immediate is too big");
   EmitDForm(27, rn(rs), rn(ra), imm.w());
 }
@@ -711,47 +744,143 @@ void Assembler::unimplemented(){
   EmitDForm(0, rn(0), rn(0), 0);
 }
 
+void Assembler::patchBc(CodeAddress jmp, CodeAddress dest) {
+  // Used for a relative branch
+  ssize_t diff = dest - jmp;
+  ssize_t abs = dest - static_cast<CodeAddress>(0);
+  PPC64Instr* instr = reinterpret_cast<PPC64Instr*>(jmp);
+
+  DecoderInfo* dinfo = Decoder::GetDecoder().decode(*instr);
+  OpcodeNames opn = dinfo->opcode_name();
+  switch (opn) {
+    case OpcodeNames::op_b:
+    case OpcodeNames::op_bl:
+    case OpcodeNames::op_ba:
+      // TODO(gut): actually the immediate can be as big as 26 bits
+      assert(dinfo->form() == Form::kI);
+      I_form_t iform;
+      iform.instruction = dinfo->instruction_image();
+      if (opn == OpcodeNames::op_ba) {
+        // absolute branch
+        assert(HPHP::jit::deltaFits(abs, HPHP::sz::word) &&
+            "Patching address is too big");
+        // address is 4 bytes aligned and it optimizes these 2 bits.
+        iform.LI = static_cast<uint32_t>(abs >> 2);
+      } else {
+        // relative branch
+        assert(HPHP::jit::deltaFits(diff, HPHP::sz::word) &&
+            "Patching offset is too big");
+        // address is 4 bytes aligned and it optimizes these 2 bits.
+        iform.LI = static_cast<uint32_t>(diff >> 2);
+      }
+      *instr = iform.instruction;
+      break;
+    case OpcodeNames::op_bc:
+    case OpcodeNames::op_bca:
+    case OpcodeNames::op_bcl:
+    case OpcodeNames::op_bcla:
+    case OpcodeNames::op_bclr:
+      assert(dinfo->form() == Form::kB);
+      B_form_t bform;
+      bform.instruction = dinfo->instruction_image();
+      if ((opn == OpcodeNames::op_bca) && (opn == OpcodeNames::op_bcla)) {
+        // absolute branch
+        assert(HPHP::jit::deltaFits(abs, HPHP::sz::word) &&
+            "Patching address is too big");
+        // address is 4 bytes aligned and it optimizes these 2 bits.
+        bform.BD = static_cast<uint32_t>(abs >> 2);
+      } else {
+        // relative branch
+        assert(HPHP::jit::deltaFits(diff, HPHP::sz::word) &&
+            "Patching offset is too big");
+        // address is 4 bytes aligned and it optimizes these 2 bits.
+        bform.BD = static_cast<uint32_t>(diff >> 2);
+      }
+      *instr = bform.instruction;
+      break;
+    default:
+      assert(false && "tried to patch not-expected-branch instruction");
+      break;
+  }
+}
+
+void Assembler::patchBctr(CodeAddress jmp, CodeAddress dest) {
+
+#ifdef DEBUG
+  // skips the li64, 2*nop and a mtctr instruction
+  CodeAddress bctr_addr = jmp + kLi64InstrLen + 3 * kBytesPerInstr;
+
+  // check for instruction opcode
+  DecoderInfo* dinfo = Decoder::GetDecoder().decode(bctr_addr);
+  OpcodeNames opn = dinfo->opcode_name();
+  if ((opn != OpcodeNames::op_bcctr) && (opn != OpcodeNames::op_bcctrl)) {
+      assert(false && "tried to patch not-expected-branch instruction");
+      return;
+  }
+#endif
+
+  // Initialize code block cb pointing to li64
+  HPHP::CodeBlock cb;
+  cb.init(jmp, kLi64InstrLen, "patched bctr");
+  Assembler b{ cb };
+  b.li64(reg::r12, ssize_t(dest));
+}
+
+// Destroy a new frame on call stack
+void Assembler::popFrame(const Reg64& rsp) {
+  addi(rsp, rsp, 16);
+}
+
 // Create prologue when calling
 void Assembler::prologue (const Reg64& rsp,
                           const Reg64& rtoc,
                           const Reg64& rfuncln,
                           const Reg64& rvmfp) {
-  // save caller's return address on caller's frame
+  // Get return address.
   mflr(rfuncln);
-  std(rfuncln, rsp[lr_position_on_callstack - min_callstack_size]);
-  // Set the backchain to go through the VM frames
-  std(rvmfp, rsp[-2 * min_callstack_size]);
-  addi(rsp, rsp, -2 * min_callstack_size);
 
-  // save TOC value locally
-  std(rtoc, rsp[toc_position_on_callstack]);
+  // Push LR and TOC
+  stdu(rtoc, rsp[-8]);          // this toc will never be overwritten.
+  stdu(rfuncln, rsp[-8]);
+
+  // The following toc is needed for unwind purposes at 24(r1) but might be
+  // overwritten (see epilogue below)
+
+  // Allocate frame and save the rvmfp as backchain.
+  addi(reg::r1, rsp, -32);
+  std(rtoc, reg::r1[24]);
+  std(rvmfp, reg::r1[0]);
 }
 
-// Create epilogue when calling.
 void Assembler::epilogue (const Reg64& rsp,
                           const Reg64& rtoc,
                           const Reg64& rfuncln) {
-  // restore this TOC value
-  ld(rtoc, rsp[toc_position_on_callstack]);
+  // The following TOC pointer recover may not be valid, as the called function
+  // might have pushed something onto the stack, thus overwriting the toc
+  // value. However, due to the specific code found below on _Unwind_Resume's
+  // prologue, this instruction needs to be directly after the branch,
+  // otherwise the TOC will be overwritten with another one on _Unwind_Resume's
+  // context:
+  //
+  // mflr    r11                // get the return address pointer
+  // lwz     r11,0(r11)         // read the instruction (4 bytes)
+  // xoris   r11,r11,59457      // validate if it's a load toc: "ld 2, 24(1)"
+  // cmplwi  r11,24
+  // beq     +8                 // skips next store if the load toc exists
+  // std     r2,3384(r1)
+  //
+  ld(reg::r2, reg::r1[24]);     // DON'T REMOVE THIS. See above
 
-  // restore caller's return address
-  addi(rsp, rsp, 2 * min_callstack_size);  // same in landingpad vasm!!!
-  ld(rfuncln, rsp[lr_position_on_callstack - min_callstack_size]);
+  // Recover return address and toc properly.
+  ld(rfuncln, rsp[0]);
   mtlr(rfuncln);
+  ld(rtoc, rsp[8]);
+
+  // Dealloc return address saved area.
+  addi(rsp, rsp, 16);
 }
 
-void Assembler::call (const Reg64& rsp,
-                      const Reg64& rtoc,
-                      const Reg64& rfuncln,
-                      const Reg64& rvmfp,
-                      CodeAddress target) {
-
-  prologue(rsp, rtoc, rfuncln, rvmfp);
-  branchAuto(target, BranchConditions::Always, LinkReg::Save);
-  epilogue(rsp, rtoc, rfuncln);
-}
-
-void Assembler::li64 (const Reg64& rt, int64_t imm64) {
+void Assembler::li64 (const Reg64& rt, int64_t imm64, bool fixedSize) {
   // li64 always emits 5 instructions i.e. 20 bytes of instructions.
   // Assumes that 0 bytes will be missing in the end.
   uint8_t missing = 0;
@@ -802,10 +931,11 @@ void Assembler::li64 (const Reg64& rt, int64_t imm64) {
     oris(rt, rt, static_cast<int16_t>((imm64 >> 16) & UINT16_MAX));
     ori(rt, rt, static_cast<int16_t>(imm64 & UINT16_MAX));
   }
-  emitNop(missing);
-
-  // guarantee our math with kLi64InstrLen is working
-  assert(kLi64InstrLen == frontier() - li64StartPos);
+  if(fixedSize){
+    emitNop(missing);
+    // guarantee our math with kLi64InstrLen is working
+    assert(kLi64InstrLen == frontier() - li64StartPos);
+  }
 }
 
 int64_t Assembler::getLi64(PPC64Instr* pinstr) {
@@ -813,27 +943,18 @@ int64_t Assembler::getLi64(PPC64Instr* pinstr) {
   //
   // It's easier to know how many 16bits of data the immediate uses
   // by counting how many nops there are inside of the code
-
   uint8_t nops = [&]() {
-    // TODO(gut) use Decoder, but for now, do it hardcoded
-    auto isNop = [&](PPC64Instr instr) -> bool {
-      D_form_t d_formater {0, 0, 0, 24 }; // check Assembler::ori
-      return instr == d_formater.instruction;
-    };
-
     uint8_t nNops = 0;
     for (PPC64Instr* i = pinstr; i < pinstr + kLi64InstrLen/kBytesPerInstr;
         i++) {
-      nNops += isNop(*i) ? 1 : 0;
+      if (Decoder::GetDecoder().decode(*i)->isNop()) nNops++;
     }
     return nNops;
   }();
 
   // TODO(gut) use Decoder, but for now, do it hardcoded
-  auto hasClearSignBit = [&](PPC64Instr* instr) -> bool {
-    bool op = (*instr >> 26) == 30;         // check opcode
-    bool xop = ((*instr >> 2) & 0x7) == 0;  // check extended opcode
-    return op && xop;
+  auto hasClearSignBit = [&](PPC64Instr* i) -> bool {
+    return Decoder::GetDecoder().decode(*i)->isClearSignBit();
   };
 
   // TODO(gut) use Decoder, but for now, do it hardcoded

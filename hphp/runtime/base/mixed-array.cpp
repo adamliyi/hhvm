@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -48,7 +48,9 @@ TRACE_SET_MOD(runtime);
 
 //////////////////////////////////////////////////////////////////////
 
-ArrayData* MixedArray::MakeReserveMixed(uint32_t size) {
+ArrayData* MixedArray::MakeReserveImpl(uint32_t size, HeaderKind hk) {
+  assert(hk == HeaderKind::Mixed || hk == HeaderKind::Dict);
+
   auto const scale = computeScaleFromSize(size);
   auto const ad    = reqAllocArray(scale);
 
@@ -59,11 +61,11 @@ ArrayData* MixedArray::MakeReserveMixed(uint32_t size) {
   ad->initHash(hash, scale);
 
   ad->m_sizeAndPos   = 0; // size=0, pos=0
-  ad->m_hdr.init(HeaderKind::Mixed, 1);
+  ad->m_hdr.init(hk, 1);
   ad->m_scale_used   = scale; // used=0
   ad->m_nextKI       = 0;
 
-  assert(ad->kind() == kMixedKind);
+  assert(ad->kind() == kMixedKind || ad->kind() == kDictKind);
   assert(ad->m_size == 0);
   assert(ad->m_pos == 0);
   assert(ad->hasExactlyOneRef());
@@ -78,8 +80,15 @@ ArrayData* MixedArray::MakeReserveLike(const ArrayData* other,
                                        uint32_t capacity) {
   capacity = (capacity ? capacity : other->size());
 
-  return other->kind() == kPackedKind ? PackedArray::MakeReserve(capacity)
-                                      : MixedArray::MakeReserveMixed(capacity);
+  if (other->kind() == kPackedKind) {
+    return PackedArray::MakeReserve(capacity);
+  }
+
+  if (other->kind() == kDictKind) {
+    return MixedArray::MakeReserveDict(capacity);
+  }
+
+  return MixedArray::MakeReserveMixed(capacity);
 }
 
 ArrayData* PackedArray::MakePacked(uint32_t size, const TypedValue* values) {
@@ -123,7 +132,7 @@ ArrayData* PackedArray::MakePacked(uint32_t size, const TypedValue* values) {
   return ad;
 }
 
-MixedArray* MixedArray::MakeStruct(uint32_t size, StringData** keys,
+MixedArray* MixedArray::MakeStruct(uint32_t size, const StringData* const* keys,
                                    const TypedValue* values) {
   assert(size > 0);
 
@@ -147,7 +156,7 @@ MixedArray* MixedArray::MakeStruct(uint32_t size, StringData** keys,
     assert(keys[i]->isStatic());
     auto k = keys[i];
     auto h = k->hash();
-    data[i].setStaticKey(k, h);
+    data[i].setStaticKey(const_cast<StringData*>(k), h);
     const auto& tv = values[size - i - 1];
     data[i].data.m_data = tv.m_data;
     data[i].data.m_type = tv.m_type;
@@ -294,16 +303,21 @@ Variant MixedArray::CreateVarForUncountedArray(const Variant& source) {
       return source.getInt64();
     case KindOfDouble:
       return source.getDouble();
-    case KindOfStaticString:
-      return Variant{source.getStringData()};
+    case KindOfPersistentString:
+      return Variant{source.getStringData(), Variant::PersistentStrInit{}};
     case KindOfPersistentArray:
       return Variant{source.getArrayData()};
 
     case KindOfString: {
       auto src = source.getStringData();
-      if (src->isStatic()) return Variant{src};
-      if (auto s = lookupStaticString(src)) return Variant{s};
-      return Variant{StringData::MakeUncounted(src->slice())};
+      if (!src->isRefCounted()) {
+        return Variant{src, Variant::PersistentStrInit{}};
+      }
+      if (auto s = lookupStaticString(src)) {
+        return Variant{s, Variant::PersistentStrInit{}};
+      }
+      return Variant{StringData::MakeUncounted(src->slice()),
+                     Variant::PersistentStrInit{}};
     }
 
     case KindOfArray: {
@@ -919,25 +933,11 @@ MixedArray::Grow(MixedArray* old, uint32_t newScale) {
   return ad;
 }
 
-namespace {
-struct ElmKey {
-  ElmKey() {}
-  ElmKey(int32_t hash, StringData* key)
-    : skey(key), hash(hash)
-  {}
-  union {
-    StringData* skey;
-    int64_t ikey;
-  };
-  int32_t hash;
-};
-}
-
 void MixedArray::compact(bool renumber /* = false */) {
   bool updatePosAfterCompact = false;
   ElmKey mPos;
   bool hasStrongIters;
-  TinyVector<ElmKey,3> siKeys;
+  req::TinyVector<ElmKey,3> siKeys;
 
   // Prep work before beginning the compaction process
   if (LIKELY(!renumber)) {
@@ -1677,6 +1677,23 @@ ArrayData* MixedArray::Prepend(ArrayData* adInput,
 
   // Renumber.
   a->compact(true);
+  return a;
+}
+
+ArrayData* MixedArray::ToDictInPlace(ArrayData* ad) {
+  auto a = asMixed(ad);
+  assert(!a->cowCheck());
+  a->m_hdr.init(HeaderKind::Dict, 1);
+  return a;
+}
+
+ArrayData* MixedArray::ToDict(ArrayData* ad) {
+  auto a = asMixed(ad);
+  if (a->cowCheck()) {
+    a = a->copyMixed();
+  }
+
+  a->m_hdr.init(HeaderKind::Dict, 1);
   return a;
 }
 

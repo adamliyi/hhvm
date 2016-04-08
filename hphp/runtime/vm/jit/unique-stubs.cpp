@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,6 +22,7 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/tv-helpers.h"
 #include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/debug/debug.h"
 #include "hphp/runtime/vm/hhbc.h"
 #include "hphp/runtime/vm/srckey.h"
 #include "hphp/runtime/vm/vm-regs.h"
@@ -29,6 +30,7 @@
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/abi.h"
 #include "hphp/runtime/vm/jit/align.h"
+#include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/code-gen-cf.h"
 #include "hphp/runtime/vm/jit/code-gen-helpers.h"
 #include "hphp/runtime/vm/jit/fixup.h"
@@ -38,10 +40,12 @@
 #include "hphp/runtime/vm/jit/service-requests.h"
 #include "hphp/runtime/vm/jit/smashable-instr.h"
 #include "hphp/runtime/vm/jit/stack-offsets.h"
+#include "hphp/runtime/vm/jit/stack-overflow.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/unique-stubs-arm.h"
 #include "hphp/runtime/vm/jit/unique-stubs-x64.h"
 #include "hphp/runtime/vm/jit/unique-stubs-ppc64.h"
+#include "hphp/runtime/vm/jit/unwind-itanium.h"
 #include "hphp/runtime/vm/jit/vasm-gen.h"
 #include "hphp/runtime/vm/jit/vasm-instr.h"
 #include "hphp/runtime/vm/jit/vasm-reg.h"
@@ -58,6 +62,8 @@
 #include "hphp/util/disasm.h"
 #include "hphp/util/trace.h"
 
+#include <folly/Format.h>
+
 #include <algorithm>
 
 namespace HPHP { namespace jit {
@@ -73,7 +79,7 @@ namespace {
 ///////////////////////////////////////////////////////////////////////////////
 
 void alignJmpTarget(CodeBlock& cb) {
-  align(cb, Alignment::JmpTarget, AlignContext::Dead);
+  align(cb, nullptr, Alignment::JmpTarget, AlignContext::Dead);
 }
 
 void assertNativeStackAligned(Vout& v) {
@@ -111,18 +117,6 @@ Vinstr simplecall(Vout& v, F helper, Vreg arg, Vreg d) {
     Fixup{},
     DestType::SSA
   };
-}
-
-///////////////////////////////////////////////////////////////////////////////
-
-/*
- * Set up any registers we want live going into an LLVM catch block.
- *
- * Return the set of live registers.
- */
-RegSet syncForLLVMCatch(Vout& v) {
-  if (arch() != Arch::X64) return RegSet{};
-  return x64::syncForLLVMCatch(v);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -173,6 +167,83 @@ TCA emitEndCatchHelper(CodeBlock& cb, UniqueStubs& us) {
       not_implemented();
       break;
   }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+TCA fcallHelper(ActRec* ar) {
+  assert_native_stack_aligned();
+  assertx(!ar->resumed());
+
+  if (LIKELY(!RuntimeOption::EvalFailJitPrologs)) {
+    auto const tca = mcg->getFuncPrologue(
+      const_cast<Func*>(ar->func()),
+      ar->numArgs(),
+      ar
+    );
+    if (tca) return tca;
+  }
+
+  // Check for stack overflow in the same place func prologues make their
+  // StackCheck::Early check (see irgen-func-prologue.cpp).  This handler also
+  // cleans and syncs vmRegs for us.
+  if (checkCalleeStackOverflow(ar)) handleStackOverflow(ar);
+
+  try {
+    VMRegAnchor _(ar);
+    if (doFCall(ar, vmpc())) {
+      return mcg->ustubs().resumeHelperRet;
+    }
+    // We've been asked to skip the function body (fb_intercept).  The vmregs
+    // have already been fixed; indicate this with a nullptr return.
+    return nullptr;
+  } catch (...) {
+    // The VMRegAnchor above took care of us, but we need to tell the unwinder
+    // (since ~VMRegAnchor() will have reset tl_regState).
+    tl_regState = VMRegState::CLEAN;
+    throw;
+  }
+}
+
+void syncFuncBodyVMRegs(ActRec* fp, void* sp) {
+  auto& regs = vmRegsUnsafe();
+  regs.fp = fp;
+  regs.stack.top() = (Cell*)sp;
+
+  auto const nargs = fp->numArgs();
+  auto const nparams = fp->func()->numNonVariadicParams();
+  auto const& paramInfo = fp->func()->params();
+
+  auto firstDVI = InvalidAbsoluteOffset;
+
+  for (auto i = nargs; i < nparams; ++i) {
+    auto const dvi = paramInfo[i].funcletOff;
+    if (dvi != InvalidAbsoluteOffset) {
+      firstDVI = dvi;
+      break;
+    }
+  }
+  if (firstDVI != InvalidAbsoluteOffset) {
+    regs.pc = fp->m_func->unit()->entry() + firstDVI;
+  } else {
+    regs.pc = fp->m_func->getEntry();
+  }
+}
+
+TCA funcBodyHelper(ActRec* fp) {
+  assert_native_stack_aligned();
+  void* const sp = reinterpret_cast<Cell*>(fp) - fp->func()->numSlotsInFrame();
+  syncFuncBodyVMRegs(fp, sp);
+  tl_regState = VMRegState::CLEAN;
+
+  auto const func = const_cast<Func*>(fp->m_func);
+  auto tca = mcg->getFuncBody(func);
+  if (!tca) {
+    tca = mcg->ustubs().resumeHelper;
+  }
+
+  tl_regState = VMRegState::DIRTY;
+  return tca;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -314,10 +385,9 @@ void debuggerRetImpl(Vout& v, Vreg ar) {
   v << store{rvmsp(), rvmtl()[unwinderDebuggerReturnSPOff()]};
 
   auto const ret = v.makeReg();
-  v << simplecall(v, popDebuggerCatch, ar, ret);
+  v << simplecall(v, unstashDebuggerCatch, ar, ret);
 
-  auto const args = syncForLLVMCatch(v);
-  v << jmpr{ret, args};
+  v << jmpr{ret};
 }
 
 TCA emitInterpRet(CodeBlock& cb) {
@@ -343,195 +413,6 @@ TCA emitInterpGenRet(CodeBlock& cb) {
   });
   svcreq::emit_persistent(cb, folly::none, REQ_POST_INTERP_RET);
   return start;
-}
-
-void storeAFWHResultHelper(Vout& v, PhysReg data, PhysReg type) {
-  using AFWH = c_AsyncFunctionWaitHandle;
-  const int64_t resultOff = AFWH::resultOff() - AFWH::arOff();
-  v << storeb{type, rvmfp()[TVOFF(m_type) + resultOff]};
-  v << store{data, rvmfp()[TVOFF(m_data) + resultOff]};
-}
-
-TCA emitAsyncRetCtrl(CodeBlock& cb) {
-  alignJmpTarget(cb);
-
-  return vwrap2(cb, [] (Vout& v, Vout& vcold) {
-    using AFWH = c_AsyncFunctionWaitHandle;
-
-    // We should finish accessing the argument registers before attempt any
-    // function calls.  Otherwise we'll have to preserve them around the calls.
-    // So first thing we do on both fast & slow paths is storing them.
-    auto const rData = rarg(0);
-    auto const rType = rarg(1);
-
-    auto const parentBl = v.makeReg();
-    // Load the parentChain
-    const int64_t parentOff = AFWH::parentChainOff() - AFWH::arOff();
-    v << load{rvmfp()[parentOff], parentBl};
-
-    // Set state to succeeded
-    auto const stateOff = c_WaitHandle::stateOff() - AFWH::arOff();
-    v << storebi{
-      c_WaitHandle::toKindState(
-        c_WaitHandle::Kind::AsyncFunction,
-        c_WaitHandle::STATE_SUCCEEDED
-      ),
-      rvmfp()[stateOff]
-    };
-
-    // Load WaitHandle -- used on both fast & slow paths.
-    auto const resumableObj = v.makeReg();
-    auto const objectOff = Resumable::dataOff() - Resumable::arOff();
-    v << lea{rvmfp()[objectOff], resumableObj};
-
-    // Check if there's any parent
-    auto const hasParent = v.makeReg();
-    v << testq{parentBl, parentBl, hasParent};
-    ifThen(v, CC_NZ, hasParent, [&] (Vout& v) {
-      // Next check if the parent is eligible for direct resumption:
-      // Step (a) to (d)
-
-      const int8_t afBlocked = AFWH::toKindState(
-        c_WaitHandle::Kind::AsyncFunction, AFWH::STATE_BLOCKED);
-      const int64_t resumeAddrToBlOff = AFWH::resumeAddrOff()
-        - AFWH::childrenOff() - AFWH::Node::blockableOff();
-      const int64_t kindStateToBlOff = AFWH::stateOff()
-        - AFWH::childrenOff() - AFWH::Node::blockableOff();
-      const int64_t bitsToBlOff = AsioBlockable::bitsOff();
-      const int64_t contextIdxToBlOff = AFWH::contextIdxOff()
-        - AFWH::childrenOff() - AFWH::Node::blockableOff();
-      const int64_t contextIdxToArOff = AFWH::contextIdxOff() - AFWH::arOff();
-
-      // (a) parentBl->getKind() != AFWH => nope
-      auto const isAFWH = v.makeReg();
-      assertx(uint8_t(AsioBlockable::Kind::AsyncFunctionWaitHandleNode) == 0);
-      v << testbim{7, parentBl[bitsToBlOff], isAFWH};
-      ifThen(v, CC_Z, isAFWH, [&] (Vout& v) {
-        // (b) parentBl->getBWH()->getKindState() != {Async, BLOCKED} => nope
-        auto const isBlocked = v.makeReg();
-        v << cmpbim{afBlocked, parentBl[kindStateToBlOff], isBlocked};
-        ifThen(v, CC_E, isBlocked, [&] (Vout& v) {
-          // (c) parentBl->getBWH()->resumable()->resumeAddr() == null => nope
-          auto const isNullAddr = v.makeReg();
-          v << cmpqim{0, parentBl[resumeAddrToBlOff], isNullAddr};
-          ifThen(v, CC_NE, isNullAddr, [&] (Vout& v) {
-            // (d) parentBl->getContextIdx() != child->getContextIdx() => nope
-            auto const childContextIdx = v.makeReg();
-            auto const parentContextIdx = v.makeReg();
-            auto const inSameContext = v.makeReg();
-
-            v << loadb{rvmfp()[contextIdxToArOff], childContextIdx};
-            v << loadb{parentBl[contextIdxToBlOff], parentContextIdx};
-            v << cmpb{parentContextIdx, childContextIdx, inSameContext};
-            ifThen(v, CC_E, inSameContext, [&] (Vout& v) {
-              //
-              // Parent eligible for fast return at this point.
-              //
-              // Steps on resume: 0) incRef retVal, 1) pushes the retVal on
-              // stack, 2) stores retVal in AFWH, 3) unblocks additional parents
-              // if there's any, 4) preserves saved FP, 5) decRef AFWH obj, 6)
-              // updates FP, 7) marks the AFWH as running, and finally 8)
-              // transfers control to the parent resume address.
-
-              // 0) IncRef retVal: in addition to pushing the retVal onto the
-              // stack, we are also storing it in the AFWH obj.
-              emitIncRefWork(v, rData, rType);
-
-              // 1) Push retVal on stack: SP was already adjusted for us.
-              v << storeb{rType, rvmsp()[TVOFF(m_type)]};
-              v << store{rData, rvmsp()[TVOFF(m_data)]};
-
-              // 2) Stores result into the AFWH object
-              storeAFWHResultHelper(v, rData, rType);
-
-              // 3) Unblock additional parents
-              auto const nextParent = v.makeReg();
-              auto const tmp = v.makeReg();
-              // Load next parent in chain
-              v << load{parentBl[bitsToBlOff], tmp};
-              v << andqi{~0x7, tmp, nextParent, v.makeReg()};
-
-              auto const hasAdditionalParents = v.makeReg();
-              v << testq{nextParent, nextParent, hasAdditionalParents};
-              unlikelyIfThen(v, vcold, CC_NZ, hasAdditionalParents,
-                [&] (Vout& v) {
-                  // Uncommon case: has additional parents and unblock them.
-                  v << vcall{CallSpec::direct(AsioBlockableChain::Unblock),
-                             v.makeVcallArgs({{nextParent}}), v.makeTuple({})};
-              });
-
-              // 4) Preserve saved FP.
-              const int64_t arToBlOff = AFWH::arOff() - AFWH::childrenOff()
-                                      - AFWH::Node::blockableOff();
-              auto const savedFP = v.makeReg();
-              v << load{rvmfp()[AROFF(m_sfp)], savedFP};
-              v << store{savedFP, parentBl[arToBlOff + AROFF(m_sfp)]};
-
-              // 5) DecRef: drop reference to the current AFWH twice:
-              //  - it is no longer being executed
-              //  - it is no longer referenced by the parent
-
-              // First DecRef no need to check for release
-              emitDecRef(v, resumableObj);
-              // The second DecRef may need to release.  The type is known to be
-              // KindOfObject -- use the DecRef optimized for it.
-              emitDecRefObj(v, resumableObj);
-
-              // 6) Update vmfp() and vmFirstAR().
-              v << lea{parentBl[arToBlOff], rvmfp()};
-              v << store{rvmfp(), rvmtl()[rds::kVmFirstAROff]};
-
-              // 7) setState(STATE_RUNNING);
-              const int8_t afRunning = c_WaitHandle::toKindState(
-                c_WaitHandle::Kind::AsyncFunction,
-                c_ResumableWaitHandle::STATE_RUNNING);
-              const int64_t stateToBlOff = AFWH::stateOff()
-                                         - AFWH::childrenOff()
-                                         - AFWH::Node::blockableOff();
-              v << storebi{afRunning, parentBl[stateToBlOff]};
-
-              // 8) Transfer control to the resume address.
-              const int64_t resumeAddrToArOff = AFWH::resumeAddrOff()
-                                              - AFWH::arOff();
-              v << jmpm{rvmfp()[resumeAddrToArOff], vm_regs_with_sp()};
-            });
-            // If not eligible for fast return, fall through all the way.
-          });
-        });
-      });
-    });
-    // Slow path: unblock all parents, and return to the scheduler.
-
-    // A bit code duplication: storing retVal into AFWH overwrites contextIdx
-    // (in the same union).  So it has to be done after checking fast return
-    // eligibility, but before calling unblock.
-
-    // Stores result into the AFWH object
-    storeAFWHResultHelper(v, rData, rType);
-
-    // Unblock all parents -- the sign flag is actually the same as hasParent,
-    // but unfortunately we cannot reuse it.
-    auto const hasParentFlag = v.makeReg();
-    v << testq{parentBl, parentBl, hasParentFlag};
-    ifThen(v, CC_NZ, hasParentFlag, [&] (Vout& v) {
-      v << vcall{CallSpec::direct(AsioBlockableChain::Unblock),
-                 v.makeVcallArgs({{parentBl}}), v.makeTuple({})};
-    });
-
-    // Load the saved frame pointer from the ActRec.
-    auto sfpOff = AROFF(m_sfp);
-    v << load{rvmfp()[sfpOff], rvmfp()};
-
-    // DecRef resumableObj
-    emitDecRefObj(v, resumableObj);
-
-    // Adjust stack: on slow path, retVal is not pushed on stack yet.
-    auto const sync_sp = v.makeReg();
-    v << lea{rvmsp()[cellsToBytes(1)], sync_sp};
-    v << syncvmsp{sync_sp};
-
-    v << leavetc{php_return_regs()};
-  });
 }
 
 TCA emitDebuggerInterpRet(CodeBlock& cb) {
@@ -561,6 +442,187 @@ TCA emitDebuggerInterpGenRet(CodeBlock& cb) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+using AFWH = c_AsyncFunctionWaitHandle;
+
+/*
+ * Convert an AsyncFunctionWaitHandle-relative offset to an offset relative to
+ * either its contained ActRec or AsioBlockable.
+ */
+constexpr ptrdiff_t ar_rel(ptrdiff_t off) {
+  return off - AFWH::arOff();
+}
+constexpr ptrdiff_t bl_rel(ptrdiff_t off) {
+  return off - AFWH::childrenOff() - AFWH::Node::blockableOff();
+}
+
+/*
+ * Store the async function's return value to the AsyncFunctionWaitHandle.
+ */
+void storeAFWHResult(Vout& v, PhysReg data, PhysReg type) {
+  auto const resultOff = ar_rel(AFWH::resultOff());
+  v << store{data, rvmfp()[resultOff + TVOFF(m_data)]};
+  v << storeb{type, rvmfp()[resultOff + TVOFF(m_type)]};
+}
+
+/*
+ * In a cold path, call into native code to unblock every member of an async
+ * function's dependency chain, if it has any.
+ */
+void unblockParents(Vout& v, Vout& vcold, Vreg parent) {
+  auto const sf = v.makeReg();
+  v << testq{parent, parent, sf};
+
+  unlikelyIfThen(v, vcold, CC_NZ, sf, [&] (Vout& v) {
+    v << vcall{CallSpec::direct(AsioBlockableChain::Unblock),
+               v.makeVcallArgs({{parent}}), v.makeTuple({})};
+  });
+}
+
+TCA emitAsyncRetCtrl(CodeBlock& cb) {
+  alignJmpTarget(cb);
+
+  return vwrap2(cb, [] (Vout& v, Vout& vcold) {
+    auto const data = rarg(0);
+    auto const type = rarg(1);
+
+    auto const slow_path = Vlabel(v.makeBlock());
+
+    // Load the parent chain.
+    auto const parentBl = v.makeReg();
+    v << load{rvmfp()[ar_rel(AFWH::parentChainOff())], parentBl};
+
+    // Set state to succeeded.
+    v << storebi{
+      c_WaitHandle::toKindState(
+        c_WaitHandle::Kind::AsyncFunction,
+        c_WaitHandle::STATE_SUCCEEDED
+      ),
+      rvmfp()[ar_rel(c_WaitHandle::stateOff())]
+    };
+
+    // Load the WaitHandle*.
+    auto const wh = v.makeReg();
+    v << lea{rvmfp()[Resumable::dataOff() - Resumable::arOff()], wh};
+
+    // Check if there's any parent.
+    auto const hasParent = v.makeReg();
+    v << testq{parentBl, parentBl, hasParent};
+    ifThen(v, CC_Z, hasParent, slow_path);
+
+    // Check parentBl->getKind() == AFWH.
+    static_assert(
+      uint8_t(AsioBlockable::Kind::AsyncFunctionWaitHandleNode) == 0,
+      "AFWH kind must be 0."
+    );
+    auto const isAFWH = v.makeReg();
+    v << testbim{0x7, parentBl[AsioBlockable::bitsOff()], isAFWH};
+    ifThen(v, CC_NZ, isAFWH, slow_path);
+
+    // Check parentBl->getBWH()->getKindState() == {Async, BLOCKED}.
+    auto const blockedState = AFWH::toKindState(
+      c_WaitHandle::Kind::AsyncFunction,
+      AFWH::STATE_BLOCKED
+    );
+    auto const isBlocked = v.makeReg();
+    v << cmpbim{blockedState, parentBl[bl_rel(AFWH::stateOff())], isBlocked};
+    ifThen(v, CC_NE, isBlocked, slow_path);
+
+    // Check parentBl->getBWH()->resumable()->resumeAddr() != nullptr.
+    auto const isNullAddr = v.makeReg();
+    v << cmpqim{0, parentBl[bl_rel(AFWH::resumeAddrOff())], isNullAddr};
+    ifThen(v, CC_E, isNullAddr, slow_path);
+
+    // CheckparentBl->getContextIdx() == child->getContextIdx().
+    auto const childContextIdx = v.makeReg();
+    auto const parentContextIdx = v.makeReg();
+    auto const inSameContext = v.makeReg();
+
+    v << loadb{rvmfp()[ar_rel(AFWH::contextIdxOff())], childContextIdx};
+    v << loadb{parentBl[bl_rel(AFWH::contextIdxOff())], parentContextIdx};
+    v << cmpb{parentContextIdx, childContextIdx, inSameContext};
+    ifThen(v, CC_NE, inSameContext, slow_path);
+
+    /*
+     * Fast path.
+     *
+     * Handle the return value, unblock any additional parents, release the
+     * WaitHandle, and transfer control to the parent.
+     */
+    // Incref the return value.  In addition to pushing the it onto the stack,
+    // we are also storing it in the AFWH object.
+    emitIncRefWork(v, data, type);
+
+    // Write the return value to the stack and the AFWH object.
+    v << storeb{type, rvmsp()[TVOFF(m_type)]};
+    v << store{data, rvmsp()[TVOFF(m_data)]};
+    storeAFWHResult(v, data, type);
+
+    // Load the next parent in the chain, and unblock the whole chain.
+    auto const nextParent = v.makeReg();
+    auto const tmp = v.makeReg();
+    v << load{parentBl[AsioBlockable::bitsOff()], tmp};
+    v << andqi{~0x7, tmp, nextParent, v.makeReg()};
+    unblockParents(v, vcold, nextParent);
+
+    // Set up PHP frame linkage for our parent by copying our ActRec's sfp.
+    auto const sfp = v.makeReg();
+    v << load{rvmfp()[AROFF(m_sfp)], sfp};
+    v << store{sfp, parentBl[bl_rel(AFWH::arOff()) + AROFF(m_sfp)]};
+
+    // Drop the reference to the current AFWH twice:
+    //  - it is no longer being executed
+    //  - it is no longer referenced by the parent
+    //
+    // The first time we don't need to check for release.  The second time, we
+    // do, but we can type-specialize.
+    emitDecRef(v, wh);
+    emitDecRefWorkObj(v, wh);
+
+    // Update vmfp() and vmFirstAR().
+    v << lea{parentBl[bl_rel(AFWH::arOff())], rvmfp()};
+    v << store{rvmfp(), rvmtl()[rds::kVmFirstAROff]};
+
+    // setState(STATE_RUNNING)
+    auto const runningState = c_WaitHandle::toKindState(
+      c_WaitHandle::Kind::AsyncFunction,
+      c_ResumableWaitHandle::STATE_RUNNING
+    );
+    v << storebi{runningState, parentBl[bl_rel(AFWH::stateOff())]};
+
+    // Transfer control to the resume address.
+    v << jmpm{rvmfp()[ar_rel(AFWH::resumeAddrOff())], php_return_regs()};
+
+    /*
+     * Slow path: unblock all parents, and return to the scheduler.
+     */
+    v = slow_path;
+
+    // Store result into the AFWH object and unblock all parents.
+    //
+    // Storing the result into the AFWH overwrites contextIdx (they share a
+    // union), so it has to be done after the checks in the fast path (but
+    // before unblocking parents).
+    storeAFWHResult(v, data, type);
+    unblockParents(v, vcold, parentBl);
+
+    // Load the saved frame pointer from the ActRec.
+    v << load{rvmfp()[AROFF(m_sfp)], rvmfp()};
+
+    // Decref the WaitHandle.  We only do it once here (unlike in the fast
+    // path) because the scheduler drops the other reference.
+    emitDecRefWorkObj(v, wh);
+
+    // Adjust stack: on slow path, retVal is not pushed on stack yet.
+    auto const sync_sp = v.makeReg();
+    v << lea{rvmsp()[cellsToBytes(1)], sync_sp};
+    v << syncvmsp{sync_sp};
+
+    v << leavetc{php_return_regs()};
+  });
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 template<bool immutable>
 TCA emitBindCallStub(CodeBlock& cb) {
   return vwrap(cb, [] (Vout& v) {
@@ -577,6 +639,9 @@ TCA emitBindCallStub(CodeBlock& cb) {
     v << subqi{callLen, savedRIP, args[1], v.makeReg()};
 
     v << copy{rvmfp(), args[2]};
+    // Promote bool type argument size to long in order to avoid issues on
+    // platforms that optimization might not ignore the higher bits of the
+    // register (e.g: ppc64)
     v << movb{v.cns(immutable), args[3]};
 
     auto const handler = reinterpret_cast<void (*)()>(
@@ -597,11 +662,11 @@ TCA emitBindCallStub(CodeBlock& cb) {
 }
 
 TCA emitFCallArrayHelper(CodeBlock& cb, UniqueStubs& us) {
-  align(cb, Alignment::CacheLine, AlignContext::Dead);
+  align(cb, nullptr, Alignment::CacheLine, AlignContext::Dead);
 
   TCA ret = vwrap(cb, [] (Vout& v) {
-      v << movl{v.cns(0), rarg(2)};
-    });
+    v << movl{v.cns(0), rarg(2)};
+  });
 
   us.fcallUnpackHelper = vwrap2(cb, [] (Vout& v, Vout& vcold) {
     // We reach fcallArrayHelper in the same context as a func prologue, so
@@ -654,10 +719,10 @@ TCA emitFCallArrayHelper(CodeBlock& cb, UniqueStubs& us) {
     });
     v << load{rvmtl()[rds::kVmfpOff], rvmfp()};
 
-    // If true was returned, we're calling the callee, so manually undo the
+    // If true was returned, we're calling the callee, so undo the stublogue{}
+    // and convert to a phplogue{}.
     // stublogue{}, and simulate the work of a phplogue{}.
-    v << addqi{8, rsp(), rsp(), v.makeReg()};
-    v << popm{rvmfp()[AROFF(m_savedRip)]};
+    v << stubtophp{rvmfp()};
 
     auto const callee = v.makeReg();
     auto const body = v.makeReg();
@@ -704,8 +769,7 @@ ResumeHelperEntryPoints emitResumeHelpers(CodeBlock& cb) {
 
   rh.reenterTC = vwrap(cb, [] (Vout& v) {
     loadVMRegs(v);
-    auto const args = syncForLLVMCatch(v);
-    v << jmpr{rret(), args};
+    v << jmpr{rret()};
   });
 
   return rh;
@@ -728,6 +792,7 @@ TCA emitResumeInterpHelpers(CodeBlock& cb, UniqueStubs& us,
     v << ldimmb{1, rarg(1)};
     v << jmpi{rh.handleResume, RegSet(rarg(1))};
   });
+
   us.fcallAwaitSuspendHelper = vwrap(cb, [&] (Vout& v) {
     v << load{rvmtl()[rds::kVmfpOff], rvmfp()};
     loadMCG(v, rarg(0));
@@ -737,7 +802,7 @@ TCA emitResumeInterpHelpers(CodeBlock& cb, UniqueStubs& us,
     );
     v << call{handler, arg_regs(2)};
     v << jmpi{rh.reenterTC, RegSet()};
-    });
+  });
 
   return us.resumeHelperRet;
 }
@@ -766,13 +831,14 @@ TCA emitInterpOneCFHelper(CodeBlock& cb, Op op,
 }
 
 void emitInterpOneCFHelpers(CodeBlock& cb, UniqueStubs& us,
-                            const ResumeHelperEntryPoints& rh) {
+                            const ResumeHelperEntryPoints& rh,
+                            const CodeCache& code, Debug::DebugInfo& dbg) {
   alignJmpTarget(cb);
 
   auto const emit = [&] (Op op, const char* name) {
     auto const stub = emitInterpOneCFHelper(cb, op, rh);
     us.interpOneCFHelpers[op] = stub;
-    us.add(name, stub);
+    us.add(name, stub, code, dbg);
   };
 
 #define O(name, imm, in, out, flags)          \
@@ -794,7 +860,9 @@ void emitInterpOneCFHelpers(CodeBlock& cb, UniqueStubs& us,
 ///////////////////////////////////////////////////////////////////////////////
 
 TCA emitDecRefGeneric(CodeBlock& cb) {
-  return vwrap(cb, [] (Vout& v) {
+  CGMeta meta;
+
+  auto const start = vwrap(cb, meta, [] (Vout& v) {
     v << stublogue{};
 
     auto const rdata = rarg(0);
@@ -828,9 +896,53 @@ TCA emitDecRefGeneric(CodeBlock& cb) {
     emitDecRefWork(v, v, rdata, destroy, false);
     v << stubret{};
   });
+
+  meta.process(nullptr);
+  return start;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+
+TCA emitHandleSRHelper(CodeBlock& cb) {
+  alignJmpTarget(cb);
+
+  return vwrap(cb, [] (Vout& v) {
+    storeVMRegs(v);
+
+    // Pack the service request args into a svcreq::ReqInfo on the stack.
+    for (auto i = svcreq::kMaxArgs; i-- > 0; ) {
+      v << push{r_svcreq_arg(i)};
+    }
+    v << push{r_svcreq_stub()};
+    v << push{r_svcreq_req()};
+
+    // Call mcg->handleServiceRequest(rsp()).
+    auto const args = VregList { v.makeReg(), v.makeReg() };
+    loadMCG(v, args[0]);
+    v << copy{rsp(), args[1]};
+
+    auto const meth = &MCGenerator::handleServiceRequest;
+    auto const ret = v.makeReg();
+
+    v << vcall{
+      CallSpec::method(meth),
+      v.makeVcallArgs({args}),
+      v.makeTuple({ret}),
+      Fixup{},
+      DestType::SSA
+    };
+
+    // Pop the ReqInfo off the stack.
+    auto const reqinfo_sz = static_cast<int>(sizeof(svcreq::ReqInfo));
+    v << lea{rsp()[reqinfo_sz], rsp()};
+
+    // rvmtl() was preserved by the callee, but rvmsp() and rvmfp() might've
+    // changed if we interpreted anything.  Reload them.
+    loadVMRegs(v);
+
+    v << jmpr{ret};
+  });
+}
 
 TCA emitThrowSwitchMode(CodeBlock& cb) {
   alignJmpTarget(cb);
@@ -847,17 +959,20 @@ TCA emitThrowSwitchMode(CodeBlock& cb) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void UniqueStubs::emitAll() {
-  auto& main = mcg->code.main();
-  auto& cold = mcg->code.cold();
-  auto& frozen = mcg->code.frozen();
+void UniqueStubs::emitAll(CodeCache& code, Debug::DebugInfo& dbg) {
+  auto view = code.view();
+  auto& main = view.main();
+  auto& cold = view.cold();
+  auto& frozen = view.frozen();
+  auto& hotBlock = code.view(true /* hot */).main();
 
   auto const hot = [&]() -> CodeBlock& {
-    auto& hot = const_cast<CodeBlock&>(mcg->code.hot());
-    return hot.available() > 512 ? hot : main;
+    return hotBlock.available() > 512 ? hotBlock : main;
   };
 
-#define ADD(name, stub) name = add(#name, (stub))
+#define ADD(name, stub) name = add(#name, (stub), code, dbg)
+  ADD(handleSRHelper, emitHandleSRHelper(cold)); // required by emitInterpRet()
+
   ADD(funcPrologueRedispatch, emitFuncPrologueRedispatch(hot()));
   ADD(fcallHelperThunk,       emitFCallHelperThunk(cold));
   ADD(funcBodyHelperThunk,    emitFuncBodyHelperThunk(cold));
@@ -885,17 +1000,20 @@ void UniqueStubs::emitAll() {
   ADD(throwSwitchMode,  emitThrowSwitchMode(frozen));
 #undef ADD
 
-  add("freeLocalsHelpers",  emitFreeLocalsHelpers(hot(), *this));
+  add("freeLocalsHelpers", emitFreeLocalsHelpers(hot(), *this), code, dbg);
 
   ResumeHelperEntryPoints rh;
-  add("resumeInterpHelpers",  emitResumeInterpHelpers(main, *this, rh));
-  emitInterpOneCFHelpers(cold, *this, rh);
+  add("resumeInterpHelpers",
+      emitResumeInterpHelpers(main, *this, rh),
+      code, dbg);
+  emitInterpOneCFHelpers(cold, *this, rh, code, dbg);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-TCA UniqueStubs::add(const char* name, TCA start) {
-  auto& cb = mcg->code.blockFor(start);
+TCA UniqueStubs::add(const char* name, TCA start,
+                     const CodeCache& code, Debug::DebugInfo& dbg) {
+  auto& cb = code.blockFor(start);
   auto const end = cb.frontier();
 
   FTRACE(1, "unique stub: {} @ {} -- {:4} bytes: {}\n",
@@ -913,7 +1031,10 @@ TCA UniqueStubs::add(const char* name, TCA start) {
           }()
          );
 
-  mcg->recordGdbStub(cb, start, folly::sformat("HHVM::{}", name));
+  if (!RuntimeOption::EvalJitNoGdb) {
+    dbg.recordStub(Debug::TCRange(start, end, &cb == &code.cold()),
+                   folly::sformat("HHVM::{}", name));
+  }
 
   auto const newStub = StubRange{name, start, end};
   auto lower = std::lower_bound(m_ranges.begin(), m_ranges.end(), newStub);
@@ -925,7 +1046,7 @@ TCA UniqueStubs::add(const char* name, TCA start) {
   return start;
 }
 
-std::string UniqueStubs::describe(TCA address) {
+std::string UniqueStubs::describe(TCA address) const {
   auto raw = [address] { return folly::sformat("{}", address); };
   if (m_ranges.empty()) return raw();
 
@@ -953,7 +1074,7 @@ void emitInterpReq(Vout& v, SrcKey sk, FPInvOffset spOff) {
     v << lea{rvmfp()[-cellsToBytes(spOff.offset)], rvmsp()};
   }
   v << copy{v.cns(sk.pc()), rarg(0)};
-  v << jmpi{mcg->tx().uniqueStubs.interpHelper, arg_regs(1)};
+  v << jmpi{mcg->ustubs().interpHelper, arg_regs(1)};
 }
 
 ///////////////////////////////////////////////////////////////////////////////

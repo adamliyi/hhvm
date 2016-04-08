@@ -340,7 +340,7 @@ function phpinfo(int $what = 0): bool {
   \__SystemLib\phpinfo_tr('uname', php_uname());
   echo '</table>';
 
-  \__SystemLib\phpinfo_table('INI', ini_get_all(null, false));
+  \__SystemLib\phpinfo_table('INI', ini_get_all('', false));
 
   if (function_exists('getallheaders')) {
     \__SystemLib\phpinfo_table('Headers', getallheaders());
@@ -372,7 +372,7 @@ function phpversion(string $extension = ""): mixed;
  * modify ANY environment variable!  The safe_mode_protected_env_vars
  * directive contains a comma-delimited list of environment variables, that
  * the end user won't be able to change using putenv(). These variables will
- * be protected even if safe_mode_allowed_env_vars is set to allow to change
+ * be protected even if safe_mode_allowed_env_vars is set to allow changing
  * them.
  */
 <<__Native>>

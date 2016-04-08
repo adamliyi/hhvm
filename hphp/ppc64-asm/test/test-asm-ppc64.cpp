@@ -1,5 +1,5 @@
 /**
- * Copyright 2015, IBM
+ * Copyright 2015-2016, IBM
  * All Rights Reserved
  *
  * @author: Rogerio Alves

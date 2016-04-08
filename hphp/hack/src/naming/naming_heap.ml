@@ -9,24 +9,22 @@
  *)
 
 
-open Utils
-
-module ClassHeap = SharedMem.NoCache (String) (struct
+module ClassHeap = SharedMem.NoCache (StringKey) (struct
   type t = Nast.class_
   let prefix = Prefix.make()
 end)
 
-module FunHeap = SharedMem.NoCache (String) (struct
+module FunHeap = SharedMem.NoCache (StringKey) (struct
   type t = Nast.fun_
   let prefix = Prefix.make()
 end)
 
-module TypedefHeap = SharedMem.NoCache (String) (struct
+module TypedefHeap = SharedMem.NoCache (StringKey) (struct
   type t = Nast.typedef
   let prefix = Prefix.make()
 end)
 
-module ConstHeap = SharedMem.NoCache (String) (struct
+module ConstHeap = SharedMem.NoCache (StringKey) (struct
   type t = Nast.gconst
   let prefix = Prefix.make()
 end)
@@ -35,42 +33,32 @@ end)
 module type CanonHeap =
   SharedMem.S with type t = string
                and type key = string
-               and module KeySet = Set.Make (String)
+               and module KeySet = Set.Make (StringKey)
 
-module ClassCanonHeap : CanonHeap = SharedMem.NoCache (String) (struct
+module TypeCanonHeap : CanonHeap = SharedMem.NoCache (StringKey) (struct
   type t = string
   let prefix = Prefix.make()
 end)
 
-module FunCanonHeap : CanonHeap = SharedMem.NoCache (String) (struct
+module FunCanonHeap : CanonHeap = SharedMem.NoCache (StringKey) (struct
   type t = string
   let prefix = Prefix.make()
 end)
 
-(* We want to keep the positions of names that have been
- * replaced by identifiers.
- *)
-module type IdHeap =
-  SharedMem.S with type t = Pos.t * Ident.t
-               and type key = string
-               and module KeySet = Set.Make (String)
+(* TypeIdHeap records both class names and typedefs since they live in the
+ * same namespace. That is, one cannot both define a class Foo and a typedef
+ * Foo (or FOO or fOo, due to case insensitivity). *)
+module TypeIdHeap = SharedMem.NoCache (StringKey) (struct
+  type t = Pos.t * [`Class | `Typedef]
+  let prefix = Prefix.make ()
+end)
 
-module ClassIdHeap : IdHeap = SharedMem.NoCache (String) (struct
-  type t = Pos.t * Ident.t
+module FunPosHeap = SharedMem.NoCache (StringKey) (struct
+  type t = Pos.t
   let prefix = Prefix.make()
 end)
 
-module FunIdHeap : IdHeap = SharedMem.NoCache (String) (struct
-  type t = Pos.t * Ident.t
-  let prefix = Prefix.make()
-end)
-
-module TypedefIdHeap : IdHeap = SharedMem.NoCache (String) (struct
-  type t = Pos.t * Ident.t
-  let prefix = Prefix.make()
-end)
-
-module ConstIdHeap : IdHeap = SharedMem.NoCache (String) (struct
-  type t = Pos.t * Ident.t
+module ConstPosHeap = SharedMem.NoCache (StringKey) (struct
+  type t = Pos.t
   let prefix = Prefix.make()
 end)

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -250,13 +250,6 @@ Type provenTypeFromLocal(const IRGS&, uint32_t locId);
 Type provenTypeFromStack(const IRGS&, BCSPOffset slot);
 
 /*
- * Assuming env is ready to translate a member instruction, analyze the type of
- * the base value and return an appropriately-specialized TypeConstraint if a
- * supported operation is detected.
- */
-TypeConstraint mInstrBaseConstraint(const IRGS& env, Type predicted);
-
-/*
  * Returns the TypeConstraint that should be used to constrain baseType for an
  * Idx bytecode.
  */
@@ -270,7 +263,6 @@ TypeConstraint idxBaseConstraint(Type baseType, Type keyType);
  * The arguments to the functions are pre-unpacked bytecode immediates.
  */
 
-#define IMM_MA         int /* unused dummy placeholder */
 #define IMM_BLA        const ImmVector&
 #define IMM_SLA        const ImmVector&
 #define IMM_ILA        const ImmVector&
@@ -285,6 +277,7 @@ TypeConstraint idxBaseConstraint(Type baseType, Type keyType);
 #define IMM_AA         const ArrayData*
 #define IMM_BA         Offset
 #define IMM_OA(subop)  subop
+#define IMM_KA         MemberKey
 
 #define NA /*  */
 #define ONE(x0)              , IMM_##x0
@@ -317,6 +310,7 @@ TypeConstraint idxBaseConstraint(Type baseType, Type keyType);
 #undef IMM_AA
 #undef IMM_BA
 #undef IMM_OA
+#undef IMM_KA
 
 //////////////////////////////////////////////////////////////////////
 

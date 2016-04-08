@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -184,7 +184,7 @@ annotCompat(DataType dt, AnnotType at, const StringData* annotClsName) {
       case KindOfDouble:
         return interface_supports_double(annotClsName)
           ? AnnotAction::Pass : AnnotAction::Fail;
-      case KindOfStaticString:
+      case KindOfPersistentString:
       case KindOfString:
         return interface_supports_string(annotClsName)
           ? AnnotAction::Pass : AnnotAction::Fail;

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -35,6 +35,7 @@
 #include "hphp/util/hdf.h"
 #include "hphp/util/logger.h"
 
+#include "hphp/runtime/ext/apc/snapshot.h"
 #include "hphp/runtime/ext/fb/ext_fb.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/comparisons.h"
@@ -121,6 +122,10 @@ void apcExtension::moduleLoad(const IniSetting::Map& ini, Hdf config) {
 
   Config::Bind(AllowObj, ini, config, "Server.APC.AllowObject");
   Config::Bind(TTLLimit, ini, config, "Server.APC.TTLLimit", -1);
+
+  // Loads .so PrimeLibrary, writes snapshot output to this file, then exits.
+  Config::Bind(PrimeLibraryUpgradeDest, ini, config,
+               "Server.APC.PrimeLibraryUpgradeDest");
 
   // FileStorage
   Config::Bind(UseFileStorage, ini, config, "Server.APC.FileStorage.Enable");
@@ -226,6 +231,7 @@ int apcExtension::PurgeFrequency = 4096;
 int apcExtension::PurgeRate = -1;
 bool apcExtension::AllowObj = false;
 int apcExtension::TTLLimit = -1;
+std::string apcExtension::PrimeLibraryUpgradeDest;
 bool apcExtension::UseFileStorage = false;
 int64_t apcExtension::FileStorageChunkSize = int64_t(1LL << 29);
 std::string apcExtension::FileStoragePrefix = "/tmp/apc_store";
@@ -486,7 +492,7 @@ Variant HHVM_FUNCTION(apc_cache_info,
   std::map<const StringData*, int64_t> stats;
   APCStats::getAPCStats().collectStats(stats);
   for (auto it = stats.begin(); it != stats.end(); it++) {
-    info.add(Variant(it->first, Variant::StaticStrInit{}), it->second);
+    info.add(Variant(it->first, Variant::PersistentStrInit{}), it->second);
   }
   if (!limited) {
     auto const entries = apc_store().getEntriesInfo();
@@ -537,25 +543,29 @@ static PFUNC_APC_LOAD apc_load_func(void *handle, const char *name) {
 #endif
 }
 
-class ApcLoadJob {
-public:
+struct ApcLoadJob {
   ApcLoadJob(void *handle, int index) : m_handle(handle), m_index(index) {}
   void *m_handle; int m_index;
 };
 
-class ApcLoadWorker {
-public:
-  void onThreadEnter() {}
+struct ApcLoadWorker {
+  void onThreadEnter() {
+    g_context.getCheck();
+  }
   void doJob(std::shared_ptr<ApcLoadJob> job) {
     char func_name[128];
     MemoryManager::SuppressOOM so(MM());
     snprintf(func_name, sizeof(func_name), "_apc_load_%d", job->m_index);
     apc_load_func(job->m_handle, func_name)();
   }
-  void onThreadExit() {}
+  void onThreadExit() {
+    hphp_memory_cleanup();
+  }
 };
 
 static size_t s_const_map_size = 0;
+
+static SnapshotBuilder s_snapshotBuilder;
 
 void apc_load(int thread) {
 #ifndef _MSC_VER
@@ -566,10 +576,26 @@ void apc_load(int thread) {
     return;
   }
   BootTimer::Block timer("loading APC data");
+  SnapshotLoader loader;
+  if (loader.tryInitializeFromFile(apcExtension::PrimeLibrary.c_str())) {
+    // TODO(9755815): APCFileStorage is redundant when using snapshot;
+    // disable it at module loading time in this case.
+    Logger::Info("Loading from snapshot file");
+    loader.load(apc_store());
+    apc_store().primeDone();
+    return;
+  }
+  Logger::Info("Fall back to shared object format");
   handle = dlopen(apcExtension::PrimeLibrary.c_str(), RTLD_LAZY);
   if (!handle) {
     throw Exception("Unable to open apc prime library %s: %s",
                     apcExtension::PrimeLibrary.c_str(), dlerror());
+  }
+
+  auto upgradeDest = apcExtension::PrimeLibraryUpgradeDest;
+  if (!upgradeDest.empty()) {
+    thread = 1; // SnapshotBuilder is not (yet) thread-safe.
+    // TODO(9755792): Ensure APCFileStorage is enabled.
   }
 
   if (thread <= 1) {
@@ -582,10 +608,14 @@ void apc_load(int thread) {
     for (int i = 0; i < count; i++) {
       jobs.push_back(std::make_shared<ApcLoadJob>(handle, i));
     }
-    JobDispatcher<ApcLoadJob, ApcLoadWorker>(jobs, thread).run();
+    JobDispatcher<ApcLoadJob, ApcLoadWorker>(std::move(jobs), thread).run();
   }
 
   apc_store().primeDone();
+  if (!upgradeDest.empty()) {
+    BootTimer::Block block("SnapshotBuilder::writeToFile");
+    s_snapshotBuilder.writeToFile(upgradeDest);
+  }
 
   if (apcExtension::EnableConstLoad) {
 #ifdef USE_JEMALLOC
@@ -776,6 +806,8 @@ void apc_load_impl_compressed
     if (apcExtension::EnableConstLoad && info && info->use_const) return;
   }
   auto& s = apc_store();
+  SnapshotBuilder* snap = apcExtension::PrimeLibraryUpgradeDest.empty() ?
+    nullptr : &s_snapshotBuilder;
   {
     int count = int_lens[0];
     int len = int_lens[1];
@@ -789,8 +821,8 @@ void apc_load_impl_compressed
       for (int i = 0; i < count; i++) {
         auto& item = vars[i];
         item.key = k;
-        item.len = int_lens[i + 2];
         s.constructPrime(*v++, item);
+        if (UNLIKELY(snap != nullptr)) snap->addInt(v[-1], item);
         k += int_lens[i + 2] + 1; // skip \0
       }
       s.prime(vars);
@@ -810,11 +842,19 @@ void apc_load_impl_compressed
       for (int i = 0; i < count; i++) {
         auto& item = vars[i];
         item.key = k;
-        item.len = char_lens[i + 2];
         switch (*v++) {
-        case 0: s.constructPrime(false, item); break;
-        case 1: s.constructPrime(true , item); break;
-        case 2: s.constructPrime(uninit_null() , item); break;
+          case 0:
+            s.constructPrime(false, item);
+            if (UNLIKELY(snap != nullptr)) snap->addFalse(item);
+            break;
+          case 1:
+            s.constructPrime(true, item);
+            if (UNLIKELY(snap != nullptr)) snap->addTrue(item);
+            break;
+          case 2:
+            s.constructPrime(uninit_null(), item);
+            if (UNLIKELY(snap != nullptr)) snap->addNull(item);
+            break;
         default:
           throw Exception("bad apc archive, unknown char type");
         }
@@ -836,12 +876,12 @@ void apc_load_impl_compressed
       for (int i = 0; i < count; i++) {
         auto& item = vars[i];
         item.key = p;
-        item.len = string_lens[i + i + 2];
         p += string_lens[i + i + 2] + 1; // skip \0
         // Strings would be copied into APC anyway.
         String value(p, string_lens[i + i + 3], CopyString);
         // todo: t2539893: check if value is already a static string
         s.constructPrime(value, item, false);
+        if (UNLIKELY(snap != nullptr)) snap->addString(value, item);
         p += string_lens[i + i + 3] + 1; // skip \0
       }
       s.prime(vars);
@@ -860,10 +900,10 @@ void apc_load_impl_compressed
       for (int i = 0; i < count; i++) {
         auto& item = vars[i];
         item.key = p;
-        item.len = object_lens[i + i + 2];
         p += object_lens[i + i + 2] + 1; // skip \0
         String value(p, object_lens[i + i + 3], CopyString);
         s.constructPrime(value, item, true);
+        if (UNLIKELY(snap != nullptr)) snap->addObject(value, item);
         p += object_lens[i + i + 3] + 1; // skip \0
       }
       s.prime(vars);
@@ -882,7 +922,6 @@ void apc_load_impl_compressed
       for (int i = 0; i < count; i++) {
         auto& item = vars[i];
         item.key = p;
-        item.len = thrift_lens[i + i + 2];
         p += thrift_lens[i + i + 2] + 1; // skip \0
         String value(p, thrift_lens[i + i + 3], CopyString);
         Variant success;
@@ -891,6 +930,7 @@ void apc_load_impl_compressed
           throw Exception("bad apc archive, fb_unserialize failed");
         }
         s.constructPrime(v, item);
+        if (UNLIKELY(snap != nullptr)) snap->addThrift(value, item);
         p += thrift_lens[i + i + 3] + 1; // skip \0
       }
       s.prime(vars);
@@ -909,7 +949,6 @@ void apc_load_impl_compressed
       for (int i = 0; i < count; i++) {
         auto& item = vars[i];
         item.key = p;
-        item.len = other_lens[i + i + 2];
         p += other_lens[i + i + 2] + 1; // skip \0
         String value(p, other_lens[i + i + 3], CopyString);
         Variant v = unserialize_from_string(value);
@@ -919,6 +958,7 @@ void apc_load_impl_compressed
           throw Exception("bad apc archive, unserialize_from_string failed");
         }
         s.constructPrime(v, item);
+        if (UNLIKELY(snap != nullptr)) snap->addOther(value, item);
         p += other_lens[i + i + 3] + 1; // skip \0
       }
       s.prime(vars);

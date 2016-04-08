@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -26,9 +26,9 @@ namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
-class ArrayInit;
+struct ArrayInit;
 struct MemoryProfile;
-class Shape;
+struct Shape;
 struct StructArray;
 
 //////////////////////////////////////////////////////////////////////
@@ -127,6 +127,18 @@ public:
     return sizeof(MixedArray);
   }
 
+  struct ElmKey {
+    ElmKey() {}
+    ElmKey(int32_t hash, StringData* key)
+        : skey(key), hash(hash)
+      {}
+    union {
+      StringData* skey;
+      int64_t ikey;
+    };
+    int32_t hash;
+  };
+
   /*
    * Initialize an empty small mixed array with given field. This should be
    * inlined.
@@ -135,12 +147,20 @@ public:
                         int64_t nextIntKey);
 
   /*
-   * Allocate a new, empty, request-local array in mixed mode, with
+   * Allocate a new, empty, request-local array in (mixed|dict) mode, with
    * enough space reserved for `capacity' members.
    *
    * The returned array is already incref'd.
    */
-  static ArrayData* MakeReserveMixed(uint32_t capacity);
+  static ArrayData* MakeReserveMixed(uint32_t size) {
+    return MakeReserveImpl(size, HeaderKind::Mixed);
+  }
+
+  static ArrayData* MakeReserveDict(uint32_t size) {
+    return MakeReserveImpl(size, HeaderKind::Dict);
+  }
+
+  static ArrayData* ConvertToDict(ArrayData* ad);
 
   /*
    * Allocate a new, empty, request-local array with the same mode as
@@ -155,7 +175,7 @@ public:
    * Like MakePacked, but given static strings, make a struct-like array.
    * Also requires size > 0.
    */
-  static MixedArray* MakeStruct(uint32_t size, StringData** keys,
+  static MixedArray* MakeStruct(uint32_t size, const StringData* const* keys,
                                const TypedValue* values);
   static StructArray* MakeStructArray(uint32_t size, const TypedValue* values,
                                       Shape*);
@@ -257,6 +277,8 @@ public:
   static ArrayData* Pop(ArrayData*, Variant& value);
   static ArrayData* Dequeue(ArrayData*, Variant& value);
   static ArrayData* Prepend(ArrayData*, const Variant& v, bool copy);
+  static ArrayData* ToDict(ArrayData*);
+  static ArrayData* ToDictInPlace(ArrayData*);
   static void Renumber(ArrayData*);
   static void OnSetEvalScalar(ArrayData*);
   static void Release(ArrayData*);
@@ -279,6 +301,7 @@ private:
   MixedArray* copyMixed() const;
   MixedArray* copyMixedAndResizeIfNeeded() const;
   MixedArray* copyMixedAndResizeIfNeededSlow() const;
+  static ArrayData* MakeReserveImpl(uint32_t capacity, HeaderKind hk);
 
 public:
   // Elm's data.m_type == kInvalidDataType for deleted slots.
@@ -328,14 +351,14 @@ private:
   friend struct EmptyArray;
   friend struct PackedArray;
   friend struct StructArray;
-  friend class HashCollection;
-  friend class BaseMap;
-  friend class c_Map;
-  friend class c_ImmMap;
-  friend class BaseSet;
-  friend class c_Set;
-  friend class c_ImmSet;
-  friend class c_AwaitAllWaitHandle;
+  friend struct HashCollection;
+  friend struct BaseMap;
+  friend struct c_Map;
+  friend struct c_ImmMap;
+  friend struct BaseSet;
+  friend struct c_Set;
+  friend struct c_ImmSet;
+  friend struct c_AwaitAllWaitHandle;
   enum class ClonePacked {};
   enum class CloneMixed {};
 
@@ -377,9 +400,6 @@ private:
   static ArrayData* ArrayPlusEqGeneric(ArrayData*,
     MixedArray*, const ArrayData*, size_t);
   static ArrayData* ArrayMergeGeneric(MixedArray*, const ArrayData*);
-
-  // convert in-place from kPackedKind to kMixedKind: fill in keys & hashtable
-  MixedArray* packedToMixed();
 
   ssize_t nextElm(Elm* elms, ssize_t ei) const {
     assert(ei >= -1);

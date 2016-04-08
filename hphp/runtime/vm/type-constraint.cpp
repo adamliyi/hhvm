@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -50,7 +50,7 @@ void TypeConstraint::init() {
   auto const mptr = nameToAnnotType(m_typeName);
   if (mptr) {
     m_type = *mptr;
-    assert(getAnnotDataType(m_type) != KindOfStaticString);
+    assert(getAnnotDataType(m_type) != KindOfPersistentString);
     return;
   }
   TRACE(5, "TypeConstraint: this %p no such type %s, treating as object\n",
@@ -384,7 +384,7 @@ static const char* describe_actual_type(const TypedValue* tv, bool isHHType) {
     case KindOfBoolean:       return "bool";
     case KindOfInt64:         return "int";
     case KindOfDouble:        return isHHType ? "float" : "double";
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:        return "string";
     case KindOfPersistentArray:
     case KindOfArray:         return "array";

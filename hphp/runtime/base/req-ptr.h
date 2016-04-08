@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -169,7 +169,7 @@ template<typename T> struct ptr final {
 
 private:
   // For templatized ptr<Y> move constructor.
-  template <typename Y> friend class ptr;
+  template <typename Y> friend struct ptr;
 
   static ALWAYS_INLINE void decRefPtr(T* ptr) {
     if (LIKELY(ptr != nullptr)) ptr->decRefAndRelease();
@@ -253,8 +253,8 @@ inline auto deref(const P& p) -> decltype(P().get()) {
 
 struct ResourceData;
 struct ObjectData;
-class Resource;
-class Object;
+struct Resource;
+struct Object;
 struct Variant;
 
 ATTRIBUTE_NORETURN extern void throw_null_pointer_exception();

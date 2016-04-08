@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -271,12 +271,12 @@ void disasmRange(std::ostream& os, TCA begin, TCA end) {
     }
 
     case Arch::PPC64:
-     ppc64_asm::Dissasembler disasm(dumpIR, true, kIndent + 4,
-                                    color(ANSI_COLOR_BROWN));
-     for (; begin < end; begin += ppc64_asm::Assembler::kBytesPerInstr) {
-        disasm.dissasembly(os, begin);
-     }
-     return;
+      ppc64_asm::Disassembler disasm(dumpIR, true, kIndent + 4,
+                                      color(ANSI_COLOR_BROWN));
+      for (; begin < end; begin += ppc64_asm::Assembler::kBytesPerInstr) {
+        disasm.disassembly(os, begin);
+      }
+      return;
   }
   not_reached();
 }
@@ -642,8 +642,9 @@ std::string banner(const char* caption) {
 
 // Suggested captions: "before jiffy removal", "after goat saturation",
 // etc.
-void printUnit(int level, const IRUnit& unit, const char* caption, AsmInfo* ai,
-               const GuardConstraints* guards) {
+void printUnit(int level, const IRUnit& unit, const char* caption,
+               AsmInfo* ai,
+               const GuardConstraints* guards, Annotations* annotations) {
   if (dumpIREnabled(level)) {
     std::ostringstream str;
     str << banner(caption);
@@ -652,8 +653,8 @@ void printUnit(int level, const IRUnit& unit, const char* caption, AsmInfo* ai,
     if (HPHP::Trace::moduleEnabledRelease(HPHP::Trace::printir, level)) {
       HPHP::Trace::traceRelease("%s\n", str.str().c_str());
     }
-    if (RuntimeOption::EvalDumpIR >= level) {
-      mcg->annotations().emplace_back(caption, str.str());
+    if (annotations && RuntimeOption::EvalDumpIR >= level) {
+      annotations->emplace_back(caption, str.str());
     }
   }
 }

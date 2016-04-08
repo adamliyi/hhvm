@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,6 +28,7 @@
 
 #include <folly/String.h>
 
+#include "hphp/runtime/base/runtime-error.h"
 #include "hphp/util/lock.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/exception.h"
@@ -485,6 +486,7 @@ String FileUtil::canonicalize(const char *addpath, size_t addlen,
   size_t maxlen = addlen + 4;
   size_t pathlen = 0; // is the length of the result path
   size_t seglen;  // is the end of the current segment
+  auto pathend = addpath + addlen;
 
   /* Treat null as an empty path.
    */
@@ -565,6 +567,9 @@ String FileUtil::canonicalize(const char *addpath, size_t addlen,
 
     addpath = next;
   }
+
+  // If there are null bytes in the path, treat it as the empty string
+  if (addpath != pathend) pathlen = 0;
 
 #ifdef _MSC_VER
   // Need to normalize to Windows directory separators, as the underlying
@@ -681,6 +686,36 @@ void FileUtil::find(std::vector<std::string> &out,
   }
 
   closedir(dir);
+}
+
+bool FileUtil::isValidPath(const String& path) {
+  return path.size() == strlen(path.data());
+}
+
+bool FileUtil::checkPathAndWarn(const String& path,
+                                const char* func_name,
+                                int param_pos) {
+  if (!FileUtil::isValidPath(path)) {
+    raise_warning(
+      "%s() expects parameter %d to be a valid path, string given",
+      func_name,
+      param_pos
+    );
+    return false;
+  }
+  return true;
+}
+
+void FileUtil::checkPathAndError(const String& path,
+                                 const char* func_name,
+                                 int param_pos) {
+  if (!FileUtil::isValidPath(path)) {
+    raise_error(
+      "%s() expects parameter %d to be a valid path, string given",
+      func_name,
+      param_pos
+    );
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////

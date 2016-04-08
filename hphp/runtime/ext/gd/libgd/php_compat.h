@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -34,8 +34,10 @@
 // And start the blasted C stuff again
 extern "C" {
 
-#define HAVE_LIBJPEG
-#define HAVE_LIBPNG
+#ifdef FACEBOOK
+# define HAVE_LIBJPEG
+# define HAVE_LIBPNG
+#endif
 #define emalloc HPHP::req::malloc
 #define ecalloc HPHP::req::calloc
 #define efree HPHP::req::free

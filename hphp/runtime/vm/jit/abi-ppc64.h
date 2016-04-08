@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | (c) Copyright IBM Corporation 2015                                   |
+   | (c) Copyright IBM Corporation 2015-2016                              |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -39,34 +39,33 @@ const Abi& abi(CodeKind kind = CodeKind::Trace);
 constexpr PhysReg rvmfp()      { return ppc64_asm::reg::r31; }
 constexpr PhysReg rvmsp()      { return ppc64_asm::reg::r29; }
 constexpr PhysReg rvmtl()      { return ppc64_asm::reg::r30; }
-constexpr PhysReg rsp()        { return ppc64_asm::reg::r1;  }
+constexpr PhysReg rsp()        { return ppc64_asm::reg::r27; }
 
 // optional in function linkage/used in function prologues
 constexpr PhysReg rfuncln()    { return ppc64_asm::reg::r0;  }
-
-// thread pointer, used to access the thread local storage section.
-// See ABI for more info, page 112, Chapter 3.7.2 "TLS Runtime Handling"
-// https://members.openpowerfoundation.org/document/dl/576
-constexpr PhysReg rthreadptr() { return ppc64_asm::reg::r13; }
-
 // optional in function linkage/function entry address at global entry point
 constexpr PhysReg rfuncentry() { return ppc64_asm::reg::r12; }
 constexpr PhysReg rtoc()       { return ppc64_asm::reg::r2;  }
 
-// rone() returns register 28, which has the value "1" (Initiated in
-// translator-asm-helpers.S).
-// This is necessary for PPC64 since instructions like "inc" must updates the
-// CR depending the instruction result and instructions like "addi" (using
-// immediate) does not set the CR.
+/*
+ * Thread pointer, used to access the thread local storage section.
+ *
+ * See ABI for more info, page 112, Chapter 3.7.2 "TLS Runtime Handling"
+ * https://members.openpowerfoundation.org/document/dl/576
+ */
+constexpr PhysReg rthreadptr() { return ppc64_asm::reg::r13; }
+
+/*
+ * Return register 28, which has the value "1" (initialized in enterTCHelper).
+ *
+ * This is necessary for PPC64 since instructions like "inc" must update the CR
+ * depending on the instruction result, and instructions like "addi" (with
+ * immediate) do not set the CR.
+ */
 constexpr PhysReg rone()       { return ppc64_asm::reg::r28; }
 
-namespace detail {
-  const RegSet kVMRegs      = rvmfp() | rvmtl() | rvmsp();
-  const RegSet kVMRegsNoSP  = rvmfp() | rvmtl();
-}
-
-inline RegSet vm_regs_with_sp() { return detail::kVMRegs; }
-inline RegSet vm_regs_no_sp()   { return detail::kVMRegsNoSP; }
+inline RegSet vm_regs_no_sp()   { return rvmfp() | rvmtl(); }
+inline RegSet vm_regs_with_sp() { return vm_regs_no_sp() | rvmsp(); }
 
 PhysReg rret(size_t i = 0);
 PhysReg rret_simd(size_t i);

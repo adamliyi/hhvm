@@ -8,5 +8,7 @@
  *
 *)
 
-val start_monitoring: ServerMonitorUtils.monitor_config ->
-  (unit -> ServerProcess.process_data) list -> 'a
+val start_monitoring:
+  waiting_client:int option ->
+  ServerMonitorUtils.monitor_config ->
+  ServerMonitorUtils.monitor_starter -> 'a

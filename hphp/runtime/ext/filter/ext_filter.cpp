@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -16,9 +16,12 @@
 */
 
 #include "hphp/runtime/ext/filter/ext_filter.h"
+
 #include "hphp/runtime/ext/filter/logical_filters.h"
 #include "hphp/runtime/ext/filter/sanitizing_filters.h"
+
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/base/init-fini-node.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/request-local.h"
@@ -136,8 +139,7 @@ private:
 };
 IMPLEMENT_THREAD_LOCAL_NO_CHECK(FilterRequestData, s_filter_request_data);
 
-static class FilterExtension final : public Extension {
-public:
+static struct FilterExtension final : Extension {
   FilterExtension() : Extension("filter", "0.11.0") {}
 
   void moduleLoad(const IniSetting::Map& ini, Hdf config) override {
@@ -415,12 +417,7 @@ Variant HHVM_FUNCTION(filter_list) {
 }
 
 Variant HHVM_FUNCTION(filter_id,
-                      const Variant& filtername) {
-  if (filtername.isArray()) {
-    raise_warning("Array to string conversion");
-    return init_null();
-  }
-
+                      const String& filtername) {
   size_t size = sizeof(filter_list) / sizeof(filter_list_entry);
   for (size_t i = 0; i < size; ++i) {
     if (filter_list[i].name == filtername) {

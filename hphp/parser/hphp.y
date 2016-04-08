@@ -386,7 +386,7 @@ static void xhp_attribute_stmt(Parser *_p, Token &out, Token &attributes) {
     stmt = 1;
   }
   {
-    Token params, ret, ref; ref = 1;
+    Token params, ret, ref; ref = 0;
     _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, nullptr, false);
   }
 }
@@ -436,7 +436,7 @@ static void xhp_category_stmt(Parser *_p, Token &out, Token &categories) {
     stmt = 1;
   }
   {
-    Token params, ret, ref; ref = 1;
+    Token params, ret, ref; ref = 0;
     _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, nullptr, false);
   }
 }
@@ -524,7 +524,7 @@ static void xhp_children_stmt(Parser *_p, Token &out, Token &children) {
     stmt = 1;
   }
   {
-    Token params, ret, ref; ref = 1;
+    Token params, ret, ref; ref = 0;
     _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, nullptr, false);
   }
 }
@@ -583,6 +583,7 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %left '=' T_PLUS_EQUAL T_MINUS_EQUAL T_MUL_EQUAL T_DIV_EQUAL T_CONCAT_EQUAL T_MOD_EQUAL T_AND_EQUAL T_OR_EQUAL T_XOR_EQUAL T_SL_EQUAL T_SR_EQUAL T_POW_EQUAL
 %right T_AWAIT T_YIELD
 %right T_YIELD_FROM
+%left T_PIPE
 %left '?' ':'
 %right T_COALESCE
 %left T_BOOLEAN_OR
@@ -613,6 +614,7 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %token T_STRING
 %token T_STRING_VARNAME
 %token T_VARIABLE
+%token T_PIPE_VAR
 %token T_NUM_STRING
 %token T_INLINE_HTML
 %token T_HASHBANG
@@ -662,6 +664,7 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %token T_DOUBLE_ARROW
 %token T_LIST
 %token T_ARRAY
+%token T_DICT
 %token T_CALLABLE
 %token T_CLASS_C
 %token T_METHOD_C
@@ -855,6 +858,7 @@ ident_for_class_const:
   /** The following must be made semi-reserved since they were keywords in HHVM
     * but not PHP. */
   | T_UNSET
+  | T_DICT
 ;
 
 ident:
@@ -1676,7 +1680,7 @@ xhp_nullable_attribute_decl_type:
 xhp_attribute_decl_type:
     T_ARRAY                            { $$ = 4;}
   | T_ARRAY T_TYPELIST_LT hh_type
-    T_TYPELIST_GT                      { $$ = 4;}
+    possible_comma T_TYPELIST_GT       { $$ = 4;}
   | T_ARRAY T_TYPELIST_LT hh_type ','
     hh_type T_TYPELIST_GT              { $$ = 4;}
   | fully_qualified_class_name         { /* This case handles all types other
@@ -1939,6 +1943,7 @@ expr_no_variable:
   | expr '/' expr                      { BEXP($$,$1,$3,'/');}
   | expr T_POW expr                    { BEXP($$,$1,$3,T_POW);}
   | expr '%' expr                      { BEXP($$,$1,$3,'%');}
+  | expr T_PIPE expr                   { BEXP($$,$1,$3,T_PIPE);}
   | expr T_SL expr                     { BEXP($$,$1,$3,T_SL);}
   | expr T_SR expr                     { BEXP($$,$1,$3,T_SR);}
   | '+' expr %prec T_INC               { UEXP($$,$2,'+',1);}
@@ -1974,6 +1979,7 @@ expr_no_variable:
   | '@' expr                           { UEXP($$,$2,'@',1);}
   | scalar                             { $$ = $1; }
   | array_literal                      { $$ = $1; }
+  | dict_literal                       { $$ = $1; }
   | shape_literal                      { $$ = $1; }
   | '`' backticks_expr '`'             { _p->onEncapsList($$,'`',$2);}
   | T_PRINT expr                       { UEXP($$,$2,T_PRINT,1);}
@@ -2159,6 +2165,62 @@ array_literal:
   | '[' array_pair_list ']'           { _p->onArray($$,$2,T_ARRAY);}
 ;
 
+dict_pair_list:
+    non_empty_dict_pair_list
+    possible_comma                     { $$ = $1;}
+  |                                    { $$.reset();}
+;
+
+non_empty_dict_pair_list:
+    non_empty_dict_pair_list
+    ',' expr T_DOUBLE_ARROW expr       { _p->onArrayPair($$,&$1,&$3,$5,0);}
+  | expr T_DOUBLE_ARROW expr           { _p->onArrayPair($$,  0,&$1,$3,0);}
+  | non_empty_dict_pair_list
+    ',' expr T_DOUBLE_ARROW
+    '&' variable                       { _p->onArrayPair($$,&$1,&$3,$6,1);}
+  | expr T_DOUBLE_ARROW '&' variable   { _p->onArrayPair($$,  0,&$1,$4,1);}
+;
+
+static_dict_pair_list:
+    non_empty_static_dict_pair_list
+    possible_comma                     { $$ = $1;}
+  |                                    { $$.reset();}
+;
+
+non_empty_static_dict_pair_list:
+    non_empty_static_dict_pair_list
+    ',' static_expr T_DOUBLE_ARROW
+    static_expr                        { _p->onArrayPair($$,&$1,&$3,$5,0);}
+  | static_expr T_DOUBLE_ARROW
+    static_expr                        { _p->onArrayPair($$,  0,&$1,$3,0);}
+;
+
+static_dict_pair_list_ae:
+    non_empty_static_dict_pair_list_ae
+    possible_comma                     { $$ = $1;}
+  |                                    { $$.reset();}
+;
+
+non_empty_static_dict_pair_list_ae:
+    non_empty_static_dict_pair_list_ae
+    ',' static_scalar_ae T_DOUBLE_ARROW
+    static_scalar_ae                   { _p->onArrayPair($$,&$1,&$3,$5,0);}
+  | static_scalar_ae T_DOUBLE_ARROW
+    static_scalar_ae                   { _p->onArrayPair($$,  0,&$1,$3,0);}
+;
+
+dict_literal:
+    T_DICT '[' dict_pair_list ']'     { _p->onDict($$, $3); }
+;
+
+static_dict_literal:
+    T_DICT '[' static_dict_pair_list ']' { _p->onDict($$, $3); }
+;
+
+static_dict_literal_ae:
+    T_DICT '[' static_dict_pair_list_ae ']' { _p->onDict($$, $3); }
+;
+
 collection_literal:
     fully_qualified_class_name
     '{' collection_init '}'            { Token t;
@@ -2182,6 +2244,7 @@ dim_expr:
 
 dim_expr_base:
     array_literal                      { $$ = $1;}
+  | dict_literal                       { $$ = $1;}
   | class_constant                     { $$ = $1;}
   | lambda_or_closure_with_parens      { $$ = $1;}
   | T_CONSTANT_ENCAPSED_STRING         { _p->onScalar($$,
@@ -2349,11 +2412,15 @@ xhp_bareword:
   | T_TYPE                             { $$ = $1;}
   | T_NEWTYPE                          { $$ = $1;}
   | T_SHAPE                            { $$ = $1;}
+  | T_DICT                             { $$ = $1;}
 ;
 
 simple_function_call:
     namespace_string_typeargs '('
     function_call_parameter_list ')'   { _p->onCall($$,0,$1,$3,NULL);}
+  | T_DICT '('
+    function_call_parameter_list ')'   { $1.setText("dict");
+                                         _p->onCall($$,0,$1,$3,NULL);}
 ;
 
 fully_qualified_class_name:
@@ -2450,6 +2517,7 @@ static_expr:
   | '[' static_array_pair_list ']'     { _p->onArray($$,$2,T_ARRAY); }
   | T_SHAPE '('
     static_shape_pair_list ')'         { _p->onArray($$,$3,T_ARRAY); }
+  | static_dict_literal                { $$ = $1;}
   | static_class_constant              { $$ = $1;}
   | static_collection_literal          { $$ = $1;}
   | '(' static_expr ')'                { $$ = $2;}
@@ -2591,6 +2659,7 @@ static_scalar_ae:
   | '[' static_array_pair_list_ae ']'  { _p->onArray($$,$2,T_ARRAY);}
   | T_SHAPE '('
     static_shape_pair_list_ae ')'      { _p->onArray($$,$3,T_ARRAY); }
+  | static_dict_literal_ae             { $$ = $1;}
 ;
 
 static_array_pair_list_ae:
@@ -2900,6 +2969,7 @@ reference_variable:
 
 compound_variable:
     T_VARIABLE                         { _p->onSimpleVariable($$, $1);}
+  | T_PIPE_VAR                         { _p->onPipeVariable($$);}
   | '$' '{' expr '}'                   { _p->onDynamicVariable($$, $3, 0);}
   /* !PHP7_ONLY */
   | '$' compound_variable              { $1 = 1; _p->onIndirectRef($$, $1, $2);}
@@ -3176,12 +3246,17 @@ hh_constraint:
  |  T_SUPER hh_type
 
 hh_typevar_list:
-    hh_typevar_list ','
+    hh_non_empty_typevar_list
+    possible_comma                     { $$ = $1; }
+;
+
+hh_non_empty_typevar_list:
+    hh_non_empty_typevar_list ','
     hh_typevar_variance
     ident_no_semireserved              { _p->addTypeVar($4.text()); }
  |  hh_typevar_variance
     ident_no_semireserved              { _p->addTypeVar($2.text()); }
- |  hh_typevar_list ','
+ |  hh_non_empty_typevar_list ','
     hh_typevar_variance
     ident_no_semireserved
     hh_constraint                      { _p->addTypeVar($4.text()); }
@@ -3250,6 +3325,12 @@ hh_access_type:
     hh_typeargs_opt                   { _p->onTypeAnnotation($$, $1, $2); }
 ;
 
+array_typelist:
+    T_TYPELIST_LT hh_type
+    possible_comma T_TYPELIST_GT       { $$ = $2;}
+  | T_TYPELIST_LT hh_type ','
+    hh_type T_TYPELIST_GT              { _p->onTypeList($2, $4); $$ = $2;}
+
 /* extends non_empty_type_decl with some more types */
 hh_type:
     /* double-optional types will be rejected by the typechecker; we
@@ -3264,6 +3345,9 @@ hh_type:
   | T_ARRAY                            { Token t; t.reset();
                                          $1.setText("array");
                                          _p->onTypeAnnotation($$, $1, t); }
+  | T_DICT                             { Token t; t.reset();
+                                         $1.setText("array");
+                                         _p->onTypeAnnotation($$, $1, t); }
   | T_CALLABLE                         { Token t; t.reset();
                                          $1.setText("callable");
                                          _p->onTypeAnnotation($$, $1, t); }
@@ -3273,13 +3357,10 @@ hh_type:
     hh_access_type                     { only_in_hh_syntax(_p);
                                          _p->onTypeAnnotation($$, $1, $3);
                                          _p->onTypeSpecialization($$, 'a'); }
-  | T_ARRAY T_TYPELIST_LT hh_type
-    T_TYPELIST_GT                      { $1.setText("array");
-                                         _p->onTypeAnnotation($$, $1, $3); }
-  | T_ARRAY T_TYPELIST_LT hh_type ','
-    hh_type T_TYPELIST_GT              { _p->onTypeList($3, $5);
-                                         $1.setText("array");
-                                         _p->onTypeAnnotation($$, $1, $3); }
+  | T_ARRAY array_typelist             { $1.setText("array");
+                                         _p->onTypeAnnotation($$, $1, $2); }
+  | T_DICT array_typelist              { $1.setText("array");
+                                         _p->onTypeAnnotation($$, $1, $2); }
   | T_XHP_LABEL                        { $1.xhpLabel();
                                          Token t; t.reset();
                                          _p->onTypeAnnotation($$, $1, t);

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -13,108 +13,89 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+
 #ifndef HPHP_DWARF_H_
 #define HPHP_DWARF_H_
 
-#include <string>
+#include "hphp/runtime/vm/jit/translator.h"
+#include "hphp/util/eh-frame.h"
 
 #include <folly/Optional.h>
 
-#include "hphp/runtime/vm/jit/translator.h"
-#ifndef _MSC_VER
-#include <libdwarf.h>
-#include <dwarf.h>
-#else
-// We don't have libdwarf, so stub it out.
-typedef void* Dwarf_Ptr;
-typedef uint32_t Dwarf_Unsigned;
-
-#define DW_EH_PE_absptr 0
-
-#define DW_CFA_def_cfa 0
-#define DW_CFA_offset 0
-#define DW_CFA_offset_extended_sf 0
-#define DW_CFA_same_value 0
-#define DW_CFA_set_loc 0
-#define DW_CFA_val_expression 0
-
-#define DW_OP_breg7 0
-#define DW_OP_const4s 0
-#define DW_OP_deref_size 0
-#define DW_OP_dup 0
-#define DW_OP_mul 0
-#define DW_OP_plus 0
-#endif
+#include <string>
 #include <vector>
 
-namespace HPHP {
-namespace Debug {
+namespace HPHP { namespace Debug {
 
 using jit::TCA;
 
-#if defined(__powerpc64__)
-typedef enum {
-  R0,
-  SP,
-  TOC,
-  R3,
-  R4,
-  R5,
-  R6,
-  R7,
-  R8,
-  R9,
-  R10,
-  R11,
-  R12,
-  TLS,
-  R14,
-  R15,
-  R16,
-  R17,
-  R18,
-  R19,
-  R20,
-  R21,
-  R22,
-  R23,
-  R24,
-  R25,
-  R26,
-  R27,
-  R28,
-  R29,
-  R30,
-  FP,
-  LR = 65,
-  /* synonyms */
-  RBP = FP,
-  RSP = SP,
-  RIP = LR
-} ppc64_regnum_t;
+namespace ppc64 {
 
-#else
-typedef enum {
-  RAX,
-  RDX,
-  RCX,
-  RBX,
-  RSI,
-  RDI,
-  RBP,
-  RSP,
-  R8,
-  R9,
-  R10,
-  R11,
-  R12,
-  R13,
-  R14,
-  R15,
-  RIP
-} x86_64_regnum_t;
+  typedef enum {
+    R0,
+    SP,
+    TOC,
+    R3,
+    R4,
+    R5,
+    R6,
+    R7,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    TLS,
+    R14,
+    R15,
+    R16,
+    R17,
+    R18,
+    R19,
+    R20,
+    R21,
+    R22,
+    R23,
+    R24,
+    R25,
+    R26,
+    R27,
+    R28,
+    R29,
+    R30,
+    FP,
+    LR = 65,
+    /* synonyms */
+    RBP = FP,
+    RSP = SP,
+    RIP = LR
+  } ppc64_regnum_t;
 
-#endif
+}
+
+namespace x64 {
+
+  typedef enum {
+    RAX,
+    RDX,
+    RCX,
+    RBX,
+    RSI,
+    RDI,
+    RBP,
+    RSP,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
+    RIP
+  } x86_64_regnum_t;
+
+}
 
 const int DWARF_CODE_ALIGN = 1;
 const int DWARF_DATA_ALIGN = 8;
@@ -130,11 +111,7 @@ extern int g_dwarfCallback(
   Dwarf_Unsigned flags, Dwarf_Unsigned link, Dwarf_Unsigned info,
   Dwarf_Unsigned *sect_name_index, Dwarf_Ptr handle, int *error);
 
-class TCRange {
-  TCA m_start, m_end;
-  bool m_isAcold;
-  void V() const { assert(isValid()); }
- public:
+struct TCRange {
   TCRange() : m_start(nullptr), m_end(nullptr), m_isAcold(false) {
     assert(!isValid());
   }
@@ -165,32 +142,29 @@ class TCRange {
     m_end = newEnd;
     V();
   }
+
+private:
+  void V() const { assert(isValid()); }
+
+private:
+  TCA m_start, m_end;
+  bool m_isAcold;
 };
 
 struct DwarfBuf {
-  std::vector<uint8_t> m_buf;
-
   void byte(uint8_t c);
-  void byte(int off, uint8_t c);
-  void word(uint16_t w);
-  void word(int off, uint16_t w);
-  void dword(uint32_t d);
-  void dword(int off, uint32_t d);
-  void qword(uint64_t q);
+
   void clear();
   int size();
   uint8_t *getBuf();
   void print();
-  void dwarf_op_const4s(int x);
-  void dwarf_op_deref_size(uint8_t size);
-  void dwarf_sfp_expr(int offset, int scale);
-  void dwarf_cfa_sfp(uint8_t reg, int offset, int scale);
-  void dwarf_cfa_unwind_rsp();
-  void dwarf_cfa_set_loc(uint64_t addr);
-  void dwarf_cfa_same_value(uint8_t reg);
+
   void dwarf_cfa_def_cfa(uint8_t reg, uint8_t offset);
-  void dwarf_cfa_offset(uint8_t reg, uint8_t offset);
+  void dwarf_cfa_same_value(uint8_t reg);
   void dwarf_cfa_offset_extended_sf(uint8_t reg, int8_t offset);
+
+private:
+  std::vector<uint8_t> m_buf;
 };
 
 struct LineEntry {
@@ -259,7 +233,6 @@ struct DwarfInfo {
   void syncChunks();
 };
 
-}
-}
+}}
 
 #endif

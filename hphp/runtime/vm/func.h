@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -116,7 +116,7 @@ struct FPIEnt {
  *
  */
 struct Func {
-  friend class FuncEmitter;
+  friend struct FuncEmitter;
 
   /////////////////////////////////////////////////////////////////////////////
   // Types.
@@ -909,7 +909,7 @@ struct Func {
   /*
    * Get and set the `index'-th function prologue.
    */
-  unsigned char* getPrologue(int index) const;
+  uint8_t* getPrologue(int index) const;
   void setPrologue(int index, unsigned char* tca);
 
   /*
@@ -931,11 +931,6 @@ struct Func {
    */
   void resetPrologue(int numParams);
   void resetPrologues();
-
-  /*
-   * Smash prologue guards to prevent function from being called.
-   */
-  void smashPrologues() const;
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -979,7 +974,7 @@ struct Func {
   /*
    * Intercept hook flag.
    */
-  char& maybeIntercepted() const;
+  int8_t& maybeIntercepted() const;
 
   /*
    * Access to the global vector of funcs.  This maps FuncID's back to Func*'s.
@@ -1237,7 +1232,7 @@ private:
   };
   // Atomically-accessed intercept flag.  -1, 0, or 1.
   // TODO(#1114385) intercept should work via invalidation.
-  mutable char m_maybeIntercepted;
+  mutable int8_t m_maybeIntercepted;
   mutable ClonedFlag m_cloned;
   bool m_isPreFunc : 1;
   bool m_hasPrivateAncestor : 1;

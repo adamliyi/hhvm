@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -57,7 +57,7 @@ TypedNum numericConvHelper(Cell cell) {
       return make_int(cell.m_data.num);
 
     case KindOfString:
-    case KindOfStaticString:
+    case KindOfPersistentString:
       return stringToNumeric(cell.m_data.pstr);
 
     case KindOfPersistentArray:
@@ -172,8 +172,25 @@ struct Div {
     if (UNLIKELY(u == 0)) {
       raise_warning(Strings::DIVISION_BY_ZERO);
       if (RuntimeOption::PHP7_IntSemantics) {
-        // PHP7 uses the IEEE definition (+/- INF and NAN).
-        return make_dbl(t / 0.0);
+        // PHP 7 requires IEEE compliance (+/- INF and NAN) with the result
+        // of dividing a value by zero. MSVC warns about the direct division
+        // by zero, and the literal division may not be portable to all
+        // platforms, so abstract the division out so that we can both keep
+        // MSVC quiet, and also handle platforms that don't have the same
+        // semantics as x86_64.
+        //
+        // This has to be factored out like this in order for MSVC to actually
+        // disable the warning, as MSVC only allows this warning to be disabled
+        // at function boundaries. Disabling it for a single line in a function
+        // is impossible; it must be disabled for the entire function.
+        FOLLY_PUSH_WARNING
+        FOLLY_MSVC_DISABLE_WARNING(4723)
+        return make_dbl([](int64_t tVal) {
+          auto v = tVal / 0.0;
+          assert(isnan(v) || isinf(v));
+          return v;
+        }(t));
+        FOLLY_POP_WARNING
       } else {
         return make_tv<KindOfBoolean>(false);
       }
@@ -405,7 +422,7 @@ void cellIncDecOp(Op op, Cell& cell) {
       op.dblCase(cell);
       return;
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       stringIncDecOp(op, cell);
       return;
@@ -432,7 +449,7 @@ struct IncBase {
   void nullCase(Cell& cell) const { cellCopy(make_int(1), cell); }
 
   Cell emptyString() const {
-    return make_tv<KindOfStaticString>(s_1.get());
+    return make_tv<KindOfPersistentString>(s_1.get());
   }
 
   void nonNumericString(Cell& cell) const {
@@ -671,7 +688,7 @@ void cellBitNot(Cell& cell) {
 
     case KindOfString:
       if (cell.m_data.pstr->cowCheck()) {
-    case KindOfStaticString:
+    case KindOfPersistentString:
         auto const newSd = StringData::Make(
           cell.m_data.pstr->slice(),
           CopyString

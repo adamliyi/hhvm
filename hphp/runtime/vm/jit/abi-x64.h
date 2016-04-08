@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -42,13 +42,8 @@ constexpr PhysReg rvmsp() { return reg::rbx; }
 constexpr PhysReg rvmtl() { return reg::r12; }
 constexpr PhysReg rsp()   { return reg::rsp; }
 
-namespace detail {
-  const RegSet kVMRegs      = rvmfp() | rvmtl() | rvmsp();
-  const RegSet kVMRegsNoSP  = rvmfp() | rvmtl();
-}
-
-inline RegSet vm_regs_with_sp() { return detail::kVMRegs; }
-inline RegSet vm_regs_no_sp()   { return detail::kVMRegsNoSP; }
+inline RegSet vm_regs_no_sp()   { return rvmfp() | rvmtl(); }
+inline RegSet vm_regs_with_sp() { return vm_regs_no_sp() | rvmsp(); }
 
 PhysReg rret(size_t i = 0);
 PhysReg rret_simd(size_t i);

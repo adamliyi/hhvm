@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,6 +24,7 @@
 #include "hphp/compiler/expression/assignment_expression.h"
 #include "hphp/compiler/expression/simple_variable.h"
 #include "hphp/compiler/expression/dynamic_variable.h"
+#include "hphp/compiler/expression/pipe_variable.h"
 #include "hphp/compiler/expression/static_member_expression.h"
 #include "hphp/compiler/expression/array_element_expression.h"
 #include "hphp/compiler/expression/dynamic_function_call.h"
@@ -422,11 +423,18 @@ void Parser::onSimpleVariable(Token &out, Token &var) {
   out->exp = NEW_EXP(SimpleVariable, var->text());
 }
 
+void Parser::onPipeVariable(Token &out) {
+  out->exp = NEW_EXP(PipeVariable);
+}
+
 void Parser::onDynamicVariable(Token &out, Token &expr, bool encap) {
   out->exp = getDynamicVariable(expr->exp, encap);
 }
 
 void Parser::onIndirectRef(Token &out, Token &refCount, Token &var) {
+  if (var->exp->is(Expression::KindOfPipeVariable)) {
+    PARSE_ERROR("Cannot take indirect reference to a pipe variable");
+  }
   out->exp = var->exp;
   for (int i = 0; i < refCount->num(); i++) {
     out->exp = createDynamicVariable(out->exp);
@@ -961,6 +969,10 @@ void Parser::onArray(Token &out, Token &pairs, int op /* = T_ARRAY */) {
     PARSE_ERROR("Typed collection is not enabled");
   }
   onUnaryOpExp(out, pairs, T_ARRAY, true);
+}
+
+void Parser::onDict(Token &out, Token &pairs) {
+  onUnaryOpExp(out, pairs, T_DICT, true);
 }
 
 void Parser::onArrayPair(Token &out, Token *pairs, Token *name, Token &value,

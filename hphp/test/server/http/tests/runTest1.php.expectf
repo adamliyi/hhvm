@@ -1,3 +1,6 @@
+Requesting 'test_status.php'
+string(%d) "int(%d)
+bool(false)"
 Requesting 'test_get.php?name=Foo'
 string(15) "string(3) "Foo""
 Requesting 'test_get.php?name=Bar'
@@ -72,3 +75,9 @@ array(5) {
 }"
 Requesting 'test_curl_multi_except.php'
 string(%d) "Hello, World!%d:::Exception: oops"
+Requesting 'test_pagelet.php'
+string(%d) "resource(%d) of type (PageletTask)
+string(3) "one"
+string(3) "two"
+string(0) ""
+int(200)"

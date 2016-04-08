@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -25,11 +25,11 @@
 #include "hphp/runtime/base/extended-logger.h"
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/file-util.h"
+#include "hphp/runtime/base/hhprof.h"
 #include "hphp/runtime/base/ini-setting.h"
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/php-globals.h"
 #include "hphp/runtime/base/plain-file.h"
-#include "hphp/runtime/base/pprof-server.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/simple-counter.h"
 #include "hphp/runtime/base/stat-cache.h"
@@ -39,6 +39,7 @@
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/base/thread-safe-setlocale.h"
+#include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/zend-math.h"
 #include "hphp/runtime/base/zend-strtod.h"
 #include "hphp/runtime/debugger/debugger.h"
@@ -63,17 +64,16 @@
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/server/xbox-server.h"
 #include "hphp/runtime/vm/debug/debug.h"
+#include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/treadmill.h"
 
-#include "hphp/system/constants.h"
 
 #include "hphp/util/abi-cxx.h"
 #include "hphp/util/boot_timer.h"
-#include "hphp/util/code-cache.h"
 #include "hphp/util/compatibility.h"
 #include "hphp/util/capability.h"
 #include "hphp/util/embedded-data.h"
@@ -82,7 +82,7 @@
 #include "hphp/util/light-process.h"
 #endif
 #include "hphp/util/process.h"
-#include "hphp/util/repo-schema.h"
+#include "hphp/util/build-info.h"
 #include "hphp/util/service-data.h"
 #include "hphp/util/shm-counter.h"
 #include "hphp/util/stack-trace.h"
@@ -689,11 +689,10 @@ void execute_command_line_begin(int argc, char **argv, int xhprof) {
 }
 
 void execute_command_line_end(int xhprof, bool coverage, const char *program) {
-  MM().collect("execute_command_line_end");
   if (RuntimeOption::EvalDumpTC ||
       RuntimeOption::EvalDumpIR ||
       RuntimeOption::EvalDumpRegion) {
-    HPHP::jit::tc_dump();
+    if (jit::mcg) jit::mcg->dumpTC();
   }
   if (xhprof) {
     Variant profileData = HHVM_FN(xhprof_disable)();
@@ -711,6 +710,11 @@ void execute_command_line_end(int xhprof, bool coverage, const char *program) {
     ti.m_coverage->Report(RuntimeOption::CodeCoverageOutputFile);
   }
 }
+
+#if defined(__APPLE__) || defined(__CYGWIN__) || defined(_MSC_VER)
+const void* __hot_start = nullptr;
+const void* __hot_end = nullptr;
+#endif
 
 #if FACEBOOK && defined USE_SSECRC
 // Overwrite the functiosn
@@ -902,6 +906,10 @@ static int start_server(const std::string &username, int xhprof) {
   RPCRequestHandler::GetAccessLog().init
     (RuntimeOption::AccessLogDefaultFormat, RuntimeOption::RPCLogs,
      username);
+  SCOPE_EXIT { HttpRequestHandler::GetAccessLog().flushAllWriters(); };
+  SCOPE_EXIT { AdminRequestHandler::GetAccessLog().flushAllWriters(); };
+  SCOPE_EXIT { RPCRequestHandler::GetAccessLog().flushAllWriters(); };
+  SCOPE_EXIT { Logger::FlushAll(); };
 
 #if !defined(SKIP_USER_CHANGE)
   if (!username.empty()) {
@@ -1041,10 +1049,6 @@ int execute_program(int argc, char **argv) {
     } catch (const Exception &e) {
       Logger::Error("Uncaught exception: %s", e.what());
       throw;
-    } catch (const FailedAssertion& fa) {
-      fa.print();
-      StackTraceNoHeap::AddExtraLogging("Assertion failure", fa.summary);
-      abort();
     } catch (const std::exception &e) {
       Logger::Error("Uncaught exception: %s", e.what());
       throw;
@@ -1442,8 +1446,8 @@ static int execute_program_impl(int argc, char** argv) {
     cout << "HipHop VM";
     cout << " " << HHVM_VERSION;
     cout << " (" << (debug ? "dbg" : "rel") << ")\n";
-    cout << "Compiler: " << kCompilerId << "\n";
-    cout << "Repo schema: " << kRepoSchemaId << "\n";
+    cout << "Compiler: " << compilerId() << "\n";
+    cout << "Repo schema: " << repoSchemaId() << "\n";
     return 0;
   }
   if (vm.count("modules")) {
@@ -1455,12 +1459,12 @@ static int execute_program_impl(int argc, char** argv) {
     return 0;
   }
   if (vm.count("compiler-id")) {
-    cout << kCompilerId << "\n";
+    cout << compilerId() << "\n";
     return 0;
   }
 
   if (vm.count("repo-schema")) {
-    cout << kRepoSchemaId << "\n";
+    cout << repoSchemaId() << "\n";
     return 0;
   }
 
@@ -1509,7 +1513,14 @@ static int execute_program_impl(int argc, char** argv) {
     s_config_files = po.config;
     // Start with .hdf and .ini files
     for (auto& filename : s_config_files) {
-      Config::ParseConfigFile(filename, ini, config);
+      if (boost::filesystem::exists(filename)) {
+        Config::ParseConfigFile(filename, ini, config);
+      } else {
+        Logger::Warning(
+          "The configuration file %s does not exist",
+          filename.c_str()
+        );
+      }
     }
     // Now, take care of CLI options and then officially load and bind things
     RuntimeOption::Load(ini, config, po.iniStrings, po.confStrings, &messages);
@@ -1804,19 +1815,8 @@ std::string get_systemlib(std::string* hhas,
   embedded_data desc;
   if (!get_embedded_data(section.c_str(), &desc, filename)) return "";
 
-#if (defined(__CYGWIN__) || defined(__MINGW__) || defined(_MSC_VER))
-  auto const ret = systemlib_split(std::string(
-                                     (const char*)LockResource(desc.m_handle),
-                                     desc.m_len), hhas);
-#else
-  std::ifstream ifs(desc.m_filename);
-  if (!ifs.good()) return "";
-  ifs.seekg(desc.m_start, std::ios::beg);
-  std::unique_ptr<char[]> data(new char[desc.m_len]);
-  ifs.read(data.get(), desc.m_len);
-  auto const ret = systemlib_split(std::string(data.get(), desc.m_len), hhas);
-#endif
-  return ret;
+  auto const data = read_embedded_data(desc);
+  return systemlib_split(data, hhas);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1903,6 +1903,8 @@ void hphp_process_init() {
   Process::InitProcessStatics();
   BootTimer::mark("Process::InitProcessStatics");
 
+  HHProf::Init();
+
   // initialize the tzinfo cache.
   timezone_init();
   BootTimer::mark("timezone_init");
@@ -1937,6 +1939,15 @@ void hphp_process_init() {
   BootTimer::mark("xmlInitParser");
 
   g_context.getCheck();
+  InitFiniNode::ProcessPreInit();
+  // TODO(9795696): Race in thread map may trigger spurious logging at
+  // thread exit, so for now, only spawn threads if we're a server.
+  const uint32_t maxWorkers = RuntimeOption::ServerExecutionMode() ? 3 : 0;
+  InitFiniNode::ProcessInitConcurrentStart(maxWorkers);
+  SCOPE_EXIT {
+    InitFiniNode::ProcessInitConcurrentWaitForEnd();
+    BootTimer::mark("extra_process_init_concurrent_wait");
+  };
   g_vmProcessInit();
   BootTimer::mark("g_vmProcessInit");
 
@@ -1955,11 +1966,17 @@ void hphp_process_init() {
 
   InitFiniNode::ProcessInit();
   BootTimer::mark("extra_process_init");
-  int64_t save = RuntimeOption::SerializationSizeLimit;
-  RuntimeOption::SerializationSizeLimit = StringData::MaxSize;
-  apc_load(apcExtension::LoadThread);
-  RuntimeOption::SerializationSizeLimit = save;
-  BootTimer::mark("apc_load");
+  {
+    UnlimitSerializationScope unlimit;
+    // TODO(9755792): Add real execution mode for snapshot generation.
+    if (apcExtension::PrimeLibraryUpgradeDest != "") {
+      Timer timer(Timer::WallTime, "optimizeApcPrime");
+      apc_load(apcExtension::LoadThread);
+    } else {
+      apc_load(apcExtension::LoadThread);
+    }
+    BootTimer::mark("apc_load");
+  }
 
   rds::requestExit();
   BootTimer::mark("rds::requestExit");
@@ -1968,6 +1985,13 @@ void hphp_process_init() {
   context->~ExecutionContext();
   new (context) ExecutionContext();
   BootTimer::mark("ExecutionContext");
+
+  // TODO(9755792): Add real execution mode for snapshot generation.
+  if (apcExtension::PrimeLibraryUpgradeDest != "") {
+    Logger::Info("APC PrimeLibrary upgrade mode completed; exiting.");
+    hphp_process_exit();
+    exit(0);
+  }
 }
 
 static void handle_exception(bool& ret, ExecutionContext* context,
@@ -2050,10 +2074,7 @@ void hphp_session_init() {
 }
 
 ExecutionContext *hphp_context_init() {
-  ExecutionContext *context = g_context.getNoCheck();
-  context->obStart();
-  context->obProtect(true);
-  return context;
+  return g_context.getNoCheck();
 }
 
 bool hphp_invoke_simple(const std::string& filename, bool warmupOnly) {
@@ -2235,8 +2256,7 @@ bool is_hphp_session_initialized() {
   return s_sessionInitialized;
 }
 
-static class SetThreadInitFini {
-public:
+static struct SetThreadInitFini {
   SetThreadInitFini() {
     AsyncFuncImpl::SetThreadInitFunc([](void*) { hphp_thread_init(); },
                                      nullptr);

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -36,7 +36,7 @@
 #include "hphp/runtime/vm/jit/service-requests.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
-#include "hphp/runtime/vm/jit/unwind.h"
+#include "hphp/runtime/vm/jit/unwind-itanium.h"
 #include "hphp/runtime/vm/jit/vasm-gen.h"
 #include "hphp/runtime/vm/jit/vasm-instr.h"
 
@@ -63,7 +63,7 @@ namespace x64 {
 ///////////////////////////////////////////////////////////////////////////////
 
 static void alignJmpTarget(CodeBlock& cb) {
-  align(cb, Alignment::JmpTarget, AlignContext::Dead);
+  align(cb, nullptr, Alignment::JmpTarget, AlignContext::Dead);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -112,7 +112,7 @@ TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
 
       // Drop our call frame; the stublogue{} instruction guarantees that this
       // is exactly 16 bytes.
-      v << addqi{16, rsp(), rsp(), v.makeReg()};
+      v << lea{rsp()[16], rsp()};
 
       // Sync vmsp and return to the caller.  This unbalances the return stack
       // buffer, but if we're intercepting, we probably don't care.
@@ -121,7 +121,7 @@ TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
     });
 
     // Skip past the stuff we saved for the intercept case.
-    v << addqi{16, rsp(), rsp(), v.makeReg()};
+    v << lea{rsp()[16], rsp()};
 
     // Restore rvmfp() and return to the callee's func prologue.
     v << stubret{RegSet(), true};
@@ -143,9 +143,9 @@ TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us) {
  * The `saved' register should be a callee-saved GP register that the helper
  * can use to preserve `tv' across native calls.
  */
-static TCA emitDecRefHelper(CodeBlock& cb, PhysReg tv, PhysReg type,
-                            RegSet live) {
-  return vwrap(cb, [&] (Vout& v) {
+static TCA emitDecRefHelper(CodeBlock& cb, CGMeta& fixups, PhysReg tv,
+                            PhysReg type, RegSet live) {
+  return vwrap(cb, fixups, [&] (Vout& v) {
     // We use the first argument register for the TV data because we may pass
     // it to the release routine.  It's not live when we enter the helper.
     auto const data = rarg(0);
@@ -168,7 +168,8 @@ static TCA emitDecRefHelper(CodeBlock& cb, PhysReg tv, PhysReg type,
       PhysRegSaver prs{v, live};
 
       // The refcount is exactly 1; release the value.
-      v << callm{lookupDestructor(v, type)};
+      // Avoid 'this' pointer overwriting by reserving it as an argument.
+      v << callm{lookupDestructor(v, type), arg_regs(1)};
 
       // Between where %rsp is now and the saved RIP of the call into the
       // freeLocalsHelpers stub, we have all the live regs we pushed, plus the
@@ -188,17 +189,17 @@ TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us) {
   auto const local = rarg(1);
   auto const last = rarg(2);
   auto const type = rarg(3);
+  CGMeta fixups;
 
   // This stub is very hot; keep it cache-aligned.
-  align(cb, Alignment::CacheLine, AlignContext::Dead);
-  auto const release = emitDecRefHelper(cb, local, type, local | last);
+  align(cb, &fixups, Alignment::CacheLine, AlignContext::Dead);
+  auto const release = emitDecRefHelper(cb, fixups, local, type, local | last);
 
   auto const decref_local = [&] (Vout& v) {
     auto const sf = v.makeReg();
 
-    // We can't use emitLoadTVType() here because it does a byte load, and we
-    // need to sign-extend since we use `type' as a 32-bit array index to the
-    // destructor table.
+    // We can't do a byte load here---we have to sign-extend since we use
+    // `type' as a 32-bit array index to the destructor table.
     v << loadzbl{local[TVOFF(m_type)], type};
     emitCmpTVType(v, sf, KindOfRefCountThreshold, type);
 
@@ -214,7 +215,7 @@ TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us) {
 
   alignJmpTarget(cb);
 
-  us.freeManyLocalsHelper = vwrap(cb, [&] (Vout& v) {
+  us.freeManyLocalsHelper = vwrap(cb, fixups, [&] (Vout& v) {
     // We always unroll the final `kNumFreeLocalsHelpers' decrefs, so only loop
     // until we hit that point.
     v << lea{rvmfp()[localOffset(kNumFreeLocalsHelpers - 1)], last};
@@ -239,7 +240,7 @@ TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us) {
   }
 
   // All the stub entrypoints share the same ret.
-  vwrap(cb, [] (Vout& v) { v << ret{}; });
+  vwrap(cb, fixups, [] (Vout& v) { v << ret{}; });
 
   // This stub is hot, so make sure to keep it small.
   // Alas, we have more work to do in this under Windows,
@@ -249,6 +250,7 @@ TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us) {
                 (cb.frontier() - release <= 4 * x64::cache_line_size()));
 #endif
 
+  fixups.process(nullptr);
   return release;
 }
 
@@ -278,7 +280,15 @@ TCA emitCallToExit(CodeBlock& cb) {
   // got us into the TC was popped off the RSB by the ret that got us to this
   // stub.
   a.addq(8, rsp());
-  a.jmp(TCA(enterTCExit));
+  if (a.jmpDeltaFits(TCA(enterTCExit))) {
+    a.jmp(TCA(enterTCExit));
+  } else {
+    // can't do a near jmp and a rip-relative load/jmp would require threading
+    // through extra state to allocate a literal. use an indirect jump through
+    // a register
+    a.emitImmReg(uintptr_t(enterTCExit), reg::rax);
+    a.jmp(reg::rax);
+  }
 
   // On a backtrace, gdb tries to locate the calling frame at address
   // returnRIP-1. However, for the first VM frame, there is no code at
@@ -332,7 +342,6 @@ TCA emitEndCatchHelper(CodeBlock& cb, UniqueStubs& us) {
     v << jcci{CC_Z, sf2, done2, resumeCPPUnwind};
     v = done2;
 
-    // We need to do a syncForLLVMCatch(), but vmfp is already in rdx.
     v << jmpr{reg::rax};
   });
 }

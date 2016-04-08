@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,6 +22,7 @@
 #include "hphp/runtime/base/resource-data.h"
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/base/typed-value.h"
+#include "hphp/runtime/base/req-root.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -54,9 +55,9 @@ struct Variant;
 #define TV_GENERIC_DISPATCH_SLOW(exp, func) \
   [](HPHP::TypedValue tv) {                                     \
     switch (tv.m_type) {                                        \
-      case HPHP::KindOfStaticString:                            \
+      case HPHP::KindOfPersistentString:                        \
       case HPHP::KindOfString: return tv.m_data.pstr->func();   \
-      case HPHP::KindOfPersistentArray:                             \
+      case HPHP::KindOfPersistentArray:                         \
       case HPHP::KindOfArray: return tv.m_data.parr->func();    \
       case HPHP::KindOfObject: return tv.m_data.pobj->func();   \
       case HPHP::KindOfResource: return tv.m_data.pres->func(); \
@@ -315,9 +316,9 @@ ALWAYS_INLINE void cellDup(const Cell fr, Cell& to) {
 }
 
 /*
- * Duplicate a Ref from one location to another. Copies the m_data and
- * m_type fields and increments the reference count. Does not perform
- * as decRef on the value that was overwritten.
+ * Duplicate a Ref from one location to another. Copies the m_data and m_type
+ * fields and increments the reference count. Does not perform a decRef on the
+ * value that was overwritten.
  */
 ALWAYS_INLINE void refDup(const Ref fr, Ref& to) {
   assert(refIsPlausible(fr));
@@ -773,13 +774,12 @@ ALWAYS_INLINE bool tvCoerceParamInPlace(TypedValue* tv, DataType DType) {
  * TVCoercionException is thrown to indicate that a parameter could not be
  * coerced when calling an HNI builtin function.
  */
-struct TVCoercionException : public std::runtime_error {
+struct TVCoercionException : std::runtime_error {
   TVCoercionException(const Func* func, int arg_num,
                       DataType actual, DataType expected);
-
   TypedValue tv() const { return m_tv; }
 private:
-  TypedValue m_tv;
+  req::root<TypedValue> m_tv;
 };
 
 // for debugging & instrumentation only! otherwise, stick to the

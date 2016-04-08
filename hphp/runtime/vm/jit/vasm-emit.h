@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,6 +22,7 @@ namespace HPHP { namespace jit {
 
 struct Abi;
 struct AsmInfo;
+struct CGMeta;
 struct Vtext;
 struct Vunit;
 
@@ -37,17 +38,17 @@ void optimizeX64(Vunit& unit, const Abi&);
  * Emit code for the given unit using the given code areas. The unit should
  * have already been through optimizeX64().
  */
-void emitX64(const Vunit&, Vtext&, AsmInfo*);
+void emitX64(const Vunit&, Vtext&, CGMeta&, AsmInfo*);
 
 /*
  * Optimize, register allocate, and emit ARM code for the given unit.
  */
-void finishARM(Vunit&, Vtext&, const Abi&, AsmInfo*);
+void finishARM(Vunit&, Vtext&, CGMeta&, const Abi&, AsmInfo*);
 
 /*
  * Optimize, register allocate, and emit PPC64 code for the given unit.
  */
-void finishPPC64(Vunit&, Vtext&, const Abi&, AsmInfo*);
+void finishPPC64(Vunit&, Vtext&, CGMeta&, const Abi&, AsmInfo*);
 
 ///////////////////////////////////////////////////////////////////////////////
 }}

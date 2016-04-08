@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -27,13 +27,13 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 struct ActRec;
-class c_WaitHandle;
-class c_AwaitAllWaitHandle;
-class c_GenArrayWaitHandle;
-class c_GenMapWaitHandle;
-class c_GenVectorWaitHandle;
-class c_ConditionWaitHandle;
-class c_ResumableWaitHandle;
+struct c_WaitHandle;
+struct c_AwaitAllWaitHandle;
+struct c_GenArrayWaitHandle;
+struct c_GenMapWaitHandle;
+struct c_GenVectorWaitHandle;
+struct c_ConditionWaitHandle;
+struct c_ResumableWaitHandle;
 
 struct AsioSession final {
   static void Init();
@@ -90,6 +90,8 @@ struct AsioSession final {
   // Sleep event management.
   void enqueueSleepEvent(c_SleepWaitHandle* h);
   bool processSleepEvents();
+  // Wakeup time of next sleep wait handle or request timeout time.
+  // The returned timestamp may correspond to canceled wait handle.
   TimePoint sleepWakeTime();
 
   // Abrupt interrupt exception.

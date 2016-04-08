@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -15,6 +15,7 @@
    +----------------------------------------------------------------------+
 */
 #include "hphp/runtime/ext/icu/icu.h"
+#include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/ini-setting.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/request-event-handler.h"
@@ -55,6 +56,16 @@ void IntlError::clearError(bool clearGlobalError /*= true */) {
     s_intl_error->m_errorCode = U_ZERO_ERROR;
     s_intl_error->m_errorMessage.clear();
   }
+}
+
+ATTRIBUTE_NORETURN
+void IntlError::throwException(const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  char buffer[1024];
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  SystemLib::throwExceptionObject(buffer);
 }
 
 /////////////////////////////////////////////////////////////////////////////

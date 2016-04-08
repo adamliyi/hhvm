@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -36,6 +36,7 @@
 #include "hphp/runtime/base/code-coverage.h"
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/file.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/plain-file.h"
 #include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/base/intercept.h"
@@ -47,7 +48,7 @@
 #include "hphp/runtime/ext/std/ext_std_function.h"
 #include "hphp/runtime/ext/fb/FBSerialize.h"
 #include "hphp/runtime/ext/fb/VariantController.h"
-#include "hphp/runtime/vm/unwind-vm.h"
+#include "hphp/runtime/vm/unwind.h"
 
 #include "hphp/parser/parser.h"
 
@@ -420,7 +421,7 @@ static int fb_compact_serialize_variant(StringBuffer& sb,
       return 0;
     }
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       fb_compact_serialize_string(sb, var.toString());
       return 0;
@@ -508,7 +509,7 @@ String fb_compact_serialize(const Variant& thing,
 
   StringBuffer sb;
   if (fb_compact_serialize_variant(sb, thing, 0, behavior)) {
-    return init_null();
+    return String();
   }
 
   return sb.detach();
@@ -698,7 +699,7 @@ int fb_compact_unserialize_from_buffer(
         if (key.getType() == KindOfInt64) {
           arr.set(key.toInt64(), value);
         } else if (key.getType() == KindOfString ||
-                   key.getType() == KindOfStaticString) {
+                   key.getType() == KindOfPersistentString) {
           arr.set(key, value);
         } else {
           return FB_UNSERIALIZE_UNEXPECTED_ARRAY_KEY_TYPE;
@@ -1141,10 +1142,17 @@ static Variant do_lazy_stat(Function dostat, const String& filename) {
 }
 
 Variant HHVM_FUNCTION(fb_lazy_lstat, const String& filename) {
+  if (!FileUtil::checkPathAndWarn(filename, __FUNCTION__ + 2, 1)) {
+    return false;
+  }
   return do_lazy_stat(StatCache::lstat, filename);
 }
 
-String HHVM_FUNCTION(fb_lazy_realpath, const String& filename) {
+Variant HHVM_FUNCTION(fb_lazy_realpath, const String& filename) {
+  if (!FileUtil::checkPathAndWarn(filename, __FUNCTION__ + 2, 1)) {
+    return false;
+  }
+
   return StatCache::realpath(filename.c_str());
 }
 
@@ -1161,8 +1169,7 @@ void const_load() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class FBExtension : public Extension {
- public:
+struct FBExtension : Extension {
   FBExtension(): Extension("fb", "1.0.0") {}
 
   void moduleInit() override {

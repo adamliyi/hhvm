@@ -21,27 +21,16 @@ if (NOT MSVC)
     ${CMAKE_CURRENT_SOURCE_DIR}/portability/glob.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/portability/rand_r.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/portability/strfmon.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/portability/strptime.cpp
   )
   list(REMOVE_ITEM HEADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/portability/fnmatch.h
     ${CMAKE_CURRENT_SOURCE_DIR}/portability/glob.h
     ${CMAKE_CURRENT_SOURCE_DIR}/portability/rand_r.h
     ${CMAKE_CURRENT_SOURCE_DIR}/portability/strfmon.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/portability/strptime.h
   )
 endif()
 
 HHVM_PUBLIC_HEADERS(util ${HEADER_SOURCES})
-
-add_custom_command(
-  OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/../hphp-repo-schema.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/../hphp-build-info.cpp"
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/generate-buildinfo.sh"
-  DEPENDS ${CXX_SOURCES}
-  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/
-  COMMENT "Generating Repo Schema ID and Compiler ID"
-  VERBATIM)
 
 find_package(LibNuma)
 if (LIBNUMA_INCLUDE_DIRS)
@@ -56,9 +45,7 @@ if(MSVC)
   list(REMOVE_ITEM HEADER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/light-process.h")
 endif()
 
-add_library(hphp_util STATIC ${CXX_SOURCES} ${ASM_SOURCES} ${HEADER_SOURCES}
-            "${CMAKE_CURRENT_SOURCE_DIR}/../hphp-repo-schema.h"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../hphp-build-info.cpp")
+add_library(hphp_util STATIC ${CXX_SOURCES} ${ASM_SOURCES} ${HEADER_SOURCES})
 auto_source_group("hphp_util" "${CMAKE_CURRENT_SOURCE_DIR}"
   ${ASM_SOURCES} ${CXX_SOURCES} ${HEADER_SOURCES})
 if (ENABLE_COTIRE)

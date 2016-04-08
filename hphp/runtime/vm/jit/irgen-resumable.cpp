@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -219,7 +219,7 @@ void emitAwait(IRGS& env) {
   auto const knownTy = [&] {
     auto pc = curUnit(env)->at(resumeOffset);
     if (decode_op(pc) != Op::AssertRATStk) return TInitCell;
-    auto const stkLoc = decodeVariableSizeImm(&pc);
+    auto const stkLoc = decode_iva(pc);
     if (stkLoc != 0) return TInitCell;
     auto const rat = decodeRAT(curUnit(env), pc);
     auto const ty = ratToAssertType(env, rat);

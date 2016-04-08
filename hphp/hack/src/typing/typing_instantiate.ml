@@ -10,7 +10,6 @@
 
 open Core
 open Typing_defs
-open Utils
 
 module SN     = Naming_special_names
 module TSubst = Typing_subst
@@ -19,7 +18,7 @@ module Phase  = Typing_phase
 
 type subst = decl ty SMap.t
 
-let make_subst tparams tyl =  TSubst.make tparams tyl
+let make_subst tparams tyl = TSubst.make tparams tyl
 
 (*****************************************************************************)
 (* Code dealing with instantiation. *)

@@ -710,22 +710,26 @@ To string conversions:
 
 | IsType<T>, D(Bool), S(Cell), NF
 
-  Sets D to true iff S0 holds a value that is of type T.
+  Sets D to true iff S0 holds a value that is of type T. T must not be a
+  specialized type.
 
 | IsNType<T>, D(Bool), S(Cell), NF
 
-  Sets D to true iff S0 holds a value that is not of type T.
+  Sets D to true iff S0 holds a value that is not of type T. T must not be a
+  specialized type.
 
 | IsTypeMem<T>, D(Bool), S(PtrToGen), NF
 
-  Sets D to true iff the value referenced by S0 is of type T.
+  Sets D to true iff the value referenced by S0 is of type T. T must not be a
+  specialized type.
 
   The value in S0 must not be a pointer into the evaluation stack or frame
   locals.
 
 | IsNTypeMem<T>, D(Bool), S(PtrToGen), NF
 
-  Sets D to true iff the value referenced by S0 is not of type T.
+  Sets D to true iff the value referenced by S0 is not of type T. T must not be
+  a specialized type.
 
 | IsScalarType, D(Bool), S(Cell), NF
 
@@ -1233,6 +1237,10 @@ To string conversions:
 | NewMixedArray, D(Arr), C(Int), PRc
 
   Allocate a new array in mixed mode with the expected capacity S0.
+
+| NewDictArray, D(Arr), C(Int), PRc
+
+  Allocate a new array in dict mode with the expected capacity S0.
 
 | NewLikeArray, D(Arr), S(Arr) C(Int), PRc
 
@@ -2070,11 +2078,6 @@ To string conversions:
   Helper instructions for fast implementation of the PHP error silencing
   operator (@foo()).
 
-| CountBytecode, ND, NA, NF
-
-  Count dynamic execution of bytecodes, to compare coverage of different
-  codegen backends.
-
 
 17. Iterators
 
@@ -2306,13 +2309,13 @@ fields of that struct for holding intermediate values.
 
 | ElemArrayW, D(PtrToMembGen), S(Arr) S(Int,Str), Er
 
-| ElemArrayD, D(PtrToElemGen), S(PtrToGen) S(Int,Str), MElem|Er
+| ElemArrayD<T>, D(PtrToElemGen), S(PtrToGen) S(Int,Str), MElem|Er
 
-| ElemArrayU, D(PtrToMembGen), S(PtrToGen) S(Int,Str), MElem|Er
+| ElemArrayU<T>, D(PtrToMembGen), S(PtrToGen) S(Int,Str), MElem|Er
 
   Similar to ElemX, but the base S0 is an array and the key S1 is an int/str.
   ElemArrayW is for Warn member instrs, ElemArrayD is for Define member instrs,
-  and ElemArrayU is for Unset.
+  and ElemArrayU is for Unset. T is the type of the base array.
 
   ElemArrayD takes a PtrToGen for its base operand, but it expects it to be a
   PtrToArr or PtrToBoxedArr.

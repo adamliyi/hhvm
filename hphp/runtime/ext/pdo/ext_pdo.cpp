@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -455,8 +455,7 @@ static const struct pdo_sqlstate_info err_initializer[] = {
   { "XX002",  "Index corrupted" }
 };
 
-class PDOErrorHash : private hphp_const_char_map<const char *> {
-public:
+struct PDOErrorHash : private hphp_const_char_map<const char *> {
   PDOErrorHash() {
     for (unsigned int i = 0;
          i < sizeof(err_initializer)/sizeof(err_initializer[0]); i++) {
@@ -496,7 +495,7 @@ void throw_pdo_exception(const Variant& code, const Variant& info,
   if (!info.isNull()) {
     obj->o_set(s_errorInfo, info, s_PDOException);
   }
-  throw obj;
+  throw_object(obj);
 }
 
 void pdo_raise_impl_error(sp_PDOResource rsrc, PDOStatement* stmt,
@@ -1542,14 +1541,14 @@ static bool HHVM_METHOD(PDO, sqlitecreatefunction, const String& name,
 #ifdef ENABLE_EXTENSION_PDO_SQLITE
   auto data = Native::data<PDOData>(this_);
 
-  auto conn = std::dynamic_pointer_cast<PDOSqliteConnection>(
-      data->m_dbh->conn());
-  if (conn == nullptr) {
+  auto res = dynamic_cast<PDOSqliteResource*>(data->m_dbh.get());
+  if (res == nullptr) {
     return false;
   }
-  return conn->createFunction(name, callback, argcount);
+  return res->createFunction(name, callback, argcount);
 #else
   raise_recoverable_error("PDO::sqliteCreateFunction not implemented");
+  return false;
 #endif
 }
 
@@ -2589,7 +2588,7 @@ safe:
               case KindOfBoolean:
                 param->parameter = param->parameter.toInt64();
                 // fallthru
-              case KindOfStaticString:
+              case KindOfPersistentString:
               case KindOfString:
               case KindOfPersistentArray:
               case KindOfArray:
@@ -2614,7 +2613,7 @@ safe:
           } while (0);
         }
       } else {
-        plc->quoted = param->parameter;
+        plc->quoted = param->parameter.toString();
       }
       newbuffer_len += plc->quoted.size();
     }
@@ -2746,7 +2745,7 @@ static Variant HHVM_METHOD(PDOStatement, execute,
       param->stmt = NULL;
 
       if (iter.first().isString()) {
-        param->name = iter.first();
+        param->name = iter.first().toString();
         param->paramno = -1;
       } else {
         int64_t num_index = iter.first().toInt64();
@@ -2919,7 +2918,7 @@ static Variant HHVM_METHOD(PDOStatement, fetchall, int64_t how /* = 0 */,
 
   switch (how & ~PDO_FETCH_FLAGS) {
   case PDO_FETCH_CLASS:
-    self->m_stmt->fetch.clsname = class_name;
+    self->m_stmt->fetch.clsname = class_name.toString();
     if (class_name.isNull()) {
       self->m_stmt->fetch.clsname = "stdclass";
     }
@@ -2947,7 +2946,7 @@ static Variant HHVM_METHOD(PDOStatement, fetchall, int64_t how /* = 0 */,
                            "no fetch function specified");
       error = 1;
     } else {
-      self->m_stmt->fetch.func = class_name;
+      self->m_stmt->fetch.func = class_name.toString();
       do_fetch_func_prepare(self->m_stmt);
     }
     break;
@@ -3387,8 +3386,7 @@ static Variant HHVM_METHOD(PDOStatement, __sleep) {
 ///////////////////////////////////////////////////////////////////////////////
 
 
-static class PDOExtension final : public Extension {
-public:
+static struct PDOExtension final : Extension {
   PDOExtension() : Extension("pdo", " 1.0.4dev") {}
 
 #ifdef ENABLE_EXTENSION_PDO_MYSQL
@@ -3851,7 +3849,7 @@ public:
       q_PDO$$MYSQL_ATTR_IGNORE_SPACE
     );
 #endif
-    Native::registerClassConstant<KindOfStaticString>(
+    Native::registerClassConstant<KindOfPersistentString>(
       s_PDO.get(),
       s_ERR_NONE.get(),
       q_PDO$$ERR_NONE.get()

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -38,7 +38,18 @@ AliasClass pointee(
   always_assert(type <= TPtrToGen);
   auto const maybeRef = type.maybe(TPtrToRefGen);
   auto const typeNR = type - TPtrToRefGen;
-  auto const sinst = canonical(ptr)->inst();
+  auto const canonPtr = canonical(ptr);
+  if (!canonPtr->isA(TPtrToGen)) {
+    // This can happen when ptr is TBottom from a passthrough instruction with
+    // a src that isn't TBottom. The most common cause of this is something
+    // like "t5:Bottom = CheckType<Str> t2:Int". It means ptr isn't really a
+    // pointer, so return AEmpty to avoid unnecessarily pessimizing any
+    // optimizations.
+    always_assert(ptr->isA(TBottom));
+    return AEmpty;
+  }
+
+  auto const sinst = canonPtr->inst();
 
   if (sinst->is(UnboxPtr)) {
     return ARefAny | pointee(sinst->src(0), visited_labels);
@@ -52,7 +63,9 @@ AliasClass pointee(
     }
 
     auto const dsts = sinst->dsts();
-    auto const dstIdx = std::find(dsts.begin(), dsts.end(), ptr) - dsts.begin();
+    auto const dstIdx =
+      std::find(dsts.begin(), dsts.end(), canonPtr) - dsts.begin();
+    always_assert(dstIdx >= 0 && dstIdx < sinst->numDsts());
 
     folly::Optional<jit::flat_set<const IRInstruction*>> label_set;
     if (visited_labels == nullptr) {
@@ -127,7 +140,12 @@ AliasClass pointee(
       }
       if (key->hasConstVal(TStr)) {
         int64_t n;
-        if (key->strVal()->isStrictlyInteger(n)) return AElemI { base, n };
+        auto const arrTy = base->type();
+        auto const dictTy = Type::Array(ArrayData::kDictKind);
+        if (!(arrTy <= dictTy) && key->strVal()->isStrictlyInteger(n)) {
+          if (arrTy.maybe(dictTy)) return AElemAny;
+          return AElemI { base, n };
+        }
         return AElemS { base, key->strVal() };
       }
       return AElemAny;
@@ -585,16 +603,18 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
     );
   }
 
-  case InlineReturn:
-    return ReturnEffects { stack_below(inst.src(0), 2) | AMIStateAny };
+  case InlineReturn: {
+    auto const callee = stack_below(inst.src(0), 2) | AMIStateAny | AFrameAny;
+    return may_load_store_kill(AEmpty, callee, callee);
+  }
 
-  case InlineReturnNoFrame:
-    return ReturnEffects {
-      AliasClass(AStack {
-        inst.extra<InlineReturnNoFrame>()->frameOffset.offset,
+  case InlineReturnNoFrame: {
+    auto const callee = AliasClass(AStack {
+      inst.extra<InlineReturnNoFrame>()->frameOffset.offset,
         std::numeric_limits<int32_t>::max()
-      }) | AMIStateAny
-    };
+    }) | AMIStateAny;
+    return may_load_store_kill(AEmpty, callee, callee);
+  }
 
   case SyncReturnBC: {
     auto const spOffset = inst.extra<SyncReturnBC>()->spOffset;
@@ -982,6 +1002,7 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
   case NewCol:
   case NewInstanceRaw:
   case NewMixedArray:
+  case NewDictArray:
   case AllocPackedArray:
   case ConvBoolToArr:
   case ConvDblToStr:
@@ -1233,7 +1254,6 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
   case IncProfCounter:
   case IncStat:
   case IncStatGrouped:
-  case CountBytecode:
   case ContPreNext:
   case ContStartedCheck:
   case ConvArrToBool:

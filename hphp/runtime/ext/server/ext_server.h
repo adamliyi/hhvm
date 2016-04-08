@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -73,6 +73,8 @@ void HHVM_FUNCTION(xbox_set_thread_timeout,
                    int timeout);
 void HHVM_FUNCTION(xbox_schedule_thread_reset);
 int64_t HHVM_FUNCTION(xbox_get_thread_time);
+bool HHVM_FUNCTION(server_is_stopping);
+int64_t HHVM_FUNCTION(server_uptime);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

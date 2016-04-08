@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -95,6 +95,19 @@ struct ExecutingSetprofileCallbackGuard {
     g_context->m_executingSetprofileCallback = false;
   }
 };
+
+void EventHook::DoMemoryThresholdCallback() {
+  clearSurpriseFlag(MemThresholdFlag);
+  if (!g_context->m_memThresholdCallback.isNull()) {
+    VMRegAnchor _;
+    try {
+      vm_call_user_func(g_context->m_memThresholdCallback, empty_array());
+    } catch (Object& ex) {
+      raise_error("Uncaught exception escaping mem Threshold callback: %s",
+                  ex.toString().data());
+    }
+  }
+}
 
 namespace {
 
@@ -345,19 +358,28 @@ void EventHook::onFunctionExit(const ActRec* ar, const TypedValue* retval,
     Xenon::getInstance().log(Xenon::ExitSample);
   }
 
-  // Run IntervalTimer callbacks only if it's safe to do so, i.e., not when
+  // Run callbacks only if it's safe to do so, i.e., not when
   // there's a pending exception or we're unwinding from a C++ exception.
-  if (flags & IntervalTimerFlag
-      && ThreadInfo::s_threadInfo->m_pendingException == nullptr
+  if (ThreadInfo::s_threadInfo->m_pendingException == nullptr
       && (!unwind || phpException)) {
-    IntervalTimer::RunCallbacks(IntervalTimer::ExitSample);
+
+    // Memory Threhsold
+    if (flags & MemThresholdFlag) {
+      DoMemoryThresholdCallback();
+    }
+
+    // Interval timer
+    if (flags & IntervalTimerFlag) {
+      IntervalTimer::RunCallbacks(IntervalTimer::ExitSample);
+    }
   }
+
 
   // Inlined calls normally skip the function enter and exit events. If we
   // side exit in an inlined callee, we short-circuit here in order to skip
   // exit events that could unbalance the call stack.
   if (RuntimeOption::EvalJit &&
-      ((jit::TCA) ar->m_savedRip == jit::mcg->tx().uniqueStubs.retInlHelper)) {
+      ((jit::TCA) ar->m_savedRip == jit::mcg->ustubs().retInlHelper)) {
     return;
   }
 
@@ -406,6 +428,11 @@ bool EventHook::onFunctionCall(const ActRec* ar, int funcType) {
     Xenon::getInstance().log(Xenon::EnterSample);
   }
 
+  // Memory Threhsold
+  if (flags & MemThresholdFlag) {
+    DoMemoryThresholdCallback();
+  }
+
   if (flags & IntervalTimerFlag) {
     IntervalTimer::RunCallbacks(IntervalTimer::EnterSample);
   }
@@ -422,6 +449,11 @@ void EventHook::onFunctionResumeAwait(const ActRec* ar) {
     Xenon::getInstance().log(Xenon::ResumeAwaitSample);
   }
 
+  // Memory Threhsold
+  if (flags & MemThresholdFlag) {
+    DoMemoryThresholdCallback();
+  }
+
   if (flags & IntervalTimerFlag) {
     IntervalTimer::RunCallbacks(IntervalTimer::ResumeAwaitSample);
   }
@@ -435,6 +467,11 @@ void EventHook::onFunctionResumeYield(const ActRec* ar) {
   // Xenon
   if (flags & XenonSignalFlag) {
     Xenon::getInstance().log(Xenon::EnterSample);
+  }
+
+  // Memory Threhsold
+  if (flags & MemThresholdFlag) {
+    DoMemoryThresholdCallback();
   }
 
   if (flags & IntervalTimerFlag) {

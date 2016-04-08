@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -199,7 +199,8 @@ void flush_thread_stack();
 /**
  * Like scoped_ptr, but calls free() on destruct
  */
-class ScopedMem {
+struct ScopedMem {
+ private:
   ScopedMem(const ScopedMem&); // disable copying
   ScopedMem& operator=(const ScopedMem&);
  public:
@@ -258,8 +259,6 @@ void numa_local(void* start, size_t size);
  */
 void numa_bind_to(void* start, size_t size, int node);
 
-#ifdef USE_JEMALLOC
-
 /*
  * mallctl wrappers.
  */
@@ -281,9 +280,14 @@ int mallctlHelper(const char *cmd, T* out, T* in, bool errOk) {
   int err = ENOENT;
 #endif
   if (err != 0) {
-    std::string errStr =
-      folly::format("mallctl {}: {} ({})", cmd, strerror(err), err).str();
-    Logger::Warning(errStr);
+    if (!errOk) {
+      std::string errStr =
+        folly::format("mallctl {}: {} ({})", cmd, strerror(err), err).str();
+      // Do not use Logger here because JEMallocInitializer() calls this
+      // function and JEMallocInitializer has the highest constructor priority.
+      // The static variables in Logger are not initialized yet.
+      fprintf(stderr, "%s\n", errStr.c_str());
+    }
     always_assert(errOk || err == 0);
   }
   return err;
@@ -312,8 +316,6 @@ int mallctlCall(const char* cmd, bool errOk=false);
 int jemalloc_pprof_enable();
 int jemalloc_pprof_disable();
 int jemalloc_pprof_dump(const std::string& prefix, bool force);
-
-#endif // USE_JEMALLOC
 
 template <class T>
 struct LowAllocator {

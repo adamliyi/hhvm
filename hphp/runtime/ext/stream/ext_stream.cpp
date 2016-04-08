@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -30,6 +30,7 @@
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/base/file.h"
 #include "hphp/runtime/base/file-await.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/req-ptr.h"
 #include "hphp/runtime/base/ssl-socket.h"
 #include "hphp/runtime/base/stream-wrapper.h"
@@ -62,8 +63,7 @@ req::ptr<StreamContext> get_stream_context(const Variant& stream_or_context);
 
 #define REGISTER_SAME_CONSTANT(name) HHVM_RC_INT(name, k_ ## name);
 
-static class StreamExtension final : public Extension {
-public:
+static struct StreamExtension final : Extension {
   StreamExtension() : Extension("stream") {}
   void moduleInit() override {
     REGISTER_SAME_CONSTANT(PSFS_ERR_FATAL);
@@ -402,6 +402,10 @@ Array HHVM_FUNCTION(stream_get_transports) {
 Variant HHVM_FUNCTION(stream_resolve_include_path,
                       const String& filename,
                       const Variant& context /* = null_variant */) {
+  if (!FileUtil::checkPathAndWarn(filename, __FUNCTION__ + 2, 1)) {
+    return init_null();
+  }
+
   struct stat s;
   String ret = resolveVmInclude(filename.get(), "", &s, true);
   if (ret.isNull()) {
@@ -551,19 +555,40 @@ bool HHVM_FUNCTION(stream_wrapper_unregister,
 ///////////////////////////////////////////////////////////////////////////////
 // stream socket functions
 
-static req::ptr<Socket> socket_accept_impl(
+static Variant socket_accept_impl(
   const Resource& socket,
   struct sockaddr *addr,
   socklen_t *addrlen
 ) {
-  auto sock = cast<Socket>(socket);
-  auto new_sock = req::make<Socket>(
-    accept(sock->fd(), addr, addrlen), sock->getType());
+  req::ptr<Socket> new_sock;
+  req::ptr<SSLSocket> sslsock;
+  if (isa<SSLSocket>(socket)) {
+    auto sock = cast<SSLSocket>(socket);
+    auto new_fd = accept(sock->fd(), addr, addrlen);
+    double timeout = ThreadInfo::s_threadInfo.getNoCheck()->
+      m_reqInjectionData.getSocketDefaultTimeout();
+    sslsock = SSLSocket::Create(new_fd, sock->getType(),
+                                sock->getCryptoMethod(), sock->getAddress(),
+                                sock->getPort(), timeout,
+                                sock->getStreamContext());
+    new_sock = sslsock;
+  } else {
+    auto sock = cast<Socket>(socket);
+    auto new_fd = accept(sock->fd(), addr, addrlen);
+    new_sock = req::make<Socket>(new_fd, sock->getType());
+  }
+
   if (!new_sock->valid()) {
     SOCKET_ERROR(new_sock, "unable to accept incoming connection", errno);
     new_sock.reset();
   }
-  return new_sock;
+
+  if (sslsock && !sslsock->onAccept()) {
+    raise_warning("Failed to enable crypto");
+    return false;
+  }
+
+  return Variant(std::move(new_sock));
 }
 
 static String get_sockaddr_name(struct sockaddr *sa, socklen_t sl) {
@@ -649,7 +674,7 @@ Variant HHVM_FUNCTION(stream_socket_accept,
     if (auto ref = peername.getVariantOrNull()) {
       *ref = get_sockaddr_name(&sa, salen);
     }
-    if (new_sock) return Resource(new_sock);
+    return new_sock;
   } else if (n < 0) {
     sock->setError(errno);
   } else {
@@ -665,7 +690,7 @@ Variant HHVM_FUNCTION(stream_socket_server,
                       int flags /* = 0 */,
                       const Variant& context /* = null_variant */) {
   HostURL hosturl(static_cast<const std::string>(local_socket));
-  return socket_server_impl(hosturl, flags, errnum, errstr);
+  return socket_server_impl(hosturl, flags, errnum, errstr, context);
 }
 
 Variant HHVM_FUNCTION(stream_socket_client,

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -251,8 +251,7 @@ void TestServer::KillServer() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class TestServerRequestHandler : public RequestHandler {
-public:
+struct TestServerRequestHandler : RequestHandler {
   explicit TestServerRequestHandler(int timeout) : RequestHandler(timeout) {}
   // implementing RequestHandler
   virtual void handleRequest(Transport *transport) {
@@ -486,8 +485,7 @@ bool TestServer::TestSetCookie() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class TestTransport : public Transport {
-public:
+struct TestTransport final : Transport {
   TestTransport() : m_code(0) {}
 
   int m_code;
@@ -496,18 +494,18 @@ public:
   /**
    * Implementing HttpTransport...
    */
-  virtual const char *getUrl() { return "/string";}
-  virtual const char *getRemoteHost() { return "remote";}
-  virtual const void *getPostData(int &size) { size = 0; return nullptr;}
-  virtual uint16_t getRemotePort() { return 0; }
-  virtual Method getMethod() { return Transport::Method::GET;}
-  virtual std::string getHeader(const char *name) { return "";}
-  virtual void getHeaders(HeaderMap &headers) {}
-  virtual void addHeaderImpl(const char *name, const char *value) {}
-  virtual void removeHeaderImpl(const char *name) {}
+  const char *getUrl() override { return "/string"; }
+  const char *getRemoteHost() override { return "remote"; }
+  const void *getPostData(size_t &size) override { size = 0; return nullptr; }
+  uint16_t getRemotePort() override { return 0; }
+  Method getMethod() override { return Transport::Method::GET; }
+  std::string getHeader(const char *name) override { return ""; }
+  void getHeaders(HeaderMap &headers) override {}
+  void addHeaderImpl(const char *name, const char *value) override {}
+  void removeHeaderImpl(const char *name) override {}
 
-  virtual void sendImpl(const void *data, int size, int code, bool chunked,
-                        bool eom) {
+  void sendImpl(const void *data, int size, int code, bool chunked, bool eom)
+       override {
     m_response.clear();
     m_response.append((const char *)data, size);
     m_code = code;
@@ -650,11 +648,10 @@ bool TestServer::TestTakeoverServer() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-class EchoHandler : public RequestHandler {
-public:
+struct EchoHandler final : RequestHandler {
   explicit EchoHandler(int timeout) : RequestHandler(timeout) {}
   // implementing RequestHandler
-  virtual void handleRequest(Transport *transport) {
+  void handleRequest(Transport *transport) override {
     g_context.getCheck();
     HeaderMap headers;
     transport->getHeaders(headers);
@@ -664,7 +661,7 @@ public:
     response += transport->getParam("name");
 
     if (transport->getMethod() == Transport::Method::POST) {
-      int size = 0;
+      size_t size = 0;
       auto const data = (const char *)transport->getPostData(size);
       response += "\nPOST data: ";
       response += std::string(data, size);
@@ -686,7 +683,7 @@ public:
     transport->sendString(response);
     hphp_memory_cleanup();
   }
-  virtual void abortRequest(Transport *transport) {
+  void abortRequest(Transport *transport) override {
     transport->sendString("Service Unavailable", 503);
   }
 };

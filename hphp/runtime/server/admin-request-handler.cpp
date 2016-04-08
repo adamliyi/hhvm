@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,6 +19,7 @@
 #include "hphp/runtime/base/apc-file-storage.h"
 #include "hphp/runtime/base/apc-stats.h"
 #include "hphp/runtime/base/datetime.h"
+#include "hphp/runtime/base/hhprof.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/preg.h"
@@ -27,10 +28,12 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/thread-hooks.h"
 #include "hphp/runtime/base/unit-cache.h"
+#include "hphp/runtime/vm/repo.h"
+
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/recycle-tc.h"
 #include "hphp/runtime/vm/jit/relocation.h"
-#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/jit/tc-info.h"
 
 #include "hphp/runtime/ext/apc/ext_apc.h"
 #include "hphp/runtime/ext/json/ext_json.h"
@@ -41,13 +44,14 @@
 #include "hphp/runtime/server/http-server.h"
 #include "hphp/runtime/server/memory-stats.h"
 #include "hphp/runtime/server/pagelet-server.h"
+#include "hphp/runtime/server/rpc-request-handler.h"
 #include "hphp/runtime/server/server-stats.h"
 
 #include "hphp/util/alloc.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/mutex.h"
 #include "hphp/util/process.h"
-#include "hphp/util/repo-schema.h"
+#include "hphp/util/build-info.h"
 #include "hphp/util/stacktrace-profiler.h"
 #include "hphp/util/timer.h"
 
@@ -168,6 +172,7 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
       string usage =
         "/stop:            stop the web server\n"
         "    instance-id   optional, if specified, instance ID has to match\n"
+        "/flush-logs:      trigger batching log-writers to flush all content\n"
         "/translate:       translate hex encoded stacktrace in 'stack' param\n"
         "    stack         required, stack trace to translate\n"
         "    build-id      optional, if specified, build ID has to match\n"
@@ -294,15 +299,39 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
               "                  the next request that runs\n"
               "    file          optional, filesystem path\n"
           );
+#ifdef ENABLE_HHPROF
+          usage.append(
+              "/hhprof/start:    start profiling\n"
+              "    requestType   \"all\" or \"next\"*\n"
+              "    url           profile next matching url for \"next\"\n"
+              "    lgSample      lg sample rate\n"
+              "    profileType   \"current\"* or \"cumulative\"\n"
+              "/hhprof/status:   configuration and current dump status\n"
+              "/hhprof/stop:     stop profiling\n"
+              "/pprof/cmdline:   program command line\n"
+              "/pprof/heap:      heap dump\n"
+              "/pprof/symbol:    symbol lookup\n"
+          );
+#endif // ENABLE_HHPROF
         }
-#endif
+#endif // USE_JEMALLOC
 
       transport->sendString(usage);
       break;
     }
 
     bool needs_password = (cmd != "build-id") && (cmd != "compiler-id") &&
-                          (cmd != "instance-id");
+                          (cmd != "instance-id") && (cmd != "flush-logs")
+#if defined(ENABLE_HHPROF) && defined(USE_JEMALLOC)
+                          && (mallctl == nullptr || (
+                                 (cmd != "hhprof/start")
+                              && (cmd != "hhprof/status")
+                              && (cmd != "hhprof/stop")
+                              && (cmd != "pprof/cmdline")
+                              && (cmd != "pprof/heap")
+                              && (cmd != "pprof/symbol")))
+#endif
+                          ;
 
     if (needs_password && !RuntimeOption::AdminPasswords.empty()) {
       std::set<std::string>::const_iterator iter =
@@ -330,6 +359,14 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
       Logger::Info("Got admin port stop request from %s",
                    transport->getRemoteHost());
       HttpServer::Server->stop();
+      break;
+    }
+    if (cmd == "flush-logs") {
+      transport->sendString("OK\n");
+      Logger::FlushAll();
+      HttpRequestHandler::GetAccessLog().flushAllWriters();
+      AdminRequestHandler::GetAccessLog().flushAllWriters();
+      RPCRequestHandler::GetAccessLog().flushAllWriters();
       break;
     }
     if (cmd == "set-log-level") {
@@ -361,11 +398,11 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
       break;
     }
     if (cmd == "compiler-id") {
-      transport->sendString(kCompilerId, 200);
+      transport->sendString(compilerId().begin(), 200);
       break;
     }
     if (cmd == "repo-schema") {
-      transport->sendString(kRepoSchemaId, 200);
+      transport->sendString(repoSchemaId().begin(), 200);
       break;
     }
     if (cmd == "translate") {
@@ -712,8 +749,34 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         }
         break;
       }
+#ifdef ENABLE_HHPROF
+      if (cmd == "hhprof/start") {
+        HHProf::HandleHHProfStart(transport);
+        break;
+      }
+      if (cmd == "hhprof/status") {
+        HHProf::HandleHHProfStatus(transport);
+        break;
+      }
+      if (cmd == "hhprof/stop") {
+        HHProf::HandleHHProfStop(transport);
+        break;
+      }
+      if (cmd == "pprof/cmdline") {
+        HHProf::HandlePProfCmdline(transport);
+        break;
+      }
+      if (cmd == "pprof/heap") {
+        HHProf::HandlePProfHeap(transport);
+        break;
+      }
+      if (cmd == "pprof/symbol") {
+        HHProf::HandlePProfSymbol(transport);
+        break;
+      }
+#endif // ENABLE_HHPROF
     }
-#endif
+#endif // USE_JEMALLOC
 
     transport->sendString("Unknown command: " + cmd + "\n", 404);
   } while (0);
@@ -795,9 +858,9 @@ bool AdminRequestHandler::handleCheckRequest(const std::string &cmd,
     HPHP::Server* server = HttpServer::Server->getPageServer();
     appendStat("load", server->getActiveWorker());
     appendStat("queued", server->getQueuedJobs());
-    auto* mCGenerator = jit::mcg;
+    auto mcg = jit::mcg;
     appendStat("hhbc-roarena-capac", hhbc_arena_capacity());
-    mCGenerator->code.forEachBlock([&](const char* name, const CodeBlock& a) {
+    mcg->code().forEachBlock([&](const char* name, const CodeBlock& a) {
       auto isMain = strncmp(name, "main", 4) == 0;
       appendStat(folly::format("tc-{}size",
                                isMain ? "" : name).str(),
@@ -810,7 +873,7 @@ bool AdminRequestHandler::handleCheckRequest(const std::string &cmd,
     appendStat("funcs", Func::nextFuncId());
 
     if (RuntimeOption::EvalEnableReusableTC) {
-      mCGenerator->code.forEachBlock([&](const char* name, const CodeBlock& a) {
+      mcg->code().forEachBlock([&](const char* name, const CodeBlock& a) {
         appendStat(folly::format("tc-{}-allocs", name).str(), a.numAllocs());
         appendStat(folly::format("tc-{}-frees", name).str(), a.numFrees());
         appendStat(folly::format("tc-{}-free-size", name).str(), a.bytesFree());
@@ -898,7 +961,7 @@ bool AdminRequestHandler::handleMemoryRequest(const std::string &cmd,
   }
   if (cmd == "memory.html" || cmd == "memory.htm") {
       MemoryStats::GetInstance()->ReportMemory(out, Writer::Format::HTML);
-      transport->replaceHeader("Content-Type","application/html");
+      transport->replaceHeader("Content-Type","text/html");
       transport->sendString(out);
       return true;
   }
@@ -1037,8 +1100,8 @@ bool AdminRequestHandler::handleCPUProfilerRequest(const std::string &cmd,
 }
 #endif
 
-bool AdminRequestHandler::handleConstSizeRequest (const std::string &cmd,
-                                                  Transport *transport) {
+bool AdminRequestHandler::handleConstSizeRequest(const std::string &cmd,
+                                                 Transport *transport) {
   if (!apcExtension::EnableConstLoad && cmd == "const-ss") {
     transport->sendString("Not Enabled\n");
     return true;
@@ -1116,23 +1179,14 @@ bool AdminRequestHandler::handleRandomStaticStringsRequest(
   return true;
 }
 
-namespace {
-struct PCInfo {
-  PCInfo() : count(0), unique(0) {}
-  int count;
-  int unique;
-};
-typedef std::map<int, PCInfo> InfoMap;
-}
-
 bool AdminRequestHandler::handleVMRequest(const std::string &cmd,
                                           Transport *transport) {
   if (cmd == "vm-tcspace") {
-    transport->sendString(jit::mcg->getUsageString());
+    transport->sendString(jit::getTCSpace());
     return true;
   }
   if (cmd == "vm-tcaddr") {
-    transport->sendString(jit::mcg->getTCAddrs());
+    transport->sendString(jit::getTCAddrs());
     return true;
   }
   if (cmd == "vm-namedentities") {
@@ -1142,7 +1196,7 @@ bool AdminRequestHandler::handleVMRequest(const std::string &cmd,
     return true;
   }
   if (cmd == "vm-dump-tc") {
-    if (HPHP::jit::tc_dump()) {
+    if (jit::mcg && jit::mcg->dumpTC()) {
       transport->sendString("Done");
     } else {
       transport->sendString("Error dumping the translation cache");

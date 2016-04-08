@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -257,13 +257,7 @@ namespace StackSym {
 } while (0)
 
 // RAII guard for function creation.
-class FuncFinisher {
-  EmitterVisitor* m_ev;
-  Emitter&        m_e;
-  FuncEmitter*    m_fe;
-  int32_t         m_stackPad;
-
- public:
+struct FuncFinisher {
   FuncFinisher(EmitterVisitor* ev, Emitter& e, FuncEmitter* fe,
                int32_t stackPad = 0)
     : m_ev(ev), m_e(e), m_fe(fe), m_stackPad(stackPad)
@@ -272,14 +266,16 @@ class FuncFinisher {
   ~FuncFinisher() {
     m_ev->finishFunc(m_e, m_fe, m_stackPad);
   }
+
+private:
+  EmitterVisitor* m_ev;
+  Emitter&        m_e;
+  FuncEmitter*    m_fe;
+  int32_t         m_stackPad;
 };
 
 // RAII guard for temporarily overriding an Emitter's location
-class LocationGuard {
-  Emitter& m_e;
-  OptLocation m_loc;
-
-public:
+struct LocationGuard {
   LocationGuard(Emitter& e, const OptLocation& newLoc)
       : m_e(e), m_loc(e.getTempLocation()) {
     if (newLoc) m_e.setTempLocation(newLoc);
@@ -287,40 +283,11 @@ public:
   ~LocationGuard() {
     m_e.setTempLocation(m_loc);
   }
+
+private:
+  Emitter& m_e;
+  OptLocation m_loc;
 };
-
-// Count the number of stack elements in an immediate vector.
-static int32_t countStackValues(const std::vector<uchar>& immVec) {
-  assert(!immVec.empty());
-
-  int count = 0;
-  const uint8_t* vec = &immVec[0];
-
-  // Count the location; the LS location type accounts for up to two
-  // values on the stack, all other location types account for at most
-  // one value on the stack.  Subtract the number that are actually
-  // immediates.
-  const LocationCode locCode = LocationCode(*vec++);
-  count += numLocationCodeStackVals(locCode);
-  const int numLocImms = numLocationCodeImms(locCode);
-  for (int i = 0; i < numLocImms; ++i) {
-    decodeVariableSizeImm(&vec);
-  }
-
-  // Count each of the members; MEC and MPC account for one value on
-  // the stack, while MW/MEL/MPL/MET/MPT/MEI don't account for any
-  // values on the stack.
-  while (vec - &immVec[0] < int(immVec.size())) {
-    MemberCode code = MemberCode(*vec++);
-    if (memberCodeHasImm(code)) {
-      decodeMemberCodeImm(&vec, code);
-    } else if (code != MW) {
-      ++count;
-    }
-  }
-  assert(vec - &immVec[0] == int(immVec.size()));
-  return count;
-}
 
 #define O(name, imm, pop, push, flags)                                  \
   void Emitter::name(imm) {                                             \
@@ -333,6 +300,7 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
     {                                                                   \
       Trace::Indent indent;                                             \
       getEmitterVisitor().prepareEvalStack();                           \
+      char idxAPop UNUSED;                                              \
       POP_##pop;                                                        \
       const int nIn UNUSED = COUNT_##pop;                               \
       POP_LA_##imm;                                                     \
@@ -343,7 +311,6 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
     ITRACE(3, "after: {}\n", m_ev.getEvalStack().pretty());             \
     auto& loc = m_tempLoc ? *m_tempLoc : m_node->getRange();            \
     auto UNUSED pc = m_ue.bc() + curPos;                                \
-    ITRACE(2, "{}: {}\n", curPos, instrToString(pc));                   \
     ITRACE(2, "lines [{},{}] chars [{},{}]\n",                          \
            loc.line0, loc.line1, loc.char0, loc.char1);                 \
     /* Update various other metadata */                                 \
@@ -361,16 +328,11 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #define COUNT_TWO(t1,t2) 2
 #define COUNT_THREE(t1,t2,t3) 3
 #define COUNT_FOUR(t1,t2,t3,t4) 4
-#define COUNT_MMANY 0
-#define COUNT_C_MMANY 0
-#define COUNT_R_MMANY 0
-#define COUNT_V_MMANY 0
 #define COUNT_MFINAL 0
+#define COUNT_F_MFINAL 0
 #define COUNT_C_MFINAL 0
-#define COUNT_R_MFINAL 0
 #define COUNT_V_MFINAL 0
 #define COUNT_FMANY 0
-#define COUNT_CVMANY 0
 #define COUNT_CVUMANY 0
 #define COUNT_CMANY 0
 #define COUNT_SMANY 0
@@ -385,7 +347,6 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #define FOUR(t1, t2, t3, t4) \
   DEC_##t1 a1, DEC_##t2 a2, DEC_##t3 a3, DEC_##t4 a4
 #define NA
-#define DEC_MA std::vector<uchar>
 #define DEC_BLA std::vector<Label*>&
 #define DEC_SLA std::vector<StrOff>&
 #define DEC_ILA std::vector<IterPair>&
@@ -400,6 +361,7 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #define DEC_BA Label&
 #define DEC_OA(type) type
 #define DEC_VSA std::vector<std::string>&
+#define DEC_KA MemberKey
 
 #define POP_NOV
 #define POP_ONE(t) \
@@ -416,39 +378,33 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
   POP_##t2(1);                   \
   POP_##t3(2);                   \
   POP_##t4(3)
-#define POP_MMANY \
+#define POP_MFINAL \
   getEmitterVisitor().popEvalStackMMany()
-#define POP_C_MMANY \
+#define POP_F_MFINAL POP_MFINAL
+#define POP_C_MFINAL \
   getEmitterVisitor().popEvalStack(StackSym::C); \
   getEmitterVisitor().popEvalStackMMany()
-#define POP_V_MMANY \
+#define POP_V_MFINAL \
   getEmitterVisitor().popEvalStack(StackSym::V); \
   getEmitterVisitor().popEvalStackMMany()
-#define POP_R_MMANY \
-  getEmitterVisitor().popEvalStack(StackSym::R); \
-  getEmitterVisitor().popEvalStackMMany()
-#define POP_MFINAL POP_MMANY
-#define POP_C_MFINAL POP_C_MMANY
-#define POP_R_MFINAL POP_R_MMANY
-#define POP_V_MFINAL POP_V_MMANY
 #define POP_FMANY \
   getEmitterVisitor().popEvalStackMany(a1, StackSym::F)
-#define POP_CVMANY \
+#define POP_CVUMANY \
   getEmitterVisitor().popEvalStackCVMany(a1)
-#define POP_CVUMANY POP_CVMANY
 #define POP_CMANY \
   getEmitterVisitor().popEvalStackMany(a1, StackSym::C)
 #define POP_SMANY \
   getEmitterVisitor().popEvalStackMany(a1.size(), StackSym::C)
 #define POP_IDX_A \
-  if (a2 == 1) getEmitterVisitor().popEvalStack(StackSym::C); \
+  idxAPop = getEmitterVisitor().getEvalStack().top();     \
+  if (a2 == 1) getEmitterVisitor().popEvalStackCVMany(1); \
   getEmitterVisitor().popEvalStack(StackSym::A)
 
-#define POP_CV(i) getEmitterVisitor().popEvalStack(StackSym::C, i, curPos)
-#define POP_VV(i) getEmitterVisitor().popEvalStack(StackSym::V, i, curPos)
-#define POP_AV(i) getEmitterVisitor().popEvalStack(StackSym::A, i, curPos)
-#define POP_RV(i) getEmitterVisitor().popEvalStack(StackSym::R, i, curPos)
-#define POP_FV(i) getEmitterVisitor().popEvalStack(StackSym::F, i, curPos)
+#define POP_CV(i) getEmitterVisitor().popEvalStack(StackSym::C)
+#define POP_VV(i) getEmitterVisitor().popEvalStack(StackSym::V)
+#define POP_AV(i) getEmitterVisitor().popEvalStack(StackSym::A)
+#define POP_RV(i) getEmitterVisitor().popEvalStack(StackSym::R)
+#define POP_FV(i) getEmitterVisitor().popEvalStack(StackSym::F)
 
 // Pop of virtual "locs" on the stack that turn into immediates.
 #define POP_LA_ONE(t) \
@@ -467,7 +423,6 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
   POP_LA_##t4(nIn)
 
 #define POP_LA_NA
-#define POP_LA_MA(i)
 #define POP_LA_BLA(i)
 #define POP_LA_SLA(i)
 #define POP_LA_ILA(i)
@@ -482,9 +437,10 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #define POP_LA_IMPL(x)
 #define POP_LA_OA(i) POP_LA_IMPL
 #define POP_LA_VSA(i)
+#define POP_LA_KA(i)
 
 #define POP_LA_LA(i) \
-  getEmitterVisitor().popSymbolicLocal(opcode, i, curPos)
+  getEmitterVisitor().popSymbolicLocal(opcode)
 
 #define PUSH_NOV
 #define PUSH_ONE(t) \
@@ -521,7 +477,7 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
   getEmitterVisitor().getEvalStack().insertAt(2, StackSym::C);
 
 #define PUSH_IDX_A \
-  if (a2 == 1) getEmitterVisitor().pushEvalStack(StackSym::C);
+  if (a2 == 1) getEmitterVisitor().pushEvalStack(idxAPop);
 
 #define IMPL_NA
 #define IMPL_ONE(t) \
@@ -538,18 +494,6 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
   IMPL2_##t2; \
   IMPL3_##t3; \
   IMPL4_##t4
-
-#define IMPL_MA(var) do {                             \
-  getUnitEmitter().emitInt32(var.size());             \
-  getUnitEmitter().emitInt32(countStackValues(var));  \
-  for (unsigned int i = 0; i < var.size(); ++i) {     \
-    getUnitEmitter().emitByte(var[i]);                \
-  }                                                   \
-} while (0)
-#define IMPL1_MA IMPL_MA(a1)
-#define IMPL2_MA IMPL_MA(a2)
-#define IMPL3_MA IMPL_MA(a3)
-#define IMPL4_MA IMPL_MA(a4)
 
 #define IMPL_BLA(var) do {                            \
   getUnitEmitter().emitInt32(var.size());             \
@@ -673,14 +617,21 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #define IMPL2_OA(type) IMPL_OA(a2)
 #define IMPL3_OA(type) IMPL_OA(a3)
 #define IMPL4_OA(type) IMPL_OA(a4)
+
+#define IMPL_KA(var) encode_member_key(var, getUnitEmitter())
+#define IMPL1_KA IMPL_KA(a1)
+#define IMPL2_KA IMPL_KA(a2)
+#define IMPL3_KA IMPL_KA(a3)
+#define IMPL4_KA IMPL_KA(a4)
+
  OPCODES
+
 #undef O
 #undef ONE
 #undef TWO
 #undef THREE
 #undef FOUR
 #undef NA
-#undef DEC_MA
 #undef DEC_IVA
 #undef DEC_LA
 #undef DEC_IA
@@ -691,18 +642,15 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #undef DEC_AA
 #undef DEC_BA
 #undef DEC_OA
+#undef DEC_KA
 #undef POP_NOV
 #undef POP_ONE
 #undef POP_TWO
 #undef POP_THREE
 #undef POP_FOUR
-#undef POP_MMANY
-#undef POP_C_MMANY
-#undef POP_V_MMANY
-#undef POP_R_MMANY
 #undef POP_MFINAL
+#undef POP_F_MFINAL
 #undef POP_C_MFINAL
-#undef POP_R_MFINAL
 #undef POP_V_MFINAL
 #undef POP_CV
 #undef POP_VV
@@ -712,7 +660,6 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #undef POP_FV
 #undef POP_LREST
 #undef POP_FMANY
-#undef POP_CVMANY
 #undef POP_CVUMANY
 #undef POP_CMANY
 #undef POP_SMANY
@@ -722,7 +669,6 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #undef POP_LA_THREE
 #undef POP_LA_FOUR
 #undef POP_LA_NA
-#undef POP_LA_MA
 #undef POP_LA_IVA
 #undef POP_LA_IA
 #undef POP_LA_I64A
@@ -734,6 +680,7 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #undef POP_LA_IMPL
 #undef POP_LA_OA
 #undef POP_LA_LA
+#undef POP_LA_KA
 #undef PUSH_NOV
 #undef PUSH_ONE
 #undef PUSH_TWO
@@ -753,11 +700,6 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #undef IMPL_THREE
 #undef IMPL_FOUR
 #undef IMPL_NA
-#undef IMPL_MA
-#undef IMPL1_MA
-#undef IMPL2_MA
-#undef IMPL3_MA
-#undef IMPL4_MA
 #undef IMPL_BLA
 #undef IMPL1_BLA
 #undef IMPL2_BLA
@@ -821,6 +763,11 @@ static int32_t countStackValues(const std::vector<uchar>& immVec) {
 #undef IMPL2_OA
 #undef IMPL3_OA
 #undef IMPL4_OA
+#undef IMPL_KA
+#undef IMPL1_KA
+#undef IMPL2_KA
+#undef IMPL3_KA
+#undef IMPL4_KA
 
 static void checkJmpTargetEvalStack(const SymbolicStack& source,
                                     const SymbolicStack& dest) {
@@ -2023,7 +1970,7 @@ void EmitterVisitor::unexpectedStackSym(char sym, const char* where) const {
                      m_ue.bcPos());
 }
 
-void EmitterVisitor::popEvalStack(char expected, int arg, int pos) {
+void EmitterVisitor::popEvalStack(char expected) {
   // Pop a value off of the evaluation stack, and verify that it
   // matches the specified symbolic flavor
   if (m_evalStack.size() == 0) {
@@ -2051,7 +1998,7 @@ void EmitterVisitor::popEvalStack(char expected, int arg, int pos) {
   }
 }
 
-void EmitterVisitor::popSymbolicLocal(Op op, int arg, int pos) {
+void EmitterVisitor::popSymbolicLocal(Op op) {
   // A number of member instructions read locals without consuming an L from
   // the symbolic stack through the normal path.
   if (isMemberBaseOp(op) || isMemberDimOp(op) || isMemberFinalOp(op)) {
@@ -2275,8 +2222,7 @@ bool EmitterVisitor::isJumpTarget(Offset target) {
   return (it != m_jumpTargetEvalStacks.end());
 }
 
-class IterFreeThunklet final : public Thunklet {
-public:
+struct IterFreeThunklet final : Thunklet {
   IterFreeThunklet(Id iterId, bool itRef)
     : m_id(iterId), m_itRef(itRef) {}
   void emit(Emitter& e) override {
@@ -2295,8 +2241,7 @@ private:
 /**
  * A thunklet for the fault region protecting a silenced (@) expression.
  */
-class RestoreErrorReportingThunklet final : public Thunklet {
-public:
+struct RestoreErrorReportingThunklet final : Thunklet {
   explicit RestoreErrorReportingThunklet(Id loc)
     : m_oldLevelLoc(loc) {}
   void emit(Emitter& e) override {
@@ -2307,8 +2252,7 @@ private:
   Id m_oldLevelLoc;
 };
 
-class UnsetUnnamedLocalThunklet final : public Thunklet {
-public:
+struct UnsetUnnamedLocalThunklet final : Thunklet {
   explicit UnsetUnnamedLocalThunklet(Id loc)
     : m_loc(loc) {}
   void emit(Emitter& e) override {
@@ -2320,8 +2264,7 @@ private:
   Id m_loc;
 };
 
-class UnsetUnnamedLocalsThunklet final : public Thunklet {
-public:
+struct UnsetUnnamedLocalsThunklet final : Thunklet {
   explicit UnsetUnnamedLocalsThunklet(std::vector<Id>&& locs)
     : m_locs(std::move(locs)) {}
   void emit(Emitter& e) override {
@@ -2336,8 +2279,7 @@ private:
   const std::vector<Id> m_locs;
 };
 
-class UnsetGeneratorDelegateThunklet final : public Thunklet {
-public:
+struct UnsetGeneratorDelegateThunklet final : Thunklet {
   explicit UnsetGeneratorDelegateThunklet(Id iterId)
     : m_id(iterId) {}
   void emit(Emitter& e) override {
@@ -2348,8 +2290,7 @@ private:
   Id m_id;
 };
 
-class FinallyThunklet final : public Thunklet {
-public:
+struct FinallyThunklet final : Thunklet {
   explicit FinallyThunklet(FinallyStatementPtr finallyStatement,
                            int numLiveIters)
       : m_finallyStatement(finallyStatement), m_numLiveIters(numLiveIters) {}
@@ -3624,7 +3565,15 @@ bool EmitterVisitor::visit(ConstructPtr node) {
       auto el = static_pointer_cast<ExpressionList>(u->getExpression());
       emitArrayInit(e, el);
       return true;
-    } else if (op == T_ISSET) {
+    }
+
+    if (op == T_DICT) {
+      auto el = static_pointer_cast<ExpressionList>(u->getExpression());
+      emitArrayInit(e, el, HeaderKind::Dict);
+      return true;
+    }
+
+    if (op == T_ISSET) {
       auto list = dynamic_pointer_cast<ExpressionList>(u->getExpression());
       if (list) {
         // isset($a, $b, ...)  ==>  isset($a) && isset($b) && ...
@@ -3879,6 +3828,17 @@ bool EmitterVisitor::visit(ConstructPtr node) {
 
     if (op == T_COLLECTION) {
       emitCollectionInit(e, b);
+      return true;
+    }
+
+    if (op == T_PIPE) {
+      Id pipeVar = emitVisitAndSetUnnamedL(e, b->getExp1());
+      allocPipeLocal(pipeVar);
+      visit(b->getExp2());
+      emitConvertToCell(e);
+      releasePipeLocal(pipeVar);
+      emitPushAndFreeUnnamedL(e, pipeVar, m_ue.bcPos());
+      e.PopC();
       return true;
     }
 
@@ -4279,6 +4239,10 @@ bool EmitterVisitor::visit(ConstructPtr node) {
         makeStaticString(call->getClassScope()->getScopeName());
       e.String(name);
       return true;
+    } else if (call->isCallToFunction("dict") &&
+               (m_ue.m_isHHFile || Option::EnableHipHopSyntax)) {
+      emitFuncCall(e, call, "__SystemLib\\dict", params);
+      return true;
     }
 #define TYPE_CONVERT_INSTR(what, What)                             \
     else if (call->isCallToFunction(#what"val") &&                 \
@@ -4624,7 +4588,7 @@ bool EmitterVisitor::visit(ConstructPtr node) {
         e.Double(v.getDouble());
         return true;
 
-      case KindOfStaticString:
+      case KindOfPersistentString:
       case KindOfString: {
         StringData* nValue = makeStaticString(v.getStringData());
         e.String(nValue);
@@ -4643,6 +4607,16 @@ bool EmitterVisitor::visit(ConstructPtr node) {
         break;
     }
     not_reached();
+  }
+
+  case Construct::KindOfPipeVariable: {
+    if (auto pipeVar = getPipeLocal()) {
+      emitVirtualLocal(*pipeVar);
+      return true;
+    }
+
+    throw IncludeTimeFatalException(
+      node, "Pipe variables must occur only in the RHS of pipe expressions");
   }
 
   case Construct::KindOfSimpleVariable: {
@@ -4718,8 +4692,8 @@ bool EmitterVisitor::visit(ConstructPtr node) {
                                   tvAsVariant(&tvVal));
       } else {
         // Set/ImmSet, val is the key
-        if (m_staticColType.back() == CollectionType::Set ||
-            m_staticColType.back() == CollectionType::ImmSet) {
+        if (m_staticColType.back() == HeaderKind::Set ||
+            m_staticColType.back() == HeaderKind::ImmSet) {
           m_staticArrays.back().set(tvAsVariant(&tvVal),
                                     tvAsVariant(&tvVal));
         } else {
@@ -5128,17 +5102,16 @@ int EmitterVisitor::scanStackForLocation(int iLast) {
 size_t EmitterVisitor::emitMOp(
   int iFirst,
   int& iLast,
-  bool allowW,
-  bool rhsVal,
   Emitter& e,
-  MOpFlags flags
+  MInstrOpts opts
 ) {
   auto stackIdx = [&](int i) {
     return m_evalStack.actualSize() - 1 - m_evalStack.getActualPos(i);
   };
 
   auto const baseFlags =
-    MOpFlags(uint8_t(flags) & uint8_t(MOpFlags::WarnDefine));
+    opts.fpass ? MOpFlags::None
+               : MOpFlags(uint8_t(opts.flags) & uint8_t(MOpFlags::WarnDefine));
 
   // Emit the base location operation.
   auto sym = m_evalStack.get(iFirst);
@@ -5147,10 +5120,18 @@ size_t EmitterVisitor::emitMOp(
     case StackSym::N:
       switch (flavor) {
         case StackSym::C:
-          e.BaseNC(stackIdx(iFirst), baseFlags);
+          if (opts.fpass) {
+            e.FPassBaseNC(opts.paramId, stackIdx(iFirst));
+          } else {
+            e.BaseNC(stackIdx(iFirst), baseFlags);
+          }
           break;
         case StackSym::L:
-          e.BaseNL(m_evalStack.getLoc(iFirst), baseFlags);
+          if (opts.fpass) {
+            e.FPassBaseNL(opts.paramId, m_evalStack.getLoc(iFirst));
+          } else {
+            e.BaseNL(m_evalStack.getLoc(iFirst), baseFlags);
+          }
           break;
         default:
           always_assert(false);
@@ -5160,10 +5141,18 @@ size_t EmitterVisitor::emitMOp(
     case StackSym::G:
       switch (flavor) {
         case StackSym::C:
-          e.BaseGC(stackIdx(iFirst), baseFlags);
+          if (opts.fpass) {
+            e.FPassBaseGC(opts.paramId, stackIdx(iFirst));
+          } else {
+            e.BaseGC(stackIdx(iFirst), baseFlags);
+          }
           break;
         case StackSym::L:
-          e.BaseGL(m_evalStack.getLoc(iFirst), baseFlags);
+          if (opts.fpass) {
+            e.FPassBaseGL(opts.paramId, m_evalStack.getLoc(iFirst));
+          } else {
+            e.BaseGL(m_evalStack.getLoc(iFirst), baseFlags);
+          }
           break;
         default:
           always_assert(false);
@@ -5175,7 +5164,7 @@ size_t EmitterVisitor::emitMOp(
         unexpectedStackSym(sym, "S-vector base, class ref");
       }
 
-      auto const clsIdx = rhsVal ? 1 : 0;
+      auto const clsIdx = opts.rhsVal ? 1 : 0;
       switch (flavor) {
         case StackSym::C:
           e.BaseSC(stackIdx(iFirst), clsIdx);
@@ -5197,7 +5186,11 @@ size_t EmitterVisitor::emitMOp(
     case StackSym::None:
       switch (flavor) {
         case StackSym::L:
-          e.BaseL(m_evalStack.getLoc(iFirst), baseFlags);
+          if (opts.fpass) {
+            e.FPassBaseL(opts.paramId, m_evalStack.getLoc(iFirst));
+          } else {
+            e.BaseL(m_evalStack.getLoc(iFirst), baseFlags);
+          }
           break;
         case StackSym::C:
           e.BaseC(stackIdx(iFirst));
@@ -5222,45 +5215,10 @@ size_t EmitterVisitor::emitMOp(
   // Emit all intermediate operations, leaving the final operation up to our
   // caller.
   for (auto i = iFirst + 1; i < iLast; ++i) {
-    auto sym = m_evalStack.get(i);
-    auto flavor = StackSym::GetSymFlavor(sym);
-
-    auto doDim = [&](PropElemOp op) {
-      if (flavor == StackSym::L) {
-        e.DimL(m_evalStack.getLoc(i), op, flags);
-      } else if (flavor == StackSym::I) {
-        e.DimInt(m_evalStack.getInt(i), op, flags);
-      } else if (flavor == StackSym::T) {
-        e.DimStr(m_evalStack.getName(i), op, flags);
-      } else {
-        e.DimC(stackIdx(i), op, flags);
-      }
-    };
-
-    switch (StackSym::GetMarker(sym)) {
-      case StackSym::M:
-        always_assert(false); // should only be final stack element
-        break;
-      case StackSym::P:
-        doDim(PropElemOp::Prop);
-        break;
-      case StackSym::Q:
-        doDim(PropElemOp::PropQ);
-        break;
-      case StackSym::E:
-        doDim(PropElemOp::Elem);
-        break;
-      case StackSym::W:
-        if (allowW) {
-          e.DimNewElem(flags);
-        } else {
-          throw IncludeTimeFatalException(e.getNode(),
-                                          "Cannot use [] for reading");
-        }
-        break;
-      case StackSym::S:
-      default:
-        always_assert(false && "Bad intermediate marker");
+    if (opts.fpass) {
+      e.FPassDim(opts.paramId, symToMemberKey(e, i, opts.allowW));
+    } else {
+      e.Dim(opts.flags, symToMemberKey(e, i, opts.allowW));
     }
   }
 
@@ -5271,156 +5229,53 @@ size_t EmitterVisitor::emitMOp(
   return stackCount;
 }
 
-static folly::Optional<PropElemOp> symToPropElem(
-  Emitter& e, char sym, bool allowW
-) {
-  switch (StackSym::GetMarker(sym)) {
-    case StackSym::P:
-      return PropElemOp::Prop;
-    case StackSym::E:
-      return PropElemOp::Elem;
-    case StackSym::Q:
-      return PropElemOp::PropQ;
-    case StackSym::W:
-      if (allowW) return folly::none;
-      throw EmitterVisitor::IncludeTimeFatalException(
-        e.getNode(), "Cannot use [] for reading"
-      );
+MemberKey EmitterVisitor::symToMemberKey(Emitter& e, int i, bool allowW) {
+  auto const sym = m_evalStack.get(i);
+  auto const marker = StackSym::GetMarker(sym);
+  if (marker == StackSym::W) {
+    if (allowW) return MemberKey{};
+
+    throw EmitterVisitor::IncludeTimeFatalException(
+      e.getNode(), "Cannot use [] for reading"
+    );
+  }
+
+  switch (StackSym::GetSymFlavor(sym)) {
+    case StackSym::L: {
+      auto const local = m_evalStack.getLoc(i);
+      switch (marker) {
+        case StackSym::E: return MemberKey{MEL, local};
+        case StackSym::P: return MemberKey{MPL, local};
+        default:          always_assert(false);
+      }
+    }
+    case StackSym::C: {
+      auto const idx =
+        int32_t(m_evalStack.actualSize() - 1 - m_evalStack.getActualPos(i));
+      switch (marker) {
+        case StackSym::E: return MemberKey{MEC, idx};
+        case StackSym::P: return MemberKey{MPC, idx};
+        default:          always_assert(false);
+      }
+    }
+    case StackSym::I: {
+      auto const int64 = m_evalStack.getInt(i);
+      switch (marker) {
+        case StackSym::E: return MemberKey{MEI, int64};
+        default:          always_assert(false);
+      }
+    }
+    case StackSym::T: {
+      auto const str = m_evalStack.getName(i);
+      switch (marker) {
+        case StackSym::E: return MemberKey{MET, str};
+        case StackSym::P: return MemberKey{MPT, str};
+        case StackSym::Q: return MemberKey{MQT, str};
+        default:          always_assert(false);
+      }
+    }
     default:
       always_assert(false);
-  }
-}
-
-void EmitterVisitor::buildVectorImm(std::vector<uchar>& vectorImm,
-                                    int iFirst, int iLast, bool allowW,
-                                    Emitter& e) {
-  assert(iFirst >= 0);
-  assert(iFirst <= iLast);
-  assert(iLast < (int)m_evalStack.size());
-  vectorImm.clear();
-  vectorImm.reserve(iLast - iFirst + 1);
-
-  // Because of php's order of evaluation rules, we store the classref for
-  // certain types of S-vectors at the end, instead of the front. See emitCls
-  // for details.
-
-  char sym = m_evalStack.get(iFirst);
-  char symFlavor = StackSym::GetSymFlavor(sym);
-  char marker = StackSym::GetMarker(sym);
-  switch (marker) {
-    case StackSym::N: {
-      if (symFlavor == StackSym::C) {
-        vectorImm.push_back(LNC);
-      } else if (symFlavor == StackSym::L) {
-        vectorImm.push_back(LNL);
-      } else {
-        always_assert(false);
-      }
-    } break;
-    case StackSym::G: {
-      if (symFlavor == StackSym::C) {
-        vectorImm.push_back(LGC);
-      } else if (symFlavor == StackSym::L) {
-        vectorImm.push_back(LGL);
-      } else {
-        always_assert(false);
-      }
-    } break;
-    case StackSym::S: {
-      if (symFlavor != StackSym::L && symFlavor != StackSym::C) {
-        unexpectedStackSym(sym, "S-vector base, prop name");
-      }
-      if (m_evalStack.get(iLast) != StackSym::AM) {
-        unexpectedStackSym(sym, "S-vector base, class ref");
-      }
-      const bool curIsLoc = symFlavor == StackSym::L;
-      vectorImm.push_back(curIsLoc ? LSL : LSC);
-    } break;
-    case StackSym::None: {
-      if (symFlavor == StackSym::L) {
-        vectorImm.push_back(LL);
-      } else if (symFlavor == StackSym::C) {
-        vectorImm.push_back(LC);
-      } else if (symFlavor == StackSym::R) {
-        vectorImm.push_back(LR);
-      } else if (symFlavor == StackSym::H) {
-        vectorImm.push_back(LH);
-      } else {
-        not_reached();
-      }
-    } break;
-    default: {
-      not_reached();
-    }
-  }
-  if (symFlavor == StackSym::L) {
-    encodeIvaToVector(vectorImm, m_evalStack.getLoc(iFirst));
-  }
-
-  int i = iFirst + 1;
-  while (i <= iLast) {
-    char sym = m_evalStack.get(i);
-    char symFlavor = StackSym::GetSymFlavor(sym);
-    char marker = StackSym::GetMarker(sym);
-    Id strid = -1;
-
-    if (const StringData* name = m_evalStack.getName(i)) {
-      strid = m_ue.mergeLitstr(name);
-    }
-
-    switch (marker) {
-      case StackSym::M: {
-        assert(symFlavor == StackSym::A);
-        break;
-      }
-      case StackSym::E: {
-        if (symFlavor == StackSym::L) {
-          vectorImm.push_back(MEL);
-        } else if (symFlavor == StackSym::T) {
-          vectorImm.push_back(MET);
-        } else if (symFlavor == StackSym::I) {
-          vectorImm.push_back(MEI);
-        } else {
-          vectorImm.push_back(MEC);
-        }
-      } break;
-      case StackSym::W: {
-        if (allowW) {
-          vectorImm.push_back(MW);
-        } else {
-          throw IncludeTimeFatalException(e.getNode(),
-                                          "Cannot use [] for reading");
-        }
-      } break;
-      case StackSym::P: {
-        if (symFlavor == StackSym::L) {
-          vectorImm.push_back(MPL);
-        } else if (symFlavor == StackSym::T) {
-          vectorImm.push_back(MPT);
-        } else {
-          vectorImm.push_back(MPC);
-        }
-      } break;
-      case StackSym::Q: {
-        assert(symFlavor == StackSym::T);
-        vectorImm.push_back(MQT);
-      } break;
-      case StackSym::S: {
-        assert(false);
-      }
-      default: always_assert(false); break;
-    }
-
-    if (symFlavor == StackSym::L) {
-      encodeIvaToVector(vectorImm, m_evalStack.getLoc(i));
-    } else if (symFlavor == StackSym::T) {
-      assert(strid != -1);
-      encodeToVector<int32_t>(vectorImm, strid);
-    } else if (symFlavor == StackSym::I) {
-      encodeToVector<int64_t>(vectorImm, m_evalStack.getInt(i));
-    }
-
-    ++i;
   }
 }
 
@@ -5453,9 +5308,7 @@ void EmitterVisitor::emitPop(Emitter& e) {
       }
     }
   } else {
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, false, e);
-    e.CGetM(vectorImm);
+    emitQueryMOp(i, iLast, e, QueryMOp::CGet);
     e.PopC();
   }
 }
@@ -5504,23 +5357,8 @@ void EmitterVisitor::emitAGet(Emitter& e) {
 void EmitterVisitor::emitQueryMOp(int iFirst, int iLast, Emitter& e,
                                   QueryMOp op) {
   auto const flags = getQueryMOpFlags(op);
-  auto const stackCount = emitMOp(iFirst, iLast, false, false, e, flags);
-
-  auto const sym = m_evalStack.get(iLast);
-  if (auto const pe = symToPropElem(e, sym, false)) {
-    switch (StackSym::GetSymFlavor(sym)) {
-      case StackSym::L:
-        return e.QueryML(stackCount, op, *pe, m_evalStack.getLoc(iLast));
-      case StackSym::C:
-        return e.QueryMC(stackCount, op, *pe);
-      case StackSym::I:
-        return e.QueryMInt(stackCount, op, *pe, m_evalStack.getInt(iLast));
-      case StackSym::T:
-        return e.QueryMStr(stackCount, op, *pe, m_evalStack.getName(iLast));
-    }
-  }
-
-  always_assert(false);
+  auto const stackCount = emitMOp(iFirst, iLast, e, MInstrOpts{flags});
+  e.QueryM(stackCount, op, symToMemberKey(e, iLast, false /* allowW */));
 }
 
 void EmitterVisitor::emitCGet(Emitter& e) {
@@ -5552,13 +5390,7 @@ void EmitterVisitor::emitCGet(Emitter& e) {
       }
     }
   } else {
-    if (RuntimeOption::EvalEmitNewMInstrs) {
-      return emitQueryMOp(i, iLast, e, QueryMOp::CGet);
-    }
-
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, false, e);
-    e.CGetM(vectorImm);
+    emitQueryMOp(i, iLast, e, QueryMOp::CGet);
   }
 }
 
@@ -5625,9 +5457,9 @@ bool EmitterVisitor::emitVGet(Emitter& e, bool skipCells) {
       }
     }
   } else {
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, true, e);
-    e.VGetM(vectorImm);
+    auto const stackCount =
+      emitMOp(i, iLast, e, MInstrOpts{MOpFlags::DefineReffy});
+    e.VGetM(stackCount, symToMemberKey(e, iLast, true /* allowW */));
   }
   return false;
 }
@@ -5793,7 +5625,7 @@ void EmitterVisitor::emitBuiltinDefaultArg(Emitter& e, Variant& v,
       if (t) {
         [&] {
           switch (*t) {
-            case KindOfStaticString:
+            case KindOfPersistentString:
             case KindOfString:
             case KindOfPersistentArray:
             case KindOfArray:
@@ -5833,7 +5665,7 @@ void EmitterVisitor::emitBuiltinDefaultArg(Emitter& e, Variant& v,
       e.Double(v.toDouble());
       return;
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString: {
       StringData *nValue = makeStaticString(v.getStringData());
       e.String(nValue);
@@ -5917,9 +5749,8 @@ void EmitterVisitor::emitFPass(Emitter& e, int paramId,
       }
     }
   } else {
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, true, e);
-    e.FPassM(paramId, vectorImm);
+    auto const stackCount = emitMOp(i, iLast, e, MInstrOpts{paramId});
+    e.FPassM(paramId, stackCount, symToMemberKey(e, iLast, true /* allowW */));
   }
 }
 
@@ -5956,13 +5787,7 @@ void EmitterVisitor::emitIsset(Emitter& e) {
       }
     }
   } else {
-    if (RuntimeOption::EvalEmitNewMInstrs) {
-      return emitQueryMOp(i, iLast, e, QueryMOp::Isset);
-    }
-
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, false, e);
-    e.IssetM(vectorImm);
+    emitQueryMOp(i, iLast, e, QueryMOp::Isset);
   }
 }
 
@@ -6008,13 +5833,7 @@ void EmitterVisitor::emitEmpty(Emitter& e) {
       }
     }
   } else {
-    if (RuntimeOption::EvalEmitNewMInstrs) {
-      return emitQueryMOp(i, iLast, e, QueryMOp::Empty);
-    }
-
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, false, e);
-    e.EmptyM(vectorImm);
+    emitQueryMOp(i, iLast, e, QueryMOp::Empty);
   }
 }
 
@@ -6050,9 +5869,8 @@ void EmitterVisitor::emitUnset(Emitter& e,
       }
     }
   } else {
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, false, e);
-    e.UnsetM(vectorImm);
+    auto const stackCount = emitMOp(i, iLast, e, MInstrOpts{MOpFlags::Unset});
+    e.UnsetM(stackCount, symToMemberKey(e, iLast, false /* allowW */));
   }
 }
 
@@ -6084,33 +5902,9 @@ void EmitterVisitor::emitSet(Emitter& e) {
       }
     }
   } else {
-    if (RuntimeOption::EvalEmitNewMInstrs) {
-      auto const stackCount =
-        emitMOp(i, iLast, true, true, e, MOpFlags::Define);
-
-      auto const sym = m_evalStack.get(iLast);
-      if (auto const pe = symToPropElem(e, sym, true)) {
-        switch (StackSym::GetSymFlavor(sym)) {
-          case StackSym::L:
-            return e.SetML(stackCount, *pe, m_evalStack.getLoc(iLast));
-          case StackSym::C:
-            return e.SetMC(stackCount, *pe);
-          case StackSym::I:
-            return e.SetMInt(stackCount, *pe, m_evalStack.getInt(iLast));
-          case StackSym::T:
-            return e.SetMStr(stackCount, *pe, m_evalStack.getName(iLast));
-          default:
-            always_assert(false);
-        }
-      }
-
-      e.SetMNewElem(stackCount);
-      return;
-    }
-
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, true, e);
-    e.SetM(vectorImm);
+    auto const stackCount =
+      emitMOp(i, iLast, e, MInstrOpts{MOpFlags::Define}.rhs());
+    return e.SetM(stackCount, symToMemberKey(e, iLast, true /* allowW */));
   }
 }
 
@@ -6163,9 +5957,9 @@ void EmitterVisitor::emitSetOp(Emitter& e, int tokenOp) {
       }
     }
   } else {
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, true, e);
-    e.SetOpM(op, vectorImm);
+    auto const stackCount =
+      emitMOp(i, iLast, e, MInstrOpts{MOpFlags::Define}.rhs());
+    e.SetOpM(stackCount, op, symToMemberKey(e, iLast, true /* allowW */));
   }
 }
 
@@ -6192,9 +5986,9 @@ void EmitterVisitor::emitBind(Emitter& e) {
       }
     }
   } else {
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, true, e);
-    e.BindM(vectorImm);
+    auto const stackCount =
+      emitMOp(i, iLast, e, MInstrOpts{MOpFlags::DefineReffy}.rhs());
+    e.BindM(stackCount, symToMemberKey(e, iLast, true /* allowW */));
   }
 }
 
@@ -6222,9 +6016,9 @@ void EmitterVisitor::emitIncDec(Emitter& e, IncDecOp op) {
       }
     }
   } else {
-    std::vector<uchar> vectorImm;
-    buildVectorImm(vectorImm, i, iLast, true, e);
-    e.IncDecM(op, vectorImm);
+    auto const stackCount =
+      emitMOp(i, iLast, e, MInstrOpts{MOpFlags::Define});
+    e.IncDecM(stackCount, op, symToMemberKey(e, iLast, true /* allowW */));
   }
 }
 
@@ -6407,7 +6201,7 @@ MaybeDataType EmitterVisitor::analyzeSwitch(SwitchStatementPtr sw,
       DataType caseType;
       if (condition->getScalarValue(cval)) {
         caseType = cval.getType();
-        if (caseType == KindOfStaticString) caseType = KindOfString;
+        if (caseType == KindOfPersistentString) caseType = KindOfString;
         if ((caseType != KindOfInt64 && caseType != KindOfString) ||
             !IMPLIES(t != KindOfUninit, caseType == t)) {
           return folly::none;
@@ -7316,6 +7110,10 @@ void EmitterVisitor::emitDeprecationWarning(Emitter& e,
 
   // how often to display the warning (1 / rate)
   auto rate = deprArgs.size() > 1 ? deprArgs[1]->getLiteralInteger() : 1;
+  if (rate <= 0) {
+    // deprecation warnings disabled
+    return;
+  }
 
   { // preface the message with the name of the offending function
     auto funcName = funcScope->getScopeName();
@@ -8614,9 +8412,7 @@ void EmitterVisitor::emitClass(Emitter& e,
 
 namespace {
 
-class ForeachIterGuard {
-  EmitterVisitor& m_ev;
- public:
+struct ForeachIterGuard {
   ForeachIterGuard(EmitterVisitor& ev,
                    Id iterId,
                    IterKind kind)
@@ -8627,6 +8423,9 @@ class ForeachIterGuard {
   ~ForeachIterGuard() {
     m_ev.popIterScope();
   }
+
+private:
+  EmitterVisitor& m_ev;
 };
 
 }
@@ -9128,13 +8927,17 @@ void EmitterVisitor::finishFunc(Emitter& e, FuncEmitter* fe, int32_t stackPad) {
 }
 
 void EmitterVisitor::initScalar(TypedValue& tvVal, ExpressionPtr val,
-                                folly::Optional<CollectionType> ct) {
+                                folly::Optional<HeaderKind> kind) {
   assert(val->isScalar());
   tvVal.m_type = KindOfUninit;
   // static array initilization
-  auto initArray = [&](ExpressionPtr el) {
-    m_staticArrays.push_back(Array::attach(PackedArray::MakeReserve(0)));
-    m_staticColType.push_back(ct);
+  auto initArray = [&](ExpressionPtr el, folly::Optional<HeaderKind> k) {
+    if (k == HeaderKind::Dict) {
+      m_staticArrays.push_back(Array::attach(MixedArray::MakeReserveDict(0)));
+    } else {
+      m_staticArrays.push_back(Array::attach(PackedArray::MakeReserve(0)));
+    }
+    m_staticColType.push_back(k);
     visit(el);
     tvVal = make_tv<KindOfPersistentArray>(
       ArrayData::GetScalarArray(m_staticArrays.back().get())
@@ -9180,13 +8983,17 @@ void EmitterVisitor::initScalar(TypedValue& tvVal, ExpressionPtr val,
     }
     case Expression::KindOfExpressionList: {
       // Array, possibly for collection initialization.
-      initArray(val);
+      initArray(val, kind);
       break;
     }
     case Expression::KindOfUnaryOpExpression: {
       auto u = static_pointer_cast<UnaryOpExpression>(val);
       if (u->getOp() == T_ARRAY) {
-        initArray(u->getExpression());
+        initArray(u->getExpression(), folly::none);
+        break;
+      }
+      if (u->getOp() == T_DICT) {
+        initArray(u->getExpression(), HeaderKind::Dict);
         break;
       }
       // Fall through
@@ -9204,10 +9011,15 @@ void EmitterVisitor::initScalar(TypedValue& tvVal, ExpressionPtr val,
 }
 
 void EmitterVisitor::emitArrayInit(Emitter& e, ExpressionListPtr el,
-                                   folly::Optional<CollectionType> ct) {
+                                   folly::Optional<HeaderKind> kind) {
   assert(m_staticArrays.empty());
+  auto const isDict = kind == HeaderKind::Dict;
 
   if (el == nullptr) {
+    if (isDict) {
+      e.Array(ArrayData::GetScalarArray(MixedArray::MakeReserveDict(0)));
+      return;
+    }
     e.Array(staticEmptyArray());
     return;
   }
@@ -9215,12 +9027,13 @@ void EmitterVisitor::emitArrayInit(Emitter& e, ExpressionListPtr el,
   if (el->isScalar()) {
     TypedValue tv;
     tvWriteUninit(&tv);
-    initScalar(tv, el, ct);
+    initScalar(tv, el, kind);
     e.Array(tv.m_data.parr);
     return;
   }
 
-  auto const allowPacked = !ct || isVectorCollection(*ct);
+  auto const allowPacked =
+    !kind || (!isDict && isVectorCollection((CollectionType)*kind));
 
   int nElms;
   if (allowPacked && isPackedInit(el, &nElms)) {
@@ -9237,7 +9050,7 @@ void EmitterVisitor::emitArrayInit(Emitter& e, ExpressionListPtr el,
   // can't handle that yet.  Also ignore RuntimeOption::DisableStructArray here.
   // The VM can handle the NewStructArray bytecode when struct arrays are
   // disabled.
-  auto const allowStruct = !ct;
+  auto const allowStruct = !kind;
   std::vector<std::string> keys;
   if (allowStruct && isStructInit(el, keys)) {
     for (int i = 0, n = keys.size(); i < n; i++) {
@@ -9254,6 +9067,8 @@ void EmitterVisitor::emitArrayInit(Emitter& e, ExpressionListPtr el,
   if (capacity > 0) capacityHint = capacity;
   if (allowPacked && isPackedInit(el, &nElms, false /* ignore size */)) {
     e.NewArray(capacityHint);
+  } else if (isDict) {
+    e.NewDictArray(capacityHint);
   } else {
     e.NewMixedArray(capacityHint);
   }
@@ -9289,7 +9104,7 @@ void EmitterVisitor::emitVectorInit(Emitter&e, CollectionType ct,
         "Keys may not be specified for Vector initialization");
     }
   }
-  emitArrayInit(e, el, ct);
+  emitArrayInit(e, el, (HeaderKind)ct);
   e.ColFromArray(static_cast<int>(ct));
   return;
 }
@@ -9338,7 +9153,7 @@ void EmitterVisitor::emitSetInit(Emitter&e, CollectionType ct,
   if (hasVectorData) useArray = false;
 
   if (useArray) {
-    emitArrayInit(e, el, ct);
+    emitArrayInit(e, el, (HeaderKind)ct);
     e.ColFromArray(static_cast<int>(ct));
   } else {
     if (nElms == 0) {
@@ -9403,7 +9218,7 @@ void EmitterVisitor::emitMapInit(Emitter&e, CollectionType ct,
   if (hasVectorData) useArray = false;
 
   if (useArray) {
-    emitArrayInit(e, el, ct);
+    emitArrayInit(e, el, (HeaderKind)ct);
     e.ColFromArray(static_cast<int>(ct));
   } else {
     if (nElms == 0) {
@@ -9472,7 +9287,7 @@ bool EmitterVisitor::requiresDeepInit(ExpressionPtr initExpr) const {
       return !initExpr->isScalar();
     case Expression::KindOfUnaryOpExpression: {
       auto u = static_pointer_cast<UnaryOpExpression>(initExpr);
-      if (u->getOp() == T_ARRAY) {
+      if (u->getOp() == T_ARRAY || u->getOp() == T_DICT) {
         auto el = static_pointer_cast<ExpressionList>(u->getExpression());
         if (el) {
           int n = el->getCount();
@@ -10036,8 +9851,7 @@ static UnitEmitter* emitHHBCVisitor(AnalysisResultPtr ar, FileScopeRawPtr fsp) {
   return ue;
 }
 
-class UEQ : public Synchronizable {
- public:
+struct UEQ : Synchronizable {
   void push(UnitEmitter* ue) {
     assert(ue != nullptr);
     Lock lock(this);

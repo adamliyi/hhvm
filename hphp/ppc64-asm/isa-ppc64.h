@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | (c) Copyright IBM Corporation 2015                                   |
+   | (c) Copyright IBM Corporation 2015-2016                              |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -68,7 +68,7 @@ typedef union XO_format {
   };
   PPC64Instr instruction;
 } XO_form_t;
-static_assert(sizeof(XO_format) == sizeof(uint32_t), "XO_format_t size != 4");
+static_assert(sizeof(XO_format) == sizeof(uint32_t), "XO_form_t size != 4");
 
 typedef union X_format {
   struct {
@@ -81,7 +81,7 @@ typedef union X_format {
   };
   PPC64Instr instruction;
 } X_form_t;
-static_assert(sizeof(X_format) == sizeof(uint32_t), "X_format_t size != 4");
+static_assert(sizeof(X_format) == sizeof(uint32_t), "X_form_t size != 4");
 
 typedef union D_format {
   struct {
@@ -92,7 +92,7 @@ typedef union D_format {
   };
   PPC64Instr instruction;
 } D_form_t;
-static_assert(sizeof(D_format) == sizeof(uint32_t), "D_format_t size != 4");
+static_assert(sizeof(D_format) == sizeof(uint32_t), "D_form_t size != 4");
 
 typedef union I_format {
   struct {
@@ -103,7 +103,7 @@ typedef union I_format {
   };
   PPC64Instr instruction;
 } I_form_t;
-static_assert(sizeof(I_format) == sizeof(uint32_t), "I_format_t size != 4");
+static_assert(sizeof(I_format) == sizeof(uint32_t), "I_form_t size != 4");
 
 typedef union B_format {
   struct {
@@ -116,7 +116,7 @@ typedef union B_format {
   };
   PPC64Instr instruction;
 } B_form_t;
-static_assert(sizeof(B_format) == sizeof(uint32_t), "B_format_t size != 4");
+static_assert(sizeof(B_format) == sizeof(uint32_t), "B_form_t size != 4");
 
 typedef union SC_format {
   struct {
@@ -130,7 +130,7 @@ typedef union SC_format {
   };
   PPC64Instr instruction;
 } SC_form_t;
-static_assert(sizeof(SC_format) == sizeof(uint32_t), "SC_format_t size != 4");
+static_assert(sizeof(SC_format) == sizeof(uint32_t), "SC_form_t size != 4");
 
 typedef union DS_format {
   struct {
@@ -142,7 +142,7 @@ typedef union DS_format {
   };
   PPC64Instr instruction;
 } DS_form_t;
-static_assert(sizeof(DS_format) == sizeof(uint32_t), "DS_format_t size != 4");
+static_assert(sizeof(DS_format) == sizeof(uint32_t), "DS_form_t size != 4");
 
 typedef union DQ_format {
   struct {
@@ -154,7 +154,7 @@ typedef union DQ_format {
   };
   PPC64Instr instruction;
 } DQ_form_t;
-static_assert(sizeof(DQ_format) == sizeof(uint32_t), "DQ_format_t size != 4");
+static_assert(sizeof(DQ_format) == sizeof(uint32_t), "DQ_form_t size != 4");
 
 typedef union XL_form {
   struct {
@@ -180,7 +180,7 @@ typedef union XFX_format {
   };
   PPC64Instr instruction;
 } XFX_form_t;
-static_assert(sizeof(XFX_format) == sizeof(uint32_t), "XFX_format_t size != 4");
+static_assert(sizeof(XFX_format) == sizeof(uint32_t), "XFX_form_t size != 4");
 
 typedef union XFL_format {
   struct {
@@ -194,7 +194,7 @@ typedef union XFL_format {
   };
   PPC64Instr instruction;
 } XFL_form_t;
-static_assert(sizeof(XFL_format) == sizeof(uint32_t), "XFL_format_t size != 4");
+static_assert(sizeof(XFL_format) == sizeof(uint32_t), "XFL_form_t size != 4");
 
 typedef union XX1_format {
   struct {
@@ -207,7 +207,7 @@ typedef union XX1_format {
   };
   PPC64Instr instruction;
 } XX1_form_t;
-static_assert(sizeof(XX1_format) == sizeof(uint32_t), "XX1_format_t size != 4");
+static_assert(sizeof(XX1_format) == sizeof(uint32_t), "XX1_form_t size != 4");
 
 typedef union XX2_format {
   struct {
@@ -221,7 +221,7 @@ typedef union XX2_format {
   };
   PPC64Instr instruction;
 } XX2_form_t;
-static_assert(sizeof(XX2_format) == sizeof(uint32_t), "XX2_format_t size != 4");
+static_assert(sizeof(XX2_format) == sizeof(uint32_t), "XX2_form_t size != 4");
 
 typedef union XX3_format {
   struct {
@@ -236,7 +236,7 @@ typedef union XX3_format {
   };
   PPC64Instr instruction;
 } XX3_form_t;
-static_assert(sizeof(XX3_format) == sizeof(uint32_t), "XX3_format_t size != 4");
+static_assert(sizeof(XX3_format) == sizeof(uint32_t), "XX3_form_t size != 4");
 
 typedef union XX4_format {
   struct {
@@ -253,7 +253,7 @@ typedef union XX4_format {
   };
   PPC64Instr instruction;
 } XX4_form_t;
-static_assert(sizeof(XX4_format) == sizeof(uint32_t), "XX4_format_t size != 4");
+static_assert(sizeof(XX4_format) == sizeof(uint32_t), "XX4_form_t size != 4");
 
 typedef union XS_format {
   struct {
@@ -267,7 +267,7 @@ typedef union XS_format {
   };
   PPC64Instr instruction;
 } XS_form_t;
-static_assert(sizeof(XS_format) == sizeof(uint32_t), "XS_format_t size != 4");
+static_assert(sizeof(XS_format) == sizeof(uint32_t), "XS_form_t size != 4");
 
 typedef union A_format {
   struct {
@@ -281,7 +281,7 @@ typedef union A_format {
   };
   PPC64Instr instruction;
 } A_form_t;
-static_assert(sizeof(A_format) == sizeof(uint32_t), "A_format_t size != 4");
+static_assert(sizeof(A_format) == sizeof(uint32_t), "A_form_t size != 4");
 
 typedef union M_format {
   struct {
@@ -295,7 +295,7 @@ typedef union M_format {
   };
   PPC64Instr instruction;
 } M_form_t;
-static_assert(sizeof(M_format) == sizeof(uint32_t), "M_format_t size != 4");
+static_assert(sizeof(M_format) == sizeof(uint32_t), "M_form_t size != 4");
 
 typedef union MD_format {
   struct {
@@ -310,7 +310,7 @@ typedef union MD_format {
   };
   PPC64Instr instruction;
 } MD_form_t;
-static_assert(sizeof(MD_format) == sizeof(uint32_t), "MD_format_t size != 4");
+static_assert(sizeof(MD_format) == sizeof(uint32_t), "MD_form_t size != 4");
 
 typedef union MDS_format {
   struct {
@@ -324,7 +324,7 @@ typedef union MDS_format {
   };
   PPC64Instr instruction;
 } MDS_form_t;
-static_assert(sizeof(MDS_format) == sizeof(uint32_t), "MDS_format_t size != 4");
+static_assert(sizeof(MDS_format) == sizeof(uint32_t), "MDS_form_t size != 4");
 
 typedef union VA_format {
   struct {
@@ -337,7 +337,7 @@ typedef union VA_format {
   };
   PPC64Instr instruction;
 } VA_form_t;
-static_assert(sizeof(VA_format) == sizeof(uint32_t), "VA_format_t size != 4");
+static_assert(sizeof(VA_format) == sizeof(uint32_t), "VA_form_t size != 4");
 
 typedef union VC_format {
   struct {
@@ -350,7 +350,7 @@ typedef union VC_format {
   };
   PPC64Instr instruction;
 } VC_form_t;
-static_assert(sizeof(VC_format) == sizeof(uint32_t), "VC_format_t size != 4");
+static_assert(sizeof(VC_format) == sizeof(uint32_t), "VC_form_t size != 4");
 
 typedef union VX_format {
   struct {
@@ -362,7 +362,7 @@ typedef union VX_format {
   };
   PPC64Instr instruction;
 } VX_form_t;
-static_assert(sizeof(VX_format) == sizeof(uint32_t), "VX_format_t size != 4");
+static_assert(sizeof(VX_format) == sizeof(uint32_t), "VX_form_t size != 4");
 
 typedef union EVX_format {
   struct {
@@ -374,7 +374,7 @@ typedef union EVX_format {
   };
   PPC64Instr instruction;
 } EVX_form_t;
-static_assert(sizeof(EVX_format) == sizeof(uint32_t), "EVX_format_t size != 4");
+static_assert(sizeof(EVX_format) == sizeof(uint32_t), "EVX_form_t size != 4");
 
 typedef union EVS_format {
   struct {
@@ -387,7 +387,7 @@ typedef union EVS_format {
   };
   PPC64Instr instruction;
 } EVS_form_t;
-static_assert(sizeof(EVS_format) == sizeof(uint32_t), "EVS_format_t size != 4");
+static_assert(sizeof(EVS_format) == sizeof(uint32_t), "EVS_form_t size != 4");
 
 typedef union Z22_format {
   struct {
@@ -396,7 +396,7 @@ typedef union Z22_format {
   };
   PPC64Instr instruction;
 } Z22_form_t;
-static_assert(sizeof(Z22_format) == sizeof(uint32_t), "Z22_format_t size != 4");
+static_assert(sizeof(Z22_format) == sizeof(uint32_t), "Z22_form_t size != 4");
 
 typedef union Z23_format {
   struct {
@@ -405,7 +405,7 @@ typedef union Z23_format {
   };
   PPC64Instr instruction;
 } Z23_form_t;
-static_assert(sizeof(Z23_format) == sizeof(uint32_t), "Z23_format_t size != 4");
+static_assert(sizeof(Z23_format) == sizeof(uint32_t), "Z23_form_t size != 4");
 
 } // namespace ppc64_asm
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -34,6 +34,10 @@ inline const unsigned char* UnitEmitter::bc() const {
 
 inline Offset UnitEmitter::bcPos() const {
   return m_bclen;
+}
+
+inline Offset UnitEmitter::offsetOf(const unsigned char* pc) const {
+  return pc - m_bc;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

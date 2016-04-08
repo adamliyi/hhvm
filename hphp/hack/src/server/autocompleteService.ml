@@ -141,8 +141,8 @@ let autocomplete_method is_static class_ id env cid ~is_method =
       Typing_visibility.is_visible env x.ce_visibility cid class_
     end results in
     SMap.iter begin fun x class_elt ->
-        add_result x (Phase.decl class_elt.ce_type)
-      end results
+      add_result x (Phase.decl class_elt.ce_type)
+    end results
   end
 
 let autocomplete_smethod = autocomplete_method true
@@ -354,7 +354,7 @@ let get_results funs classes =
       | Some e -> e
       | None ->
         let tcopt = TypecheckerOptions.permissive in
-        Typing_env.empty tcopt Relative_path.default
+        Typing_env.empty tcopt Relative_path.default ~droot:None
     in
     let results = List.map results begin fun x ->
       let env, ty = match x.ty with

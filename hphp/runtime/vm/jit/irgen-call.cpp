@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -14,6 +14,8 @@
    +----------------------------------------------------------------------+
 */
 #include "hphp/runtime/vm/jit/irgen-call.h"
+
+#include "hphp/runtime/base/stats.h"
 
 #include "hphp/runtime/vm/jit/func-effects.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
@@ -547,7 +549,7 @@ SSATmp* clsMethodCtx(IRGS& env, const Func* callee, const Class* cls) {
   if (mustBeStatic) {
     return ldCls(env, cns(env, cls->name()));
   }
-  if (env.irb->thisAvailable()) {
+  if (env.irb->fs().thisAvailable()) {
     // might not be a static call and $this is available, so we know it's
     // definitely not static
     assertx(curClass(env));
@@ -1036,14 +1038,6 @@ void emitFPassR(IRGS& env, int32_t argNum) {
   }
 
   implUnboxR(env);
-}
-
-void emitFPassM(IRGS& env, int32_t, int x) {
-  if (env.currentNormalizedInstruction->preppedByRef) {
-    emitVGetM(env, x);
-  } else {
-    emitCGetM(env, x);
-  }
 }
 
 void emitUnboxR(IRGS& env) { implUnboxR(env); }

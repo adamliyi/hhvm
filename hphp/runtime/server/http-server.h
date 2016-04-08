@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,9 +24,8 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class HttpServer : public Synchronizable, public TakeoverListener,
-                   public Server::ServerEventListener {
-public:
+struct HttpServer : Synchronizable, TakeoverListener,
+                    Server::ServerEventListener {
   static std::shared_ptr<HttpServer> Server;
   static time_t StartTime;
 
@@ -70,7 +69,6 @@ private:
   ServerPtr m_pageServer;
   ServerPtr m_adminServer;
   std::vector<std::unique_ptr<SatelliteServer>> m_satellites;
-  std::vector<std::unique_ptr<SatelliteServer>> m_danglings;
   AsyncFunc<HttpServer> m_watchDog;
 
   bool startServer(bool pageServer);

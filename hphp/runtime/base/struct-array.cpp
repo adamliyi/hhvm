@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -169,7 +169,7 @@ void StructArray::NvGetKey(const ArrayData* ad, TypedValue* out, ssize_t pos) {
   const auto structArray = asStructArray(ad);
 
   auto str = const_cast<StringData*>(structArray->shape()->keyForOffset(pos));
-  out->m_type = KindOfStaticString;
+  out->m_type = KindOfPersistentString;
   out->m_data.pstr = str;
 }
 
@@ -543,6 +543,12 @@ ArrayData* StructArray::Dequeue(ArrayData* ad, Variant& value) {
 
 ArrayData* StructArray::Prepend(ArrayData* ad, const Variant& v, bool copy) {
   return MixedArray::Prepend(ToMixed(asStructArray(ad)), v, copy);
+}
+
+ArrayData* StructArray::ToDict(ArrayData* ad) {
+  auto a = asStructArray(ad);
+  auto mixed = ad->cowCheck() ? ToMixedCopy(a) : ToMixed(a);
+  return MixedArray::ToDictInPlace(mixed);
 }
 
 void StructArray::Renumber(ArrayData* ad) {

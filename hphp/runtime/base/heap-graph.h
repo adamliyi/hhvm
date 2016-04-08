@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,44 +18,89 @@
 #define incl_HPHP_HEAP_GRAPH_H_
 
 #include <vector>
+#include <cstdint>
 
 namespace HPHP {
 
 struct Header;
 
+// some labels for different kinds of root pointers
+enum class RootKind : uint8_t {
+  NotARoot,
+  RdsNormal,
+  RdsLocal,
+  RdsPersistent,
+  PhpStack,
+  ExecutionContext,
+  ThreadInfo,
+  CppStack,
+  CppTls,
+  ThreadLocalManager,
+  Extensions,
+  RootMaps,
+  SweepLists,
+  AsioSession,
+  GetServerNote,
+  EzcResources
+};
+
+// Graph representation of the heap. The heap consists of some objects
+// (Nodes), and directed pointers (Ptrs) from Node to Node. For each
+// node, we maintain two singly linked lists:
+//
+// 1. a list of pointers from this node to other nodes (out-ptrs)
+// 2. a list of pointers from other nodes to this node (in-ptrs).
+//
+// Each pointer is a member of both lists, except root pointers which
+// are only a member of a node's in-ptr list.
+//
+// Additionally, each Ptr records it's from and to nodes. This allows
+// traversing the heap graph in either direction (roots toward leaves,
+// or vice-versa). However, each list is singly linked; the order of
+// pointers in the least is meaningless and we don't need to support
+// deleting pointers (or nodes).
+
 struct HeapGraph {
-  enum PtrKind {
+  enum PtrKind : uint8_t {
     Counted, // exactly-marked, ref-counted, pointer
     Implicit, // exactly-marked but not counted
     Ambiguous, // any ambiguous pointer into a valid object
   };
   struct Node {
     const Header* h;
-    int succ, pred;
+    int first_out;
+    int first_in; // first out-ptr and in-ptr, respectively
   };
   struct Ptr {
-    int from, to, succ, pred; // if root, from == -1
-    PtrKind kind;
-    const char* seat;
+    int from, to; // node ids. if root, from == -1
+    int next_out, next_in; // from's next out-ptr, to's next in-ptr
+    PtrKind ptr_kind;
+    RootKind root_kind;
   };
   std::vector<Node> nodes;
   std::vector<Ptr> ptrs;
   std::vector<int> roots; // ptr ids. ptr.from = -1, ptr.to = object
 
   template<class F> void eachSuccNode(int n, F f) const {
-    eachSuccPtr(n, [&](int p) { f(ptrs[p].to); });
+    eachOutPtr(n, [&](int p) { f(ptrs[p].to); });
   }
 
-  template<class F> void eachSuccPtr(int n, F f) const {
-    for (int p = nodes[n].succ; p != -1; p = ptrs[p].succ) f(p);
+  template<class F> void eachOutPtr(int n, F f) const {
+    for (int p = nodes[n].first_out; p != -1; p = ptrs[p].next_out) {
+      f(p);
+    }
   }
 
-  template<class F> void eachPredPtr(int n, F f) const {
-    for (int p = nodes[n].pred; p != -1; p = ptrs[p].pred) f(p);
+  template<class F> void eachInPtr(int n, F f) const {
+    for (int p = nodes[n].first_in; p != -1; p = ptrs[p].next_in) {
+      f(p);
+    }
   }
 
   template<class F> void eachPred(int n, F f) const {
-    for (int p = nodes[n].pred; p != -1; p = ptrs[p].pred) f(ptrs[p]);
+    for (int p = nodes[n].first_in; p != -1; p = ptrs[p].next_in) {
+      f(ptrs[p]);
+    }
   }
 
   template<class F> void eachRoot(F f) const {
@@ -69,11 +114,15 @@ struct HeapCycles {
   std::vector<NodeList> live_cycles, leaked_cycles;
 };
 
+// descriptors indexable by RootKind
+extern const char* root_kind_names[];
+
 // Make a snapshot of the heap. It will contain pointers to objects
 // in the heap so their properties or contents can be inspected.
 // With great power comes great responsibility; if you invoke anything
 // that frees or moves objects, pointers in this snapshot will be stale.
-HeapGraph makeHeapGraph();
+// if include_free is true, include free blocks, allowing dangling pointers
+HeapGraph makeHeapGraph(bool include_free = false);
 
 // Analyze the graph for cycles, then TRACE interesting things about cycles.
 void printHeapReport(const HeapGraph&, const char* phase);

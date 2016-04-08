@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -81,14 +81,7 @@ Type setOpResult(Type locType, Type valType, SetOpOp op) {
 }
 
 uint32_t localInputId(const NormalizedInstruction& inst) {
-  switch (inst.op()) {
-    case OpSetWithRefLM:
-    case OpFPassL:
-      return inst.imm[1].u_LA;
-
-    default:
-      return inst.imm[0].u_LA;
-  }
+  return inst.imm[localImmIdx(inst.op())].u_LA;
 }
 
 folly::Optional<Type> interpOutputType(IRGS& env,
@@ -234,21 +227,6 @@ interpOutputLocals(IRGS& env,
       smashesAllLocals = true;
       break;
 
-    case OpFPassM:
-      switch (inst.immVec.locationCode()) {
-      case LL:
-      case LNL:
-      case LNC:
-        // FPassM may or may not affect local types, depending on whether it is
-        // passing to a parameter that is by reference.  If we're InterpOne'ing
-        // it, just assume it might be by reference and smash all the locals.
-        smashesAllLocals = true;
-        break;
-      default:
-        break;
-      }
-      break;
-
     case OpSetOpL:
     case OpIncDecL: {
       assertx(pushedType.hasValue());
@@ -288,75 +266,23 @@ interpOutputLocals(IRGS& env,
       setImmLocType(0, TUninit);
       break;
 
-    // New minstrs are handled extremely conservatively for now.
-    case OpDimL:
-    case OpDimC:
-    case OpDimInt:
-    case OpDimStr:
-      if (inst.imm[2].u_OA & mDefine) smashesAllLocals = true;
+    // New minstrs are handled extremely conservatively.
+    case OpQueryM:
       break;
-    case OpDimNewElem:
+    case OpDim:
       if (inst.imm[0].u_OA & mDefine) smashesAllLocals = true;
       break;
-    case OpSetML:
-    case OpSetMC:
-    case OpSetMInt:
-    case OpSetMStr:
-    case OpSetMNewElem:
-      smashesAllLocals = true;
-      break;
-
+    case OpFPassDim:
+    case OpFPassM:
+    case OpVGetM:
     case OpSetM:
+    case OpIncDecM:
     case OpSetOpM:
     case OpBindM:
-    case OpVGetM:
-    case OpSetWithRefLM:
-    case OpSetWithRefRM:
     case OpUnsetM:
-    case OpIncDecM:
-      switch (inst.immVec.locationCode()) {
-        case LL: {
-          auto const& mii = getMInstrInfo(inst.mInstrOp());
-          auto const& base = inst.inputs[mii.valCount()];
-          assertx(base.space == Location::Local);
-
-          // MInstrEffects expects to be used in the context of a normally
-          // translated instruction, not an interpOne. The two important
-          // differences are that the base is normally a PtrTo* and we need to
-          // supply an IR opcode representing the operation. SetWithRefElem is
-          // used instead of SetElem because SetElem makes a few assumptions
-          // about side exits that interpOne won't do.
-          auto const baseType = env.irb->localType(
-            base.offset, DataTypeSpecific
-          ).ptr(Ptr::Frame);
-          auto const isUnset = inst.op() == OpUnsetM;
-          auto const isProp = mcodeIsProp(inst.immVecM[0]);
-
-          if (isUnset && isProp) break;
-
-          // NullSafe (Q) props don't change the types of locals.
-          if (inst.immVecM[0] == MQT) break;
-
-          auto op = isProp ? SetProp : isUnset ? UnsetElem : SetWithRefElem;
-          MInstrEffects effects(op, baseType);
-          if (effects.baseValChanged) {
-            auto const ty = effects.baseType.deref();
-            assertx((ty <= TCell ||
-                    ty <= TBoxedCell) ||
-                    curFunc(env)->isPseudoMain());
-            setLocType(base.offset, handleBoxiness(ty, ty));
-          }
-          break;
-        }
-
-        case LNL:
-        case LNC:
-          smashesAllLocals = true;
-          break;
-
-        default:
-          break;
-      }
+    case OpSetWithRefLML:
+    case OpSetWithRefRML:
+      smashesAllLocals = true;
       break;
 
     case OpMIterInitK:

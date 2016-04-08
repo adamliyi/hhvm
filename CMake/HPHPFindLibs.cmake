@@ -265,6 +265,11 @@ if (GOOGLE_CPU_PROFILER_ENABLED)
   add_definitions(-DGOOGLE_CPU_PROFILER=1)
 endif()
 
+# HHProf
+if (JEMALLOC_ENABLED AND ENABLE_HHPROF)
+  add_definitions(-DENABLE_HHPROF=1)
+endif()
+
 # tbb libs
 find_package(TBB REQUIRED)
 if (${TBB_INTERFACE_VERSION} LESS 5005)
@@ -341,13 +346,6 @@ if (NOT WINDOWS)
     add_definitions("-DHAVE_ELF_GETSHDRSTRNDX")
   endif()
 endif()
-
-# LLVM. Disabled in OSS for now: t5056266
-# find_package(LLVM)
-# if (LIBLLVM_INCLUDE_DIR)
-#   include_directories(LIBLLVM_INCLUDE_DIR)
-#   add_definitions("-DUSE_LLVM")
-# endif()
 
 FIND_LIBRARY(CRYPT_LIB NAMES xcrypt crypt crypto)
 if (LINUX OR FREEBSD)
@@ -561,10 +559,6 @@ macro(hphp_link target)
   if (NOT WINDOWS)
     target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
     target_link_libraries(${target} ${LIBELF_LIBRARIES})
-  endif()
-
-  if (LIBLLVM_LIBRARY)
-    target_link_libraries(${target} ${LIBLLVM_LIBRARY})
   endif()
 
   if (LINUX)

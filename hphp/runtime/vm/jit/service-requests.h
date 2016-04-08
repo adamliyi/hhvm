@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -33,6 +33,8 @@ namespace HPHP {
 struct ActRec;
 
 namespace jit {
+
+struct CGMeta;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -215,11 +217,12 @@ TCA emit_ephemeral(CodeBlock& cb,
 /*
  * Helpers for emitting specific service requests.
  */
-TCA emit_bindjmp_stub(CodeBlock& cb, FPInvOffset spOff,
+TCA emit_bindjmp_stub(CodeBlock& cb, CGMeta& fixups, FPInvOffset spOff,
                       TCA jmp, SrcKey target, TransFlags trflags);
-TCA emit_bindjcc1st_stub(CodeBlock& cb, FPInvOffset spOff,
-                         TCA jcc, SrcKey taken, SrcKey next, ConditionCode cc);
-TCA emit_bindaddr_stub(CodeBlock& cb, FPInvOffset spOff,
+TCA emit_bindjcc1st_stub(CodeBlock& cb, CGMeta& fixups,
+                         FPInvOffset spOff, TCA jcc, SrcKey taken, SrcKey next,
+                         ConditionCode cc);
+TCA emit_bindaddr_stub(CodeBlock& cb, CGMeta& fixups, FPInvOffset spOff,
                        TCA* addr, SrcKey target, TransFlags trflags);
 TCA emit_retranslate_stub(CodeBlock& cb, FPInvOffset spOff,
                           SrcKey target, TransFlags trflags);
@@ -292,21 +295,7 @@ static_assert(sizeof(ReqInfo) == 0x30,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-} // svcreq
-
-///////////////////////////////////////////////////////////////////////////////
-
-/*
- * Service request assembly stub.
- *
- * Called by translated code before a service request to pack argument
- * registers into a ReqInfo and perform some other bookkeeping tasks.
- */
-extern "C" void handleSRHelper();
-
-///////////////////////////////////////////////////////////////////////////////
-
-}}
+}}}
 
 #include "hphp/runtime/vm/jit/service-requests-inl.h"
 

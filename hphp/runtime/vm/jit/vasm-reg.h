@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -37,14 +37,14 @@ struct VscaledDisp;
  * XMM, or virtual register.
  */
 struct Vreg {
-  static const unsigned kNumGP{PhysReg::kSIMDOffset}; // 33
-  static const unsigned kNumXMM{30};
-  static const unsigned kNumSF{1};
-  static const unsigned G0{0};
-  static const unsigned X0{kNumGP};
-  static const unsigned S0{X0+kNumXMM};
-  static const unsigned V0{S0+kNumSF};
-  static const unsigned kInvalidReg{0xffffffffU};
+  static constexpr unsigned kNumGP = PhysReg::kNumGP;
+  static constexpr unsigned kNumXMM = PhysReg::kNumSIMD;
+  static constexpr unsigned kNumSF = PhysReg::kNumSF;
+  static constexpr unsigned G0 = PhysReg::kGPOffset;
+  static constexpr unsigned X0 = PhysReg::kSIMDOffset;
+  static constexpr unsigned S0 = PhysReg::kSFOffset;
+  static constexpr unsigned V0 = PhysReg::kMaxRegs;
+  static constexpr unsigned kInvalidReg = 0xffffffffU;
 
   /*
    * Constructors.
@@ -265,7 +265,7 @@ struct Vptr {
   Vreg64 index;     // optional
   uint8_t scale;    // 1,2,4,8
   Segment seg{DS};  // DS, FS or GS
-  intptr_t disp;    // big enough to fit a MemoryRef.disp type
+  int32_t disp;
 };
 
 Vptr operator+(Vptr lhs, int32_t d);

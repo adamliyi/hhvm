@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -37,13 +37,11 @@ namespace HPHP { namespace jit {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void addDbgGuardImpl(SrcKey sk, SrcRec* sr) {
+void addDbgGuardImpl(SrcKey sk, SrcRec* sr, CodeBlock& cb, CGMeta& fixups) {
   TCA realCode = sr->getTopTranslation();
   if (!realCode) return;  // No translations, nothing to do.
 
-  auto& cb = mcg->code.main();
-
-  auto const dbgGuard = vwrap(cb, [&] (Vout& v) {
+  auto const dbgGuard = vwrap(cb, fixups, [&] (Vout& v) {
     if (!sk.resumed()) {
       auto const off = sr->nonResumedSPOff();
       v << lea{rvmfp()[-cellsToBytes(off.offset)], rvmsp()};
@@ -65,14 +63,14 @@ void addDbgGuardImpl(SrcKey sk, SrcRec* sr) {
     v << loadb{tinfo[dbgOff], attached};
     v << testbi{static_cast<int8_t>(0xffu), attached, sf};
 
-    v << jcci{CC_NZ, sf, done, mcg->tx().uniqueStubs.interpHelper};
+    v << jcci{CC_NZ, sf, done, mcg->ustubs().interpHelper};
 
     v = done;
     v << fallthru{};
   }, CodeKind::Helper);
 
   // Emit a jump to the actual code.
-  auto const dbgBranchGuardSrc = emitSmashableJmp(cb, realCode);
+  auto const dbgBranchGuardSrc = emitSmashableJmp(cb, fixups, realCode);
 
   // Add the guard to the SrcRec.
   sr->addDebuggerGuard(dbgGuard, dbgBranchGuardSrc);

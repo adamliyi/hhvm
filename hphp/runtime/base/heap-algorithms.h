@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -185,7 +185,7 @@ void dfs_ptrs(
       marks.set(n);
       pre(n, ptr);
       work.push_back({Action::Finish, n});
-      g.eachSuccPtr(n, [&](int p) {
+      g.eachOutPtr(n, [&](int p) {
         work.push_back({Action::Explore, p});
       });
     }

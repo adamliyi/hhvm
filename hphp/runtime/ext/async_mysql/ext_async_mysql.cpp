@@ -93,8 +93,7 @@ static std::shared_ptr<am::AsyncMysqlClient> getDefaultClient() {
 ///////////////////////////////////////////////////////////////////////////
 // AsyncMysqlClientStats
 
-class AsyncMysqlClientStats {
- public:
+struct AsyncMysqlClientStats {
   AsyncMysqlClientStats& operator=(const AsyncMysqlClientStats& other) {
     m_values = other.m_values;
     return *this;
@@ -136,23 +135,23 @@ double HHVM_METHOD(AsyncMysqlClientStats, callbackDelayMicrosAvg) {
 //////////////////////////////////////////////////////////////////////////////
 // MySSLContextProvider
 MySSLContextProvider::MySSLContextProvider(
-    std::shared_ptr<am::SSLOptionsProviderBase> provider)
+    std::unique_ptr<am::SSLOptionsProviderBase> provider)
     : m_provider(std::move(provider)) {}
 
 Object MySSLContextProvider::newInstance(
-    std::shared_ptr<am::SSLOptionsProviderBase> ssl_provider) {
+    std::unique_ptr<am::SSLOptionsProviderBase> ssl_provider) {
   Object obj{getClass()};
   Native::data<MySSLContextProvider>(obj)
       ->setSSLProvider(std::move(ssl_provider));
   return obj;
 }
 
-std::shared_ptr<am::SSLOptionsProviderBase>&
-MySSLContextProvider::getSSLProvider() {
-  return m_provider;
+std::unique_ptr<am::SSLOptionsProviderBase>
+MySSLContextProvider::stealSSLProvider() {
+  return std::move(m_provider);
 }
 void MySSLContextProvider::setSSLProvider(
-    std::shared_ptr<am::SSLOptionsProviderBase> ssl_provider) {
+    std::unique_ptr<am::SSLOptionsProviderBase> ssl_provider) {
   m_provider = std::move(ssl_provider);
 }
 
@@ -191,7 +190,7 @@ Object HHVM_STATIC_METHOD(AsyncMysqlClient,
   if (!sslContextProvider.isNull()) {
     auto* mysslContextProvider =
         Native::data<MySSLContextProvider>(sslContextProvider.toObject());
-    op->setSSLOptionsProviderBase(mysslContextProvider->getSSLProvider().get());
+    op->setSSLOptionsProviderBase(mysslContextProvider->stealSSLProvider());
   }
 
   if (timeout_micros < 0) {
@@ -512,7 +511,7 @@ Object HHVM_METHOD(AsyncMysqlConnection, queryf,
       const Object& obj = arg.asCObjRef();
       if (obj->isCollection() && isVectorCollection(obj->collectionType())) {
         std::vector<am::QueryArgument> out;
-        out.reserve(getCollectionSize(obj.get()));
+        out.reserve(collections::getSize(obj.get()));
         for (ArrayIter listIter(arg); listIter; ++listIter) {
           const Variant& item = listIter.second();
           if (scalarPush(out, item)) {
@@ -608,6 +607,26 @@ String HHVM_METHOD(AsyncMysqlConnection, serverInfo) {
   String ret = "";
   if (data->m_conn && !data->m_closed) {
     ret = data->m_conn->serverInfo();
+  }
+  return ret;
+}
+
+bool HHVM_METHOD(AsyncMysqlConnection, sslSessionReused) {
+  auto* data = Native::data<AsyncMysqlConnection>(this_);
+
+  bool ret = false;
+  if (data->m_conn && !data->m_closed) {
+    ret = data->m_conn->sslSessionReused();
+  }
+  return ret;
+}
+
+bool HHVM_METHOD(AsyncMysqlConnection, isSSL) {
+  auto* data = Native::data<AsyncMysqlConnection>(this_);
+
+  bool ret = false;
+  if (data->m_conn && !data->m_closed) {
+    ret = data->m_conn->isSSL();
   }
   return ret;
 }
@@ -1022,7 +1041,7 @@ void throwAsyncMysqlException(const char* exception_type,
 
   Array params;
   params.append(std::move(error));
-  throw create_object(exception_type, params, true /* init */);
+  throw_object(exception_type, params, true /* init */);
 }
 
 void throwAsyncMysqlQueryException(const char* exception_type,
@@ -1038,7 +1057,7 @@ void throwAsyncMysqlQueryException(const char* exception_type,
 
   Array params;
   params.append(std::move(error));
-  throw create_object(exception_type, params, true /* init */);
+  throw_object(exception_type, params, true /* init */);
 }
 }
 
@@ -1427,8 +1446,7 @@ void HHVM_METHOD(AsyncMysqlRowIterator, rewind) {
 static const int64_t DISABLE_COPY_AND_SWEEP = Native::NDIFlags::NO_COPY |
   Native::NDIFlags::NO_SWEEP;
 
-static class AsyncMysqlExtension final : public Extension {
-public:
+static struct AsyncMysqlExtension final : Extension {
   AsyncMysqlExtension() : Extension("async_mysql") {}
   void moduleInit() override {
     REGISTER_CONSTANT(NOT_NULL_FLAG);
@@ -1495,6 +1513,8 @@ public:
     HHVM_ME(AsyncMysqlConnection, close);
     HHVM_ME(AsyncMysqlConnection, releaseConnection);
     HHVM_ME(AsyncMysqlConnection, serverInfo);
+    HHVM_ME(AsyncMysqlConnection, sslSessionReused);
+    HHVM_ME(AsyncMysqlConnection, isSSL);
     HHVM_ME(AsyncMysqlConnection, warningCount);
     HHVM_ME(AsyncMysqlConnection, host);
     HHVM_ME(AsyncMysqlConnection, port);

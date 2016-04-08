@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -52,7 +52,7 @@ struct StreamFilterRepository {
   }
 
   bool exists(const String& needle) const {
-    if (m_filters.exists(needle.toKey())) {
+    if (m_filters.exists(m_filters.convertKey(needle))) {
       return true;
     }
     /* Could not find exact match, now try wildcard match */
@@ -61,13 +61,14 @@ struct StreamFilterRepository {
       return false;
     }
     String wildcard = needle.substr(0, lastDotPos) + ".*";
-    return m_filters.exists(wildcard.toKey());
+    return m_filters.exists(m_filters.convertKey(wildcard));
   }
 
   Variant rvalAt(const String& needle) const {
     /* First try to find exact match, afterwards try wildcard matches */
     int lastDotPos = needle.rfind('.');
-    if (String::npos == lastDotPos || m_filters.exists(needle.toKey())) {
+    if (String::npos == lastDotPos ||
+        m_filters.exists(m_filters.convertKey(needle))) {
       return m_filters.rvalAtRef(needle);
     }
     String wildcard = needle.substr(0, lastDotPos) + ".*";

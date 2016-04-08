@@ -9,7 +9,6 @@
  *)
 
 open Core
-open Utils
 
 module Reason = Typing_reason
 module SN = Naming_special_names
@@ -357,6 +356,20 @@ and class_elt = {
   ce_origin      : string;
 }
 
+(* The position is that of the hint in the `use` / `implements` AST node
+ * that causes a class to have this requirement applied to it. E.g.
+ *
+ * class Foo {}
+ *
+ * interface Bar {
+ *   require extends Foo; <- position of the decl ty
+ * }
+ *
+ * class Baz extends Foo implements Bar { <- position of the `implements`
+ * }
+ *)
+and requirement = Pos.t * decl ty
+
 and class_type = {
   tc_need_init           : bool;
   (* Whether the typechecker knows of all (non-interface) ancestors
@@ -381,7 +394,7 @@ and class_type = {
   (* This includes all the classes, interfaces and traits this class is
    * using. *)
   tc_ancestors           : decl ty SMap.t ;
-  tc_req_ancestors       : decl ty SMap.t;
+  tc_req_ancestors       : requirement list;
   tc_req_ancestors_extends : SSet.t; (* the extends of req_ancestors *)
   tc_extends             : SSet.t;
   tc_user_attributes     : Nast.user_attribute list;
@@ -398,6 +411,16 @@ and typeconst_type = {
 and enum_type = {
   te_base       : decl ty;
   te_constraint : decl ty option;
+}
+
+and typedef_visibility = Transparent | Opaque
+
+and typedef_type = {
+  td_pos: Pos.t;
+  td_vis: typedef_visibility;
+  td_tparams: tparam list;
+  td_constraint: decl ty option;
+  td_type: decl ty;
 }
 
 and tparam = Ast.variance * Ast.id * (Ast.constraint_kind * decl ty) option

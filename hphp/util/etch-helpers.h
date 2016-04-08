@@ -25,12 +25,10 @@
 #define ETCH_GET_ARG5     mov 0x28(%rsp), %r10
 #define ETCH_GET_ARG6     mov 0x30(%rsp), %r11
 #define ETCH_RET1         %rax
-#define ETCH_V_ONE        /*not used*/
-#define ETCH_R_ONE        /*not used*/
 /* VM Registers must match definition on abi-x64.h */
-#define ETCH_R_VM_FP      %rbp
-#define ETCH_R_VM_SP      %rbx
-#define ETCH_R_VM_TL      %r12
+#define ETCH_VMFP         %rbp
+#define ETCH_VMSP         %rbx
+#define ETCH_VMTL         %r12
 /* Service Request Registers must match svcreq_args list on abi-x64.cpp */
 #define ETCH_SVCREQ_REQ   %rdi
 #define ETCH_SVCREQ_STUB  %r10
@@ -61,12 +59,10 @@
 #define ETCH_GET_ARG5     /* not used */
 #define ETCH_GET_ARG6     /* not used */
 #define ETCH_RET1         %rax
-#define ETCH_V_ONE        /*not used*/
-#define ETCH_R_ONE        /*not used*/
 /* VM Registers must match definition on abi-x64.h */
-#define ETCH_R_VM_FP      %rbp
-#define ETCH_R_VM_SP      %rbx
-#define ETCH_R_VM_TL      %r12
+#define ETCH_VMFP         %rbp
+#define ETCH_VMSP         %rbx
+#define ETCH_VMTL         %r12
 /* Service Request Registers must match svcreq_args list on abi-x64.cpp */
 #define ETCH_SVCREQ_REQ   %rdi
 #define ETCH_SVCREQ_STUB  %r10
@@ -98,9 +94,10 @@
 /* VM Registers must match definition on abi-ppc64.h */
 #define ETCH_V_ONE        1
 #define ETCH_R_ONE        %r28
-#define ETCH_R_VM_FP      %r31
-#define ETCH_R_VM_SP      %r29
-#define ETCH_R_VM_TL      %r30
+#define ETCH_VMFP         %r31
+#define ETCH_VMSP         %r29
+#define ETCH_VMTL         %r30
+#define ETCH_SP           %r27
 /* Service Request Registers must match svcreq_args list on abi-ppc64.cpp */
 #define ETCH_SVCREQ_REQ   %r3
 #define ETCH_SVCREQ_STUB  %r8
@@ -131,12 +128,10 @@
 #define ETCH_GET_ARG5     /* not used */
 #define ETCH_GET_ARG6     /* not used */
 #define ETCH_RET1         %rax
-#define ETCH_V_ONE        /*not used*/
-#define ETCH_R_ONE        /*not used*/
 /* VM Registers must match definition on abi-x64.h */
-#define ETCH_R_VM_FP      %rbp
-#define ETCH_R_VM_SP      %rbx
-#define ETCH_R_VM_TL      %r12
+#define ETCH_VMFP         %rbp
+#define ETCH_VMSP         %rbx
+#define ETCH_VMTL         %r12
 /* Service Request Registers must match svcreq_args list on abi-x64.cpp */
 #define ETCH_SVCREQ_REQ   %rdi
 #define ETCH_SVCREQ_STUB  %r10

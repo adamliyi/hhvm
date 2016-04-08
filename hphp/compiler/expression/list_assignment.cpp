@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -65,6 +65,7 @@ using namespace HPHP;
 static ListAssignment::RHSKind GetRHSKind(ExpressionPtr rhs) {
   switch (rhs->getKindOf()) {
   case Construct::KindOfSimpleVariable:
+  case Construct::KindOfPipeVariable:
   case Construct::KindOfDynamicVariable:
   case Construct::KindOfArrayElementExpression:
   case Construct::KindOfObjectPropertyExpression:
@@ -106,6 +107,7 @@ static ListAssignment::RHSKind GetRHSKind(ExpressionPtr rhs) {
 
   case Construct::KindOfBinaryOpExpression: {
     auto b = static_pointer_cast<BinaryOpExpression>(rhs);
+    if (b->getOp() == T_PIPE) return GetRHSKind(b->getExp2());
     if (b->isAssignmentOp() ||
         b->getOp() == '+' ||
         b->getOp() == T_COLLECTION) {

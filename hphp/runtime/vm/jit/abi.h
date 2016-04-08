@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -91,8 +91,8 @@ inline RegSet cross_trace_regs_resumed()  { return vm_regs_with_sp(); }
 inline RegSet leave_trace_regs() { return vm_regs_with_sp(); }
 
 /*
- * Registers that are live during a PHP function call, between the caller and
- * the callee.
+ * Registers that are live between the caller and the callee when making a PHP
+ * function call.
  */
 inline RegSet php_call_regs() { return cross_trace_regs(); }
 

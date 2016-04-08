@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,10 +17,11 @@
 #ifndef incl_HPHP_JIT_IRLOWER_H_
 #define incl_HPHP_JIT_IRLOWER_H_
 
-#include "hphp/runtime/vm/jit/types.h"
+#include "hphp/runtime/vm/jit/code-cache.h"
 #include "hphp/runtime/vm/jit/state-vector.h"
-#include "hphp/runtime/vm/jit/vasm.h"
+#include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/vasm-reg.h"
+#include "hphp/runtime/vm/jit/vasm.h"
 
 namespace HPHP { namespace jit {
 
@@ -98,7 +99,8 @@ struct IRLS {
  * emit code into main/cold/frozen sections, allocate RDS and global data, and
  * add fixup metadata.
  */
-void genCode(IRUnit& unit, CodeKind kind = CodeKind::Trace);
+void genCode(const IRUnit& unit, CodeCache::View code, CGMeta& fixups,
+             CodeKind kind = CodeKind::Trace);
 
 ///////////////////////////////////////////////////////////////////////////////
 

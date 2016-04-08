@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -155,8 +155,8 @@ private:
     struct {
       FuncId m_funcID;
       uint32_t m_offset : 30;
-      bool m_prologue : 1;
-      bool m_resumed : 1;
+      uint32_t m_prologue : 1;
+      uint32_t m_resumed : 1;
     };
   };
 };

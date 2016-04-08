@@ -296,6 +296,12 @@ final class AsyncMysqlConnection {
    *           this, however, you can use it in combination with // UNSAFE
    *           if absolutely required. Use this at your own risk as it could
    *           open you up for SQL injection.
+   *  - `%Lx`  where `x` is one of `T`, `C`, `s`, `d`, or `f`, represents a list
+   *           of table names, column names, nullable strings, integers or
+   *           floats, respectively. Pass a `Vector` of values to have it
+   *           expanded into a comma-separated list. Parentheses are not
+   *           added automatically around the placeholder in the query string,
+   *           so be sure to add them if necessary.
    *
    * With the exception of `%Q`, any strings provided will be properly
    * escaped.
@@ -379,6 +385,29 @@ final class AsyncMysqlConnection {
    */
   <<__HipHopSpecific, __Native>>
   function serverInfo(): string;
+
+  /**
+   * Returns whether or not the current connection reused the SSL session
+   * from another SSL connection. The session is set by MySSLContextProvider.
+   * Some cases, the server can deny the session that was set and the handshake
+   * will create a new one, in those cases this function will return `false`.
+   * If this connections isn't SSL, `false` will be returned as well.
+   *
+   * @return - `true` if this is a SSL connection and the SSL session was
+   *           reused; `false` otherwise.
+   */
+  <<__HipHopSpecific, __Native>>
+  function sslSessionReused(): bool;
+
+
+  /**
+   * Returns whether or not the current connection was established as SSL based
+   * on client flag exchanged during handshake.
+   *
+   * @return - `true` if this is a SSL connection; `false` otherwise
+   */
+  <<__HipHopSpecific, __Native>>
+  function isSSL(): bool;
 
   /**
    * The number of errors, warnings, and notes returned during execution of

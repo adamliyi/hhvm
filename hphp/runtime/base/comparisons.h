@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -618,9 +618,15 @@ inline bool same(const String& v1, const StringData *v2) {
 }
 inline bool same(const String& v1, const String& v2) { return v1.same(v2); }
 inline bool same(const String& v1, const char* v2)  = delete;
-inline bool same(const String& v1, const Array& v2) { return v1.same(v2); }
-inline bool same(const String& v1, const Object& v2) { return v1.same(v2); }
-inline bool same(const String& v1, const Resource& v2) { return v1.same(v2); }
+inline bool same(const String& v1, const Array& v2) {
+  return same(v1.get(), v2);
+}
+inline bool same(const String& v1, const Object& v2) {
+  return same(v1.get(), v2);
+}
+inline bool same(const String& v1, const Resource& v2) {
+  return same(v1.get(), v2);
+}
 inline bool same(const String& v1, const Variant& v2) { return same(v2, v1); }
 
 inline bool equal(const String& v1, bool    v2) { return equal(v2, v1); }
@@ -632,9 +638,15 @@ inline bool equal(const String& v1, const StringData *v2) {
 }
 inline bool equal(const String& v1, const String& v2) { return v1.equal(v2); }
 inline bool equal(const String& v1, const char* v2) = delete;
-inline bool equal(const String& v1, const Array& v2) { return v1.equal(v2); }
-inline bool equal(const String& v1, const Object& v2) { return v1.equal(v2); }
-inline bool equal(const String& v1, const Resource& v2) { return v1.equal(v2); }
+inline bool equal(const String& v1, const Array& v2) {
+  return equal(v1.get(), v2);
+}
+inline bool equal(const String& v1, const Object& v2) {
+  return equal(v1.get(), v2);
+}
+inline bool equal(const String& v1, const Resource& v2) {
+  return equal(v1.get(), v2);
+}
 inline bool equal(const String& v1, const Variant& v2) { return equal(v2, v1); }
 
 inline bool less(const String& v1, bool    v2) { return more(v2, v1); }
@@ -646,9 +658,15 @@ inline bool less(const String& v1, const StringData *v2) {
 }
 inline bool less(const String& v1, const String& v2) { return v1.less(v2); }
 inline bool less(const String& v1, const char* v2)  = delete;
-inline bool less(const String& v1, const Array& v2) { return v1.less(v2); }
-inline bool less(const String& v1, const Object& v2) { return v1.less(v2); }
-inline bool less(const String& v1, const Resource& v2) { return v1.less(v2); }
+inline bool less(const String& v1, const Array& v2) {
+  return less(v1.get(), v2);
+}
+inline bool less(const String& v1, const Object& v2) {
+  return less(v1.get(), v2);
+}
+inline bool less(const String& v1, const Resource& v2) {
+  return less(v1.get(), v2);
+}
 inline bool less(const String& v1, const Variant& v2) { return more(v2, v1); }
 
 inline bool more(const String& v1, bool    v2) { return less(v2, v1); }
@@ -660,9 +678,15 @@ inline bool more(const String& v1, const StringData *v2) {
 }
 inline bool more(const String& v1, const String& v2) { return v1.more(v2); }
 inline bool more(const String& v1, const char* v2)  = delete;
-inline bool more(const String& v1, const Array& v2) { return v1.more(v2); }
-inline bool more(const String& v1, const Object& v2) { return v1.more(v2); }
-inline bool more(const String& v1, const Resource& v2) { return v1.more(v2); }
+inline bool more(const String& v1, const Array& v2) {
+  return more(v1.get(), v2);
+}
+inline bool more(const String& v1, const Object& v2) {
+  return more(v1.get(), v2);
+}
+inline bool more(const String& v1, const Resource& v2) {
+  return more(v1.get(), v2);
+}
 inline bool more(const String& v1, const Variant& v2) { return less(v2, v1); }
 
 ///////////////////////////////////////////////////////////////////////////////

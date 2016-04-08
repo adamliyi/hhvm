@@ -9,13 +9,28 @@
  *
  *)
 
-open Utils
-
 (*****************************************************************************)
 (* Comments accumulator. *)
 (*****************************************************************************)
 
 let (comment_list: (Pos.t * string) list ref) = ref []
+let include_line_comments: bool ref = ref false
+
+let save_comment file lexbuf = function
+  | None -> ()
+  | Some buf ->
+    comment_list := (Pos.make file lexbuf, Buffer.contents buf) :: !comment_list
+
+let opt_buffer_add_string opt_buf str =
+  match opt_buf with
+  | None -> ()
+  | Some buf -> Buffer.add_string buf str
+
+let create_line_comment_buf () =
+  if !include_line_comments then
+    Some (Buffer.create 256)
+  else
+    None
 
 (*****************************************************************************)
 (* Fixmes accumulators *)
@@ -108,7 +123,9 @@ type token =
   | Trequired
   | Tellipsis
   | Tdollar
+  | Tdollardollar
   | Tpercent
+  | Tpipe
   | Teof
   | Tquote
   | Tdquote
@@ -222,7 +239,9 @@ let token_to_string = function
   | Tunderscore   -> "_"
   | Tellipsis     -> "..."
   | Tdollar       -> "$"
+  | Tdollardollar -> "$$"
   | Tpercent      -> "%"
+  | Tpipe         -> "|>"
   | Tquote        -> "'"
   | Tdquote       -> "\""
   | Tclose_php    -> "?>"
@@ -273,7 +292,8 @@ let word = ('\\' | word_part)+ (* Namespaces *)
 let xhpname = ('%')? varname ([':' '-'] varname)*
 let otag = '<' ['a'-'z''A'-'Z'] (alphanumeric | ':' | '-')*
 let ctag = '<' '/' (alphanumeric | ':' | '-')+ '>'
-let lvar = '$' varname
+(** More than one $ is PHP's variable variable feature. *)
+let lvar = ['$']+ varname
 let ws = [' ' '\t' '\r' '\x0c']
 let hex = digit | ['a'-'f''A'-'F']
 let hex_number = '0' 'x' hex+
@@ -314,8 +334,10 @@ rule token file = parse
                          comment_list := comment buf file lexbuf :: !comment_list;
                          token file lexbuf
                        }
-  | "//"               { line_comment lexbuf; token file lexbuf }
-  | "#"                { line_comment lexbuf; token file lexbuf }
+  | "//"               { line_comment (create_line_comment_buf ()) file lexbuf;
+                         token file lexbuf }
+  | "#"                { line_comment (create_line_comment_buf ()) file lexbuf;
+                         token file lexbuf }
   | '\"'               { Tdquote      }
   | '''                { Tquote       }
   | "<<<"              { Theredoc     }
@@ -326,6 +348,7 @@ rule token file = parse
   | word               { Tword        }
   | lvar               { Tlvar        }
   | '$'                { Tdollar      }
+  | "$$"               { Tdollardollar }
   | '`'                { Tbacktick    }
   | "<?php"            { Tphp         }
   | "<?hh"             { Thh          }
@@ -361,6 +384,7 @@ rule token file = parse
   | '/'                { Tslash       }
   | '^'                { Txor         }
   | '%'                { Tpercent     }
+  | "|>"               { Tpipe        }
   | '{'                { Tlcb         }
   | '}'                { Trcb         }
   | '['                { Tlb          }
@@ -398,8 +422,10 @@ and xhpname file = parse
   | "/*"               { ignore (comment (Buffer.create 256) file lexbuf);
                          xhpname file lexbuf
                        }
-  | "//"               { line_comment lexbuf; xhpname file lexbuf }
-  | "#"                { line_comment lexbuf; xhpname file lexbuf }
+  | "//"               { line_comment (create_line_comment_buf ()) file lexbuf;
+                         xhpname file lexbuf }
+  | "#"                { line_comment (create_line_comment_buf ()) file lexbuf;
+                         xhpname file lexbuf }
   | word               { Txhpname    }
   | xhpname            { Txhpname    }
   | _                  { Terror      }
@@ -433,7 +459,8 @@ and xhpattr file = parse
   | "/*"               { ignore (comment (Buffer.create 256) file lexbuf);
                          xhpattr file lexbuf
                        }
-  | "//"               { line_comment lexbuf; xhpattr file lexbuf }
+  | "//"               { line_comment (create_line_comment_buf ()) file lexbuf;
+                         xhpattr file lexbuf }
   | '\n'               { Lexing.new_line lexbuf; xhpattr file lexbuf }
   | '<'                { Tlt         }
   | '>'                { Tgt         }
@@ -515,10 +542,13 @@ and fixme_state2 err_nbr file = parse
                        }
   | _                  { fixme_state2 err_nbr file lexbuf }
 
-and line_comment = parse
-  | eof                { () }
-  | '\n'               { Lexing.new_line lexbuf }
-  | _                  { line_comment lexbuf }
+and line_comment opt_buf file = parse
+  | eof                { save_comment file lexbuf opt_buf }
+  | '\n'               { opt_buffer_add_string opt_buf "\n";
+                         save_comment file lexbuf opt_buf;
+                         Lexing.new_line lexbuf }
+  | _                  { opt_buffer_add_string opt_buf (Lexing.lexeme lexbuf);
+                         line_comment opt_buf file lexbuf }
 
 and xhp_comment file = parse
   | eof                { let pos = Pos.make file lexbuf in
@@ -536,7 +566,8 @@ and gt_or_comma file = parse
   | "/*"               { ignore (comment (Buffer.create 256) file lexbuf);
                          gt_or_comma file lexbuf
                        }
-  | "//"               { line_comment lexbuf; gt_or_comma file lexbuf }
+  | "//"               { line_comment (create_line_comment_buf ()) file lexbuf;
+                         gt_or_comma file lexbuf }
   | '\n'               { Lexing.new_line lexbuf; gt_or_comma file lexbuf }
   | '>'                { Tgt  }
   | ','                { Tcomma  }
@@ -584,11 +615,13 @@ and header file = parse
   | eof                         { `error }
   | ws+                         { header file lexbuf }
   | '\n'                        { Lexing.new_line lexbuf; header file lexbuf }
-  | "//"                        { line_comment lexbuf; header file lexbuf }
+  | "//"                        { line_comment (create_line_comment_buf ()) file lexbuf;
+                                  header file lexbuf }
   | "/*"                        { ignore (comment (Buffer.create 256) file lexbuf);
                                   header file lexbuf
                                 }
-  | "#"                         { line_comment lexbuf; header file lexbuf }
+  | "#"                         { line_comment (create_line_comment_buf ()) file lexbuf;
+                                  header file lexbuf }
   | "<?hh"                      { `default_mode }
   | "<?hh" ws* "//"             { `explicit_mode }
   | "<?php" ws* "//" ws* "decl" { `php_decl_mode }
@@ -642,6 +675,7 @@ and format_token = parse
   | word_part          { Tword         }
   | lvar               { Tlvar         }
   | '$'                { Tdollar       }
+  | "$$"               { Tdollardollar }
   | '`'                { Tbacktick     }
   | "<?php"            { Tphp          }
   | "<?hh"             { Thh           }
@@ -678,6 +712,7 @@ and format_token = parse
   | '\\'               { Tbslash       }
   | '^'                { Txor          }
   | '%'                { Tpercent      }
+  | "|>"               { Tpipe         }
   | '{'                { Tlcb          }
   | '}'                { Trcb          }
   | '['                { Tlb           }

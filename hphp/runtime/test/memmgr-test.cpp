@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -50,6 +50,24 @@ TEST(MemoryManager, RootMaps) {
     MM().addRoot(vec);
     ASSERT_TRUE(MM().removeRoot(vec));
   }
+}
+
+static void allocAndJoin(size_t size, bool free) {
+  std::thread thread([&]() {
+      MemoryManager::TlsWrapper::getCheck();
+      auto p = MM().objMalloc(size);
+      if (free) MM().objFree(p, size);
+    });
+  thread.join();
+}
+
+TEST(MemoryManager, OnThreadExit) {
+  allocAndJoin(42, true);
+  allocAndJoin(kMaxSmallSize + 1, true);
+#ifdef DEBUG
+  EXPECT_DEATH(allocAndJoin(42, false), "");
+  EXPECT_DEATH(allocAndJoin(kMaxSmallSize + 1, false), "");
+#endif
 }
 
 }

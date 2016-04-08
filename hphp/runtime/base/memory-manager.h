@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -27,14 +27,16 @@
 
 #include "hphp/util/alloc.h" // must be included before USE_JEMALLOC is used
 #include "hphp/util/compilation-flags.h"
-#include "hphp/util/trace.h"
 #include "hphp/util/thread-local.h"
+#include "hphp/util/trace.h"
 
 #include "hphp/runtime/base/memory-usage-stats.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/sweepable.h"
 #include "hphp/runtime/base/header-kind.h"
+#include "hphp/runtime/base/req-containers.h"
+#include "hphp/runtime/base/req-malloc.h"
 #include "hphp/runtime/base/req-ptr.h"
 
 // used for mmapping contiguous heap space
@@ -47,7 +49,10 @@ struct APCLocalArray;
 struct MemoryManager;
 struct ObjectData;
 struct ResourceData;
-struct ExtendedException;
+
+namespace req {
+struct root_handle;
+}
 
 //////////////////////////////////////////////////////////////////////
 
@@ -56,7 +61,7 @@ struct ExtendedException;
  * called MemoryManager.
  *
  * The object may be accessed with MM(), but higher-level apis are
- * also provided below.
+ * also provided.
  *
  * The MemoryManager serves the following funcitons in hhvm:
  *
@@ -71,125 +76,6 @@ struct ExtendedException;
  *     compiled with jemalloc.)
  */
 MemoryManager& MM();
-
-//////////////////////////////////////////////////////////////////////
-
-/*
- * req::malloc api for request-scoped memory
- *
- * This is the most generic entry point to the request local
- * allocator.  If you easily know the size of the allocation at free
- * time, it might be more efficient to use MM() apis directly.
- *
- * These functions behave like C's malloc/free, but get memory from
- * the current thread's MemoryManager instance.  At request-end, any
- * un-freed memory is explicitly freed (and in debug, garbage filled).
- * If any pointers to this memory survive beyond a request, they'll be
- * dangling pointers.
- *
- * These functions only guarantee 8-byte alignment for the returned
- * pointer.
- */
-
-namespace req {
-
-void* malloc(size_t nbytes);
-void* calloc(size_t count, size_t bytes);
-void* realloc(void* ptr, size_t nbytes);
-void  free(void* ptr);
-
-/*
- * request-heap (de)allocators for non-POD C++-style stuff. Runs constructors
- * and destructors.
- *
- * Unlike the normal operator delete, req::destroy_raw() requires ~T() must
- * be nothrow and that p is not null.
- */
-template<class T, class... Args> T* make_raw(Args&&...);
-template<class T> void destroy_raw(T* p);
-
-/*
- * Allocate an array of objects.  Similar to req::malloc, but with
- * support for constructors.
- *
- * Note that explicitly calling req::destroy_raw will run the destructors,
- * but if you let the allocator sweep it the destructors will not be
- * called.
- *
- * Unlike the normal operator delete, req::destroy_raw_array requires
- * ~T() must be nothrow.
- */
-template<class T> T* make_raw_array(size_t count);
-template<class T> void destroy_raw_array(T* t, size_t count);
-
-//////////////////////////////////////////////////////////////////////
-
-// STL-style allocator for the request-heap allocator.  (Unfortunately we
-// can't use allocator_traits yet.)
-//
-// You can also use req::Allocator as a model of folly's
-// SimpleAllocator where appropriate.
-//
-
-template <class T>
-struct Allocator {
-  typedef T              value_type;
-  typedef T*             pointer;
-  typedef const T*       const_pointer;
-  typedef T&             reference;
-  typedef const T&       const_reference;
-  typedef std::size_t    size_type;
-  typedef std::ptrdiff_t difference_type;
-
-  template <class U>
-  struct rebind {
-    typedef Allocator<U> other;
-  };
-
-  pointer address(reference value) {
-    return &value;
-  }
-  const_pointer address(const_reference value) const {
-    return &value;
-  }
-
-  Allocator() noexcept {}
-  Allocator(const Allocator&) noexcept {}
-  template<class U> Allocator(const Allocator<U>&) noexcept {}
-  ~Allocator() noexcept {}
-
-  size_type max_size() const {
-    return std::numeric_limits<std::size_t>::max() / sizeof(T);
-  }
-
-  pointer allocate(size_type num, const void* = 0) {
-    pointer ret = (pointer)req::malloc(num * sizeof(T));
-    return ret;
-  }
-
-  template<class U, class... Args>
-  void construct(U* p, Args&&... args) {
-    ::new ((void*)p) U(std::forward<Args>(args)...);
-  }
-
-  void destroy(pointer p) {
-    p->~T();
-  }
-
-  void deallocate(pointer p, size_type num) {
-    req::free((void*)p);
-  }
-
-  template<class U> bool operator==(const Allocator<U>&) const {
-    return true;
-  }
-
-  template<class U> bool operator!=(const Allocator<U>&) const {
-    return false;
-  }
-};
-
-}
 
 //////////////////////////////////////////////////////////////////////
 
@@ -492,6 +378,9 @@ struct MemBlock {
  */
 struct BigHeap {
   BigHeap() {}
+  ~BigHeap() {
+    reset();
+  }
   bool empty() const {
     return m_slabs.empty() && m_bigs.empty();
   }
@@ -872,6 +761,15 @@ struct MemoryManager {
    */
   static void requestShutdown();
 
+  /*
+   * Setup/teardown profiling for current request.  This causes all allocation
+   * requests to be passed through to the underlying memory allocator so that
+   * heap profiling can capture backtraces for individual allocations rather
+   * than slab allocations.
+   */
+  static void setupProfiling();
+  static void teardownProfiling();
+
   /////////////////////////////////////////////////////////////////////////////
 
   /*
@@ -895,16 +793,6 @@ struct MemoryManager {
   template <typename T> req::ptr<T> removeRoot(RootId token);
   template <typename F> void scanRootMaps(F& m) const;
   template <typename F> void scanSweepLists(F& m) const;
-
-  // Opaque type used to allow for quick removal of exception roots. Should be
-  // embedded in ExtendedException.
-  struct ExceptionRootKey {
-    std::size_t m_index = 0;
-  };
-
-  // Add/remove exceptions as GC roots.
-  void addExceptionRoot(ExtendedException* exn);
-  void removeExceptionRoot(ExtendedException* exn);
 
   /*
    * Heap iterator methods.
@@ -937,6 +825,7 @@ private:
   friend void* req::calloc(size_t count, size_t bytes);
   friend void* req::realloc(void* ptr, size_t nbytes);
   friend void  req::free(void* ptr);
+  friend struct req::root_handle; // access m_root_handles
 
   struct FreeList {
     void* maybePop();
@@ -952,14 +841,7 @@ private:
   };
 
   template <typename T>
-  using RootMap =
-    std::unordered_map<
-      RootId,
-      req::ptr<T>,
-      std::hash<RootId>,
-      std::equal_to<RootId>,
-      req::Allocator<std::pair<const RootId,req::ptr<T>>>
-    >;
+  using RootMap = req::hash_map<RootId, req::ptr<T>>;
 
   /*
    * Request-local heap profiling context.
@@ -977,6 +859,7 @@ private:
   MemoryManager();
   MemoryManager(const MemoryManager&) = delete;
   MemoryManager& operator=(const MemoryManager&) = delete;
+  ~MemoryManager();
 
 private:
   void storeTail(void* tail, uint32_t tailBytes);
@@ -1003,9 +886,6 @@ private:
 
   void resetStatsImpl(bool isInternalCall);
 
-  void logAllocation(void*, size_t);
-  void logDeallocation(void*);
-
   void initHole(void* ptr, uint32_t size);
   void initHole();
   void initFree();
@@ -1013,7 +893,8 @@ private:
   void dropRootMaps();
   void deleteRootMaps();
 
-  void eagerGCCheck();
+  void checkEagerGC();
+  void resetEagerGC();
 
   template <typename T>
   typename std::enable_if<
@@ -1080,7 +961,7 @@ private:
 
   mutable RootMap<ResourceData>* m_resourceRoots{nullptr};
   mutable RootMap<ObjectData>* m_objectRoots{nullptr};
-  mutable std::vector<ExtendedException*> m_exceptionRoots;
+  mutable std::vector<req::root_handle*> m_root_handles;
 
   bool m_exiting{false};
   bool m_sweeping{false};

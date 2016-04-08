@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,7 +22,7 @@
 
 namespace HPHP { namespace jit {
 
-class SSATmp;
+struct SSATmp;
 struct IRInstruction;
 
 namespace NativeCalls { struct CallInfo; }
@@ -181,6 +181,10 @@ struct ArgGroup {
     ArgDesc arg(s, m_locs[s]);
     if (isFP) {
       push_SIMDarg(arg);
+#if defined(__powerpc64__)
+      // PPC64 ABIv2 compliant: reserve the aligned GP if FP is used
+      push_arg(arg);    // TODO(gut): make it a dummy
+#endif
     } else {
       push_arg(arg);
     }

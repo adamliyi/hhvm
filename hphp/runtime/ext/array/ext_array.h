@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -292,7 +292,7 @@ inline int64_t countHelper(TypedValue tv) {
   auto const cell_##input = static_cast<const Variant&>(input).asCell(); \
   if (UNLIKELY(!isArrayType(cell_##input->m_type))) {             \
     if (cell_##input->m_type == KindOfString ||                   \
-        cell_##input->m_type == KindOfStaticString) {             \
+        cell_##input->m_type == KindOfPersistentString) {             \
       throw_bad_type_exception("array_column() expects parameter" \
                                " 1 to be array, string given");   \
     } else if (cell_##input->m_type == KindOfInt64) {             \

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -68,9 +68,13 @@ void ArrNR::compileTimeAssertions() {
 
 Array Array::Create(const Variant& name, const Variant& var) {
   return Array{
-    ArrayData::Create(name.isString() ? name.toKey() : name, var),
+    ArrayData::Create(name.isString() ? name.toKey(true) : name, var),
     NoIncRef{}
   };
+}
+
+Array Array::ConvertToDict(const Array& arr) {
+  return Array(arr->toDict(), NoIncRef{});
 }
 
 Array::~Array() {}
@@ -456,9 +460,14 @@ const Variant& Array::rvalAtRef(const String& key, ACCESSPARAMS_IMPL) const {
   if (m_arr) {
     bool error = flags & AccessFlags::Error;
     if (flags & AccessFlags::Key) return m_arr->get(key, error);
-    if (key.isNull()) return m_arr->get(staticEmptyString(), error);
+    if (key.isNull()) {
+      if (!useWeakKeys()) {
+        throwInvalidArrayKeyException(null_variant.asTypedValue());
+      }
+      return m_arr->get(staticEmptyString(), error);
+    }
     int64_t n;
-    if (!key.get()->isStrictlyInteger(n)) {
+    if (!m_arr->convertKey(key.get(), n)) {
       return m_arr->get(key, error);
     } else {
       return m_arr->get(n, error);
@@ -473,26 +482,34 @@ Variant Array::rvalAt(const String& key, ACCESSPARAMS_IMPL) const {
 
 const Variant& Array::rvalAtRef(const Variant& key, ACCESSPARAMS_IMPL) const {
   if (!m_arr) return null_variant;
+  auto bad_key = [&] {
+    if (!useWeakKeys()) {
+      throwInvalidArrayKeyException(key.asTypedValue());
+    }
+  };
   switch (key.getRawType()) {
     case KindOfUninit:
     case KindOfNull:
+      bad_key();
       return m_arr->get(staticEmptyString(), flags & AccessFlags::Error);
 
     case KindOfBoolean:
+      bad_key();
     case KindOfInt64:
       return m_arr->get(key.asTypedValue()->m_data.num,
                        flags & AccessFlags::Error);
 
     case KindOfDouble:
+      bad_key();
       return m_arr->get((int64_t)key.asTypedValue()->m_data.dbl,
                        flags & AccessFlags::Error);
 
-    case KindOfStaticString:
+    case KindOfPersistentString:
     case KindOfString:
       {
         int64_t n;
         if (!(flags & AccessFlags::Key) &&
-            key.asTypedValue()->m_data.pstr->isStrictlyInteger(n)) {
+            m_arr->convertKey(key.asTypedValue()->m_data.pstr, n)) {
           return m_arr->get(n, flags & AccessFlags::Error);
         }
       }
@@ -501,10 +518,12 @@ const Variant& Array::rvalAtRef(const Variant& key, ACCESSPARAMS_IMPL) const {
     case KindOfPersistentArray:
     case KindOfArray:
     case KindOfObject:
+      bad_key();
       throw_bad_type_exception("Invalid type used as key");
       return null_variant;
 
     case KindOfResource:
+      bad_key();
       return m_arr->get(key.toInt64(), flags & AccessFlags::Error);
 
     case KindOfRef:
@@ -542,12 +561,12 @@ Variant &Array::lvalAtRef() {
 
 Variant &Array::lvalAt(const String& key, ACCESSPARAMS_IMPL) {
   if (flags & AccessFlags::Key) return lvalAtImpl(key, flags);
-  return lvalAtImpl(key.toKey(), flags);
+  return lvalAtImpl(convertKey(key), flags);
 }
 
 Variant &Array::lvalAt(const Variant& key, ACCESSPARAMS_IMPL) {
   if (flags & AccessFlags::Key) return lvalAtImpl(key, flags);
-  VarNR k(key.toKey());
+  VarNR k(convertKey(key));
   if (!k.isNull()) {
     return lvalAtImpl(k, flags);
   }
@@ -594,13 +613,13 @@ void Array::set(int64_t key, const Variant& v) {
 
 void Array::set(const String& key, const Variant& v, bool isKey /* = false */) {
   if (isKey) return setImpl(key, v);
-  setImpl(key.toKey(), v);
+  setImpl(convertKey(key), v);
 }
 
 void Array::set(const Variant& key, const Variant& v, bool isKey /* = false */) {
   if (key.getRawType() == KindOfInt64) return setImpl(key.getNumData(), v);
   if (isKey) return setImpl(key, v);
-  VarNR k(key.toKey());
+  VarNR k(convertKey(key));
   if (!k.isNull()) setImpl(k, v);
 }
 
@@ -610,13 +629,13 @@ void Array::setRef(int64_t key, Variant& v) {
 
 void Array::setRef(const String& key, Variant& v, bool isKey /* = false */) {
   if (isKey) return setRefImpl(key, v);
-  setRefImpl(key.toKey(), v);
+  setRefImpl(convertKey(key), v);
 }
 
 void Array::setRef(const Variant& key, Variant& v, bool isKey /* = false */) {
   if (key.getRawType() == KindOfInt64) return setRefImpl(key.getNumData(), v);
   if (isKey) return setRefImpl(key, v);
-  VarNR k(key.toKey());
+  VarNR k(convertKey(key));
   if (!k.isNull()) setRefImpl<Variant>(k, v);
 }
 
@@ -626,13 +645,13 @@ void Array::add(int64_t key, const Variant& v) {
 
 void Array::add(const String& key, const Variant& v, bool isKey /* = false */) {
   if (isKey) return addImpl(key, v);
-  addImpl(key.toKey(), v);
+  addImpl(convertKey(key), v);
 }
 
 void Array::add(const Variant& key, const Variant& v, bool isKey /* = false */) {
   if (key.getRawType() == KindOfInt64) return addImpl(key.getNumData(), v);
   if (isKey) return addImpl(key, v);
-  VarNR k(key.toKey());
+  VarNR k(convertKey(key));
   if (!k.isNull()) addImpl(k, v);
 }
 
@@ -649,7 +668,7 @@ Array Array::values() const {
 
 bool Array::exists(const String& key, bool isKey /* = false */) const {
   if (isKey) return existsImpl(key);
-  return existsImpl(key.toKey());
+  return existsImpl(convertKey(key));
 }
 
 bool Array::exists(const Variant& key, bool isKey /* = false */) const {
@@ -658,7 +677,7 @@ bool Array::exists(const Variant& key, bool isKey /* = false */) const {
     return existsImpl(key.toInt64());
   }
   if (isKey) return existsImpl(key);
-  VarNR k(key.toKey());
+  VarNR k(convertKey(key));
   if (!k.isNull()) {
     return existsImpl(k);
   }
@@ -669,7 +688,7 @@ void Array::remove(const String& key, bool isString /* = false */) {
   if (isString) {
     removeImpl(key);
   } else {
-    removeImpl(key.toKey());
+    removeImpl(convertKey(key));
   }
 }
 
@@ -679,7 +698,7 @@ void Array::remove(const Variant& key) {
     removeImpl(key.toInt64());
     return;
   }
-  VarNR k(key.toKey());
+  VarNR k(convertKey(key));
   if (!k.isNull()) {
     removeImpl(k);
   }

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -206,13 +206,13 @@ int64_t HHVM_FUNCTION(preg_last_error) {
 String HHVM_FUNCTION(ereg_replace, const String& pattern,
                                    const String& replacement,
                                    const String& str) {
-  return HHVM_FN(mb_ereg_replace)(pattern, replacement, str);
+  return HHVM_FN(mb_ereg_replace)(pattern, replacement, str).toString();
 }
 
 String HHVM_FUNCTION(eregi_replace, const String& pattern,
                                     const String& replacement,
                                     const String& str) {
-  return HHVM_FN(mb_eregi_replace)(pattern, replacement, str);
+  return HHVM_FN(mb_eregi_replace)(pattern, replacement, str).toString();
 }
 
 Variant HHVM_FUNCTION(ereg, const String& pattern, const String& str,
@@ -259,8 +259,7 @@ String HHVM_FUNCTION(sql_regcase, const String& str) {
 
 extern IMPLEMENT_THREAD_LOCAL(PCREglobals, tl_pcre_globals);
 
-class PcreExtension final : public Extension {
-public:
+struct PcreExtension final : Extension {
   PcreExtension() : Extension("pcre", NO_EXTENSION_VERSION_YET) {}
 
   void moduleInit() override {

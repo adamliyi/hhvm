@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -314,7 +314,7 @@ std::string resolveContextMsg(const Class::Const& typeCns,
 /* returns the unresolved TypeStructure; if aliasName is not an alias,
  * return nullptr. */
 Array getAlias(const String& aliasName) {
-  if (aliasName.same(s_this)) {
+  if (aliasName.same(s_this) || Unit::lookupClass(aliasName.get())) {
     return Array::Create();
   }
   auto typeAliasReq = Unit::loadTypeAlias(aliasName.get());
@@ -328,18 +328,23 @@ const Class* getClass(const String& clsName,
                       const Class::Const& typeCns,
                       const Class* typeCnsCls,
                       bool& persistent) {
+  auto checkPersistent = [&persistent](const Class* cls) {
+    persistent &= classHasPersistentRDS(cls);
+    return cls;
+  };
+
   // the original unresolved type structure came from a type constant
   // (instead of a type alias), and may have this/self/parent.
   if (typeCnsCls) {
     // HH\this: late static binding
     if (clsName.same(s_this)) {
-      return typeCnsCls;
+      return checkPersistent(typeCnsCls);
     }
 
     auto declCls = typeCns.cls;
     // self
     if (clsName.same(s_self)) {
-      return declCls;
+      return checkPersistent(declCls);
     }
     // parent
     if (clsName.same(s_parent)) {
@@ -350,7 +355,7 @@ const Class* getClass(const String& clsName,
           resolveContextMsg(typeCns, typeCnsCls).c_str(),
           declCls->name()->data());
       }
-      return parent;
+      return checkPersistent(parent);
     }
   }
 
@@ -376,9 +381,8 @@ const Class* getClass(const String& clsName,
       resolveContextMsg(typeCns, typeCnsCls).c_str(),
       name.data());
   }
-  persistent &= classHasPersistentRDS(cls);
 
-  return cls;
+  return checkPersistent(cls);
 }
 
 /* Given an unresolved T_shape TypeStructure, returns the __fields__
@@ -607,6 +611,11 @@ Array resolveTS(const Array& arr,
         assert(typeCnsVal.exists(s_classname));
         clsName = typeCnsVal[s_classname].toCStrRef();
       }
+
+      if (arr.exists(s_nullable)) {
+        typeCnsVal.add(s_nullable, true_varNR);
+      }
+
       return typeCnsVal;
     }
     case TypeStructure::Kind::T_typevar: {

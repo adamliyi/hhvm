@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -47,7 +47,6 @@ std::vector<PrimePair> primable_n(Store& store,
   for (auto& pair : pairs) {
     auto key = folly::sformat("{}_{}", prefix, counter);
     pair.key = alloc_leaked_string(key.c_str());
-    pair.len = key.size();
 
     Variant v(create(counter));
     store.constructPrime(v, pair);
@@ -115,7 +114,7 @@ TEST(APC, Basic) {
   Variant got;
   EXPECT_EQ(store->get(s_key, got), true);
   EXPECT_TRUE(cellSame(*got.asCell(),
-    make_tv<KindOfStaticString>(s_value1.get())));
+    make_tv<KindOfPersistentString>(s_value1.get())));
   EXPECT_EQ(store->eraseKey(s_key), true);
   EXPECT_EQ(store->get(s_key, got), false);
 }
@@ -127,11 +126,11 @@ TEST(APC, SetOverwrite) {
   Variant got;
   EXPECT_EQ(store->get(s_key, got), true);
   EXPECT_TRUE(cellSame(*got.asCell(),
-              make_tv<KindOfStaticString>(s_value1.get())));
+              make_tv<KindOfPersistentString>(s_value1.get())));
   store->set(s_key, Variant(s_value2), 1500);
   EXPECT_EQ(store->get(s_key, got), true);
   EXPECT_TRUE(cellSame(*got.asCell(),
-              make_tv<KindOfStaticString>(s_value2.get())));
+              make_tv<KindOfPersistentString>(s_value2.get())));
 }
 
 TEST(APC, Clear) {

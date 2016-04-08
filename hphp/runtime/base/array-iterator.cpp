@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -1292,7 +1292,7 @@ int64_t new_iter_array_key(Iter*       dest,
     } else {
       cellDup(*tvToCell(structArray->data()), *valOut);
     }
-    keyOut->m_type = KindOfStaticString;
+    keyOut->m_type = KindOfPersistentString;
     keyOut->m_data.pstr = const_cast<StringData*>(
       structArray->shape()->keyForOffset(0));
     return 1;
@@ -1308,8 +1308,7 @@ template int64_t new_iter_array_key<true>(Iter* dest, ArrayData* ad,
                                           TypedValue* valOut,
                                           TypedValue* keyOut);
 
-class FreeObj {
- public:
+struct FreeObj {
   FreeObj() : m_obj(0) {}
   void operator=(ObjectData* obj) { m_obj = obj; }
   ~FreeObj() { if (UNLIKELY(m_obj != nullptr)) decRefObj(m_obj); }
@@ -1616,7 +1615,7 @@ int64_t witer_next_key(Iter* iter, TypedValue* valOut, TypedValue* keyOut) {
       auto structArray = StructArray::asStructArray(ad);
       arrIter->setPos(pos);
       tvDupWithRef(structArray->data()[pos], *valOut);
-      keyOut->m_type = KindOfStaticString;
+      keyOut->m_type = KindOfPersistentString;
       keyOut->m_data.pstr = const_cast<StringData*>(
         structArray->shape()->keyForOffset(pos));
       return 1;
@@ -1878,7 +1877,7 @@ int64_t iter_next_struct_impl(Iter* it,
     if (HasKey) {
       keyOut->m_data.pstr = const_cast<StringData*>(
         structArray->shape()->keyForOffset(pos));
-      keyOut->m_type = KindOfStaticString;
+      keyOut->m_type = KindOfPersistentString;
     }
     return 1;
   }

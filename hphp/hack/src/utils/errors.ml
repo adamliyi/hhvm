@@ -77,7 +77,7 @@ let error_kind error_code =
 
 let error_code_to_string error_code =
   let error_kind = error_kind error_code in
-  let error_number = string_of_int error_code in
+  let error_number = Printf.sprintf "%04d" error_code in
   error_kind^"["^error_number^"]"
 
 (*****************************************************************************)
@@ -169,6 +169,7 @@ module Naming                               = struct
   let classname_param                       = 2066 (* DONT MODIFY!!!! *)
   let invalid_instanceof                    = 2067 (* DONT MODIFY!!!! *)
   let name_is_reserved                      = 2068 (* DONT MODIFY!!!! *)
+  let dollardollar_unused                   = 2069 (* DONT MODIFY!!!! *)
 
   (* EXTEND HERE WITH NEW VALUES IF NEEDED *)
 end
@@ -273,7 +274,7 @@ module Typing                               = struct
   let non_object_member                     = 4062 (* DONT MODIFY!!!! *)
   let null_container                        = 4063 (* DONT MODIFY!!!! *)
   let null_member                           = 4064 (* DONT MODIFY!!!! *)
-  let nullable_parameter                    = 4065 (* DONT MODIFY!!!! *)
+  (*let nullable_parameter                    = 4065 *)
   let option_return_only_typehint           = 4066 (* DONT MODIFY!!!! *)
   let object_string                         = 4067 (* DONT MODIFY!!!! *)
   let option_mixed                          = 4068 (* DONT MODIFY!!!! *)
@@ -331,7 +332,7 @@ module Typing                               = struct
   (* DEPRECATED unset_in_strict             = 4122 *)
   let strict_members_not_known              = 4123 (* DONT MODIFY!!!! *)
   let generic_at_runtime                    = 4124 (* DONT MODIFY!!!! *)
-  let dynamic_class                         = 4125 (* DONT MODIFY!!!! *)
+  (*let dynamic_class                       = 4125 *)
   let attribute_too_many_arguments          = 4126 (* DONT MODIFY!!!! *)
   let attribute_param_type                  = 4127 (* DONT MODIFY!!!! *)
   let deprecated_use                        = 4128 (* DONT MODIFY!!!! *)
@@ -362,6 +363,12 @@ module Typing                               = struct
   let attribute_too_few_arguments           = 4153 (* DONT MODIFY!!!! *)
   (* EXTEND HERE WITH NEW VALUES IF NEEDED *)
 end
+
+let internal_error pos msg =
+  add 0 pos ("Internal error: "^msg)
+
+let unimplemented_feature pos msg =
+  add 0 pos ("Feature not implemented: " ^ msg)
 
 (*****************************************************************************)
 (* Parsing errors. *)
@@ -427,6 +434,11 @@ let name_is_reserved name pos =
   add Naming.name_is_reserved pos (
   name^" cannot be used as it is reserved."
  )
+
+let dollardollar_unused pos =
+  add Naming.dollardollar_unused pos ("This expression does not contain a "^
+    "usage of the special pipe variable. Did you forget to use the ($$) "^
+    "variable?")
 
 let method_name_already_bound pos name =
   add Naming.method_name_already_bound pos (
@@ -663,10 +675,6 @@ let genva_arity pos =
 let gen_array_rec_arity pos =
   add Naming.gen_array_rec_arity pos
     "gen_array_rec() expects exactly 1 argument"
-
-let dynamic_class pos =
-  add Typing.dynamic_class pos
-    "Don't use dynamic classes"
 
 let uninstantiable_class usage_pos decl_pos name reason_msgl =
   let name = strip_ns name in
@@ -1177,10 +1185,6 @@ let too_many_type_arguments p =
   add Naming.too_many_type_arguments p
     ("Too many type arguments for this type")
 
-let nullable_parameter pos =
-  add Typing.nullable_parameter pos
-    "Please add a ?, this argument can be null"
-
 let return_in_void pos1 pos2 =
   add_list Typing.return_in_void [
   pos1,
@@ -1342,10 +1346,7 @@ let const_mutation pos1 pos2 ty =
      then [(pos2, "This is " ^ ty)]
      else [])
 
-let expected_class ?suffix:(suffix="") pos =
-  let suffix = match suffix with
-  | "" -> ""
-  | str -> " "^str in
+let expected_class ?(suffix="") pos =
   add Typing.expected_class pos ("Was expecting a class"^suffix)
 
 let snot_found_hint = function

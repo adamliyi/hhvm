@@ -9,7 +9,6 @@
  *)
 
 open Core
-open Utils
 
 (*****************************************************************************)
 (* Error. *)
@@ -28,15 +27,15 @@ let report_error exn =
   ()
 
 let oldify_funs names =
-  Naming_heap.FunIdHeap.oldify_batch names;
+  Naming_heap.FunPosHeap.oldify_batch names;
   Naming_heap.FunCanonHeap.oldify_batch @@ canon_set names;
   Naming_heap.FunHeap.oldify_batch names;
   Typing_env.Funs.oldify_batch names;
   ()
 
 let oldify_classes names =
-  Naming_heap.ClassIdHeap.oldify_batch names;
-  Naming_heap.ClassCanonHeap.oldify_batch @@ canon_set names;
+  Naming_heap.TypeIdHeap.oldify_batch names;
+  Naming_heap.TypeCanonHeap.oldify_batch @@ canon_set names;
   Naming_heap.ClassHeap.oldify_batch names;
   Typing_env.Classes.oldify_batch names;
   ()
@@ -44,14 +43,22 @@ let oldify_classes names =
 let revive funs classes =
   Naming_heap.FunHeap.revive_batch funs;
   Typing_env.Funs.revive_batch funs;
-  Naming_heap.FunIdHeap.revive_batch funs;
+  Naming_heap.FunPosHeap.revive_batch funs;
   Naming_heap.FunCanonHeap.revive_batch @@ canon_set funs;
 
   Naming_heap.ClassHeap.revive_batch classes;
   Typing_env.Classes.revive_batch classes;
-  Naming_heap.ClassIdHeap.revive_batch classes;
-  Naming_heap.ClassCanonHeap.revive_batch @@ canon_set classes
+  Naming_heap.TypeIdHeap.revive_batch classes;
+  Naming_heap.TypeCanonHeap.revive_batch @@ canon_set classes
 
+(* This will parse, name and declare all functions and classes in content
+ * buffer.
+ *
+ * Naming and declaring will overwrite definitions on shared heap, so before
+ * doing this, the function will also "oldify" them (see functions above and
+ * SharedMem.S.oldify_batch) - after working with local content is done,
+ * original definitions can (and should) be restored using "revive".
+ *)
 let declare path content =
   let tcopt = TypecheckerOptions.permissive in
   Autocomplete.auto_complete := false;
@@ -81,7 +88,7 @@ let declare path content =
         | Ast.Fun f ->
             let f = Naming.fun_ tcopt f in
             Naming_heap.FunHeap.add (snd f.Nast.f_name) f;
-            Typing.fun_decl tcopt f;
+            Typing_decl.fun_decl f;
         | Ast.Class c ->
             let c = Naming.class_ tcopt c in
             Naming_heap.ClassHeap.add (snd c.Nast.c_name) c;
@@ -94,24 +101,16 @@ let declare path content =
     report_error e;
     SSet.empty, SSet.empty
 
-let fix_file_and_def funs classes = try
+let typecheck funs classes = try
     let tcopt = TypecheckerOptions.permissive in
     Errors.ignore_ begin fun () ->
       SSet.iter begin fun name ->
-        match Naming_heap.FunHeap.get name with
-        | None -> ()
-        | Some f ->
-          let filename = Pos.filename (fst f.Nast.f_name) in
-          let tenv = Typing_env.empty tcopt filename in
-          Typing.fun_def tenv (snd f.Nast.f_name) f
+        Option.iter (Naming_heap.FunHeap.get name)
+          (fun f -> Typing.fun_def tcopt (snd f.Nast.f_name) f)
       end funs;
       SSet.iter begin fun name ->
-        match Naming_heap.ClassHeap.get name with
-        | None -> ()
-        | Some c ->
-          let filename = Pos.filename (fst c.Nast.c_name) in
-          let tenv = Typing_env.empty tcopt filename in
-          Typing.class_def tenv (snd c.Nast.c_name) c
+        Option.iter (Naming_heap.ClassHeap.get name)
+          (fun c -> Typing.class_def tcopt (snd c.Nast.c_name) c)
       end classes;
     end
   with e ->
@@ -128,7 +127,7 @@ let check_file_input tcopt files_info fi =
   | ServerUtils.FileContent content ->
       let path = Relative_path.default in
       let funs, classes = declare path content in
-      fix_file_and_def funs classes;
+      typecheck funs classes;
       revive funs classes;
       path
   | ServerUtils.FileName fn ->

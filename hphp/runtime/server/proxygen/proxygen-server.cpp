@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -29,6 +29,7 @@
 #include "hphp/runtime/base/url.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/util/compatibility.h"
+#include <proxygen/lib/http/codec/HTTP2Constants.h>
 
 namespace HPHP {
 
@@ -153,6 +154,15 @@ ProxygenServer::ProxygenServer(
   m_httpsConfig.connectionIdleTimeout = timeout;
   m_httpsConfig.transactionIdleTimeout = timeout;
 
+  if (RuntimeOption::ServerEnableH2C) {
+    m_httpConfig.allowedPlaintextUpgradeProtocols = {
+      proxygen::http2::kProtocolCleartextString };
+    // Set flow control (for uploads) to 1MB.  We could also make this
+    // configurable if needed
+    m_httpConfig.initialReceiveWindow = 1 << 20;
+    m_httpConfig.receiveSessionWindowSize = 1 << 20;
+  }
+
   if (!options.m_takeoverFilename.empty()) {
     m_takeover_agent.reset(new TakeoverAgent(options.m_takeoverFilename));
   }
@@ -160,12 +170,14 @@ ProxygenServer::ProxygenServer(
 
 int ProxygenServer::onTakeoverRequest(TakeoverAgent::RequestType type) {
   if (type == TakeoverAgent::RequestType::LISTEN_SOCKET) {
-    // TODO: don't pause here, wait for the TERMINATE message to take
-    // any action.  For now I'm copying broken LibEventServer
-    // behavior.
-    m_httpServerSocket->pauseAccepting();
+    // Subsequent calls to ProxygenServer::stop() won't do anything.
+    // The server continues accepting until RequestType::TERMINATE is
+    // seen.
+    setStatus(RunStatus::STOPPING);
   } else if (type == TakeoverAgent::RequestType::TERMINATE) {
     stopListening(true /*hard*/);
+    // No need to do m_takeover_agent->stop(), as the afdt server is
+    // going to be closed when this returns.
   }
   return 0;
 }
@@ -191,9 +203,8 @@ void ProxygenServer::start() {
   bool needListen = true;
   auto failedToListen = [](const std::exception& ex,
                            const folly::SocketAddress& addr) {
-    Logger::Error("%s", ex.what());
-    throw FailedToListenException(addr.getAddressStr(),
-                                  addr.getPort());
+    Logger::Error("failed to listen: %s", ex.what());
+    throw FailedToListenException(addr.getAddressStr(), addr.getPort());
   };
 
   try {
@@ -278,6 +289,7 @@ void ProxygenServer::start() {
 }
 
 void ProxygenServer::waitForEnd() {
+  if (getStatus() == RunStatus::STOPPED) return;
   Logger::Info("%p: Waiting for ProxygenServer port=%d", this, m_port);
   // m_worker.wait is always safe to call from any thread at any time.
   m_worker.wait();
@@ -286,22 +298,23 @@ void ProxygenServer::waitForEnd() {
 // Server shutdown - Explained
 //
 // 0. An alarm may be set in http-server.cpp to kill this process after
-//    ServerShutdownListenWait + ServerGracefulShutdownWait seconds
-//
-// 1. Set run status to STOPPING.  This should fail downstream healthchecks
-// 2. TODO: there should be a timeout for failing healthchecks only
-// 3. Shutdown the listen sockets, this will
+//    ServerPreShutdownWait + ServerShutdownListenWait +
+//    ServerGracefulShutdownWait seconds
+// 1. Set run status to STOPPING.  This should fail downstream healthchecks.
+//    If it is the page server, it will continue accepting requests for
+//    ServerPreShutdownWait seconds
+// 2. Shutdown the listen sockets, this will
 //     3.a Close any idle connections
 //     3.b Send SPDY GOAWAY frames
 //     3.c Insert Connection: close on HTTP/1.1 keep-alive connections as the
 //         response headers are sent
 //    Note: LibEventServer doesn't close the listen sockets if there is no
 //    ServerShutdownListenWait.
-// 4. After all connections close OR ServerShutdownListenWait seconds
+// 3. After all connections close OR ServerShutdownListenWait seconds
 //    elapse, stop the VM.  Incomplete requests in the I/O thread will not be
 //    executed.  Stopping the VM is synchronous and all requests will run to
 //    completion, unless the alarm fires.
-// 5. Allow responses to drain for up to ServerGracefulShutdownWait seconds.
+// 4. Allow responses to drain for up to ServerGracefulShutdownWait seconds.
 //    Note if shutting the VM down took non-zero time it's possible that the
 //    alarm will fire first and kill this process.
 
@@ -312,16 +325,23 @@ void ProxygenServer::stop() {
   Logger::Info("%p: Stopping ProxygenServer port=%d", this, m_port);
 
   setStatus(RunStatus::STOPPING);
-  // TODO: allow a configurable timeout before proceeding to the next phase
+
+  if (m_takeover_agent) {
+    m_worker.getEventBase()->runInEventBaseThread([this] {
+        m_takeover_agent->stop();
+      });
+  }
 
   // close listening sockets, this will initiate draining, including closing
   // idle conns
-  m_worker.getEventBase()->runInEventBaseThread([&] {
-      if (m_takeover_agent) {
-        m_takeover_agent->stop();
+  m_worker.getEventBase()->runInEventBaseThread([this] {
+      // Only wait ServerPreShutdownWait seconds for the page server.
+      int delayMilliSeconds = RuntimeOption::ServerPreShutdownWait * 1000;
+      if (delayMilliSeconds < 0 || getPort() != RuntimeOption::ServerPort) {
+        delayMilliSeconds = 0;
       }
-
-      stopListening();
+      m_worker.getEventBase()->runAfterDelay([this] { stopListening(); },
+                                             delayMilliSeconds);
     });
 }
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2015 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2016 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -399,6 +399,9 @@ struct JEMallocInitializer {
     dummy += "!";         // so the definition of dummy isn't optimized out
 #endif  /* __GLIBC__ */
 
+    // Enable backtracing through PHP frames (t9814472).
+    setenv("UNW_RBP_ALWAYS_VALID", "1", false);
+
     initNuma();
 
     // Create a special arena to be used for allocating objects in low memory.
@@ -492,8 +495,6 @@ void low_malloc_skip_huge(void* start, void* end) {}
 
 #endif // USE_JEMALLOC
 
-#ifdef USE_JEMALLOC
-
 int mallctlCall(const char* cmd, bool errOk) {
   // Use <unsigned> rather than <void> to avoid sizeof(void).
   return mallctlHelper<unsigned>(cmd, nullptr, nullptr, errOk);
@@ -524,7 +525,6 @@ int jemalloc_pprof_dump(const std::string& prefix, bool force) {
     return mallctlCall("prof.dump", true);
   }
 }
-#endif // USE_JEMALLOC
 
 ///////////////////////////////////////////////////////////////////////////////
 }
@@ -534,5 +534,9 @@ int jemalloc_pprof_dump(const std::string& prefix, bool force) {
 
 extern "C" {
   const char* malloc_conf = "narenas:1,lg_tcache_max:16,"
-    "lg_dirty_mult:" STRINGIFY(LG_DIRTY_MULT_DEFAULT);
+    "lg_dirty_mult:" STRINGIFY(LG_DIRTY_MULT_DEFAULT)
+#ifdef ENABLE_HHPROF
+    ",prof:true,prof_active:false,prof_thread_active_init:false"
+#endif
+    ;
 }
