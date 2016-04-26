@@ -20,12 +20,15 @@
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/request-local.h"
-#include "hphp/runtime/vm/vm-regs.h"
 
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
+#include "hphp/runtime/ext/collections/ext_collections-map.h"
+#include "hphp/runtime/ext/collections/ext_collections-set.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
 #include "hphp/runtime/ext/reflection/ext_reflection.h"
 #include "hphp/runtime/ext/thrift/spec-holder.h"
 #include "hphp/runtime/ext/thrift/transport.h"
+
+#include "hphp/runtime/vm/vm-regs.h"
 
 #include "hphp/runtime/vm/jit/perf-counters.h"
 
@@ -901,7 +904,7 @@ struct CompactReader {
       if (format.equal(s_collection)) {
         auto const pvec(req::make<c_Vector>(size));
         for (uint32_t i = 0; i < size; i++) {
-          pvec->t_add(readField(valueSpec, valueType));
+          pvec->add(readField(valueSpec, valueType));
         }
         readCollectionEnd();
         return Variant(std::move(pvec));
@@ -928,7 +931,7 @@ struct CompactReader {
         auto set_ret = req::make<c_Set>(size);
         for (uint32_t i = 0; i < size; i++) {
           Variant value = readField(valueSpec, valueType);
-          set_ret->t_add(value);
+          set_ret->add(value);
         }
         readCollectionEnd();
         return Variant(std::move(set_ret));

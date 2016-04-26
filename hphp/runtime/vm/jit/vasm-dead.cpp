@@ -16,6 +16,7 @@
 
 #include "hphp/runtime/vm/jit/vasm.h"
 
+#include "hphp/runtime/vm/jit/timer.h"
 #include "hphp/runtime/vm/jit/vasm-instr.h"
 #include "hphp/runtime/vm/jit/vasm-print.h"
 #include "hphp/runtime/vm/jit/vasm-reg.h"
@@ -48,6 +49,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::andq:
     case Vinstr::andqi:
     case Vinstr::cloadq:
+    case Vinstr::cmovb:
     case Vinstr::cmovq:
     case Vinstr::cmpb:
     case Vinstr::cmpbi:
@@ -70,6 +72,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::cvttsd2siq:
     case Vinstr::decl:
     case Vinstr::decq:
+    case Vinstr::defvmret:
     case Vinstr::defvmsp:
     case Vinstr::divint:
     case Vinstr::divsd:
@@ -90,11 +93,13 @@ bool effectful(Vinstr& inst) {
     case Vinstr::ldimmqs:
     case Vinstr::lea:
     case Vinstr::leap:
+    case Vinstr::lead:
     case Vinstr::load:
     case Vinstr::loadups:
     case Vinstr::loadb:
     case Vinstr::loadl:
     case Vinstr::loadqp:
+    case Vinstr::loadqd:
     case Vinstr::loadsd:
     case Vinstr::loadw:
     case Vinstr::loadtqb:
@@ -111,6 +116,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::movtql:
     case Vinstr::movzbl:
     case Vinstr::movzbq:
+    case Vinstr::movzlq:
     case Vinstr::mulsd:
     case Vinstr::neg:
     case Vinstr::nop:
@@ -180,6 +186,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::callr:
     case Vinstr::calls:
     case Vinstr::callstub:
+    case Vinstr::calltc:
     case Vinstr::cbcc:
     case Vinstr::contenter:
     case Vinstr::cqo:
@@ -219,6 +226,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::popm:
     case Vinstr::push:
     case Vinstr::pushm:
+    case Vinstr::resumetc:
     case Vinstr::ret:
     case Vinstr::retransopt:
     case Vinstr::store:
@@ -234,7 +242,9 @@ bool effectful(Vinstr& inst) {
     case Vinstr::stublogue:
     case Vinstr::stubret:
     case Vinstr::stubtophp:
+    case Vinstr::loadstubret:
     case Vinstr::syncpoint:
+    case Vinstr::syncvmret:
     case Vinstr::syncvmsp:
     case Vinstr::tailcallphp:
     case Vinstr::tailcallstub:
@@ -265,6 +275,7 @@ bool effectful(Vinstr& inst) {
 // or not a useful block executes, and useless branches can be forwarded to
 // the nearest useful post-dominator.
 void removeDeadCode(Vunit& unit) {
+  Timer timer(Timer::vasm_dce);
   auto blocks = sortBlocks(unit);
   jit::vector<LiveSet> livein(unit.blocks.size());
   LiveSet live(unit.next_vr);

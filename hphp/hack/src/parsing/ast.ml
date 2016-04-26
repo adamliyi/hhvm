@@ -202,7 +202,6 @@ and fun_ = {
   f_params          : fun_param list;
   f_body            : block;
   f_user_attributes : user_attribute list;
-  f_mtime           : float;
   f_fun_kind        : fun_kind;
   f_namespace       : Namespace_env.env;
 }
@@ -322,6 +321,7 @@ and import_flavor =
   | IncludeOnce
   | RequireOnce
 
+(** "array" field. Fields of array, map, dict, and shape literals. *)
 and afield =
   | AFvalue of expr
   | AFkvalue of expr * expr

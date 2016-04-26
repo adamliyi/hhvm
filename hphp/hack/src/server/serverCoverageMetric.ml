@@ -10,6 +10,7 @@
 
 open Core
 open Coverage_level
+open Reordered_argument_collections
 open Utils
 
 module FileInfoStore = GlobalStorage.Make(struct
@@ -23,13 +24,13 @@ let count_exprs fn type_acc =
   let level_of_type = level_of_type_mapper fn in
   Hashtbl.fold (fun (p, kind) ty acc ->
     let r, lvl = level_of_type (p, ty) in
-    let counter = match SMap.get kind acc with
+    let counter = match SMap.get acc kind with
       | Some counter -> counter
       | None -> empty_counter in
-    SMap.add kind (incr_counter lvl (r, p, counter)) acc
+    SMap.add acc ~key:kind ~data:(incr_counter lvl (r, p, counter))
   ) type_acc SMap.empty
 
-let accumulate_types defs =
+let accumulate_types fn defs =
   let type_acc = Hashtbl.create 0 in
   Typing.with_expr_hook (fun (p, e) ty ->
     let expr_kind_opt = match e with
@@ -45,7 +46,7 @@ let accumulate_types defs =
       Hashtbl.replace type_acc (p, kind) ty))
     (fun () ->
       let tcopt = TypecheckerOptions.permissive in
-      ignore (Typing_check_utils.check_defs tcopt defs));
+      ignore (Typing_check_utils.check_defs tcopt fn defs));
   type_acc
 
 let combine v1 v2 =
@@ -94,10 +95,10 @@ let get_coverage root neutral fnl =
   SharedMem.invalidate_caches();
   let files_info = FileInfoStore.load () in
   let file_counts = List.rev_filter_map fnl begin fun fn ->
-    match Relative_path.Map.get fn files_info with
+    match Relative_path.Map.get files_info fn with
     | None -> None
     | Some defs ->
-        let type_acc = accumulate_types defs in
+        let type_acc = accumulate_types fn defs in
         let counts = count_exprs fn type_acc in
         Some (fn, counts)
   end in

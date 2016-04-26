@@ -21,6 +21,7 @@ type error_code = int
 type 'a message = 'a * string
 type 'a error_ = error_code * 'a message list
 type error = Pos.t error_
+
 type t = error list
 
 (*****************************************************************************)
@@ -33,7 +34,7 @@ let (is_hh_fixme: (Pos.t -> error_code -> bool) ref) = ref (fun _ _ -> false)
 (* Errors accumulator. *)
 (*****************************************************************************)
 
-let (error_list: t ref) = ref []
+let (error_list: error list ref) = ref []
 let accumulate_errors = ref false
 
 let add_error error =
@@ -52,6 +53,13 @@ let add_list code pos_msg_l =
   if !is_hh_fixme pos code then () else
   add_error (code, pos_msg_l)
 
+let merge err' err = List.rev_append err' err
+
+let empty = []
+let is_empty err = err = []
+let get_error_list err = err
+let from_error_list err = err
+
 (*****************************************************************************)
 (* Accessors. *)
 (*****************************************************************************)
@@ -61,6 +69,13 @@ let get_pos (error : error) = fst (List.hd_exn (snd error))
 let to_list (error : 'a error_) = snd error
 
 let make_error code (x: (Pos.t * string) list) = ((code, x): error)
+
+let get_sorted_error_list err =
+  List.sort ~cmp:begin fun x y ->
+    Pos.compare (get_pos x) (get_pos y)
+  end err
+
+let iter_error_list f err = List.iter ~f:f (get_sorted_error_list err)
 
 (*****************************************************************************)
 (* Error code printing. *)
@@ -361,6 +376,7 @@ module Typing                               = struct
   let not_nullable_compare_null_trivial     = 4151 (* DONT MODIFY!!!! *)
   let class_property_only_static_literal    = 4152 (* DONT MODIFY!!!! *)
   let attribute_too_few_arguments           = 4153 (* DONT MODIFY!!!! *)
+  let reference_expr                        = 4154 (* DONT MODIFY!!!! *)
   (* EXTEND HERE WITH NEW VALUES IF NEEDED *)
 end
 
@@ -1828,6 +1844,10 @@ let class_property_only_static_literal pos =
   let msg =
     "Initialization of class property must be a static literal expression." in
   add Typing.class_property_only_static_literal pos msg
+
+let reference_expr pos =
+  let msg = "Cannot take a value by reference in strict mode." in
+  add Typing.reference_expr pos msg
 
 (*****************************************************************************)
 (* Convert relative paths to absolute. *)

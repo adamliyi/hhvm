@@ -15,11 +15,11 @@ val debug_print_last_pos:
   'a -> unit
 
 val fun_def:
-  TypecheckerOptions.t -> 'a -> Nast.fun_ -> unit
+  TypecheckerOptions.t -> Nast.fun_ -> unit
 val class_def:
-  TypecheckerOptions.t -> 'a -> Nast.class_ -> unit
+  TypecheckerOptions.t -> Nast.class_ -> unit
 val typedef_def:
-  Typing_env.Typedefs.key -> Nast.typedef -> unit
+  Typing_heap.Typedefs.key -> Nast.typedef -> unit
 
 val expr:
   Typing_env.env -> Nast.expr ->

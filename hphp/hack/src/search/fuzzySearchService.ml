@@ -252,7 +252,7 @@ let update_term_lookup file add_terms remove_terms =
       try Hashtbl.find !term_lookup term
       with Not_found -> Relative_path.Set.empty
     in
-    Hashtbl.replace !term_lookup term (Relative_path.Set.add file old_val);
+    Hashtbl.replace !term_lookup term (Relative_path.Set.add old_val file);
   end add_terms
 
 (* Updates the keylist and defmap for a file (will be used to populate
@@ -354,7 +354,7 @@ let get_terms_from_string_and_type strings =
       try Hashtbl.find !term_lookup str
       with Not_found -> Relative_path.Set.empty
     in
-    Relative_path.Set.fold begin fun file acc ->
+    Relative_path.Set.fold files ~init:acc ~f:begin fun file acc ->
       let defmap =
         try SearchKeyToTermMap.find_unsafe file
         with Not_found -> TMap.empty
@@ -370,12 +370,13 @@ let get_terms_from_string_and_type strings =
           (term, score) :: acc
         end ~init:acc
       with Not_found -> acc
-    end files acc
+    end
   end ~init:[]
 
-let query needle type_ =
-  let needle = strip_special_characters needle in
-  let terms = get_terms needle type_ in
+let results_limit = 50
+let compare_results a b = (snd a) - (snd b)
+
+let check_terms needle acc terms =
   let terms = List.fold_left terms ~f:begin fun acc (term, type_) ->
     if check_if_matches_uppercase_chars needle term then
       ((term, type_), 0) :: acc
@@ -398,11 +399,25 @@ let query needle type_ =
           ((term, type_), (snd cs)) :: acc
         else
           acc
-  end ~init:[] in
-  let terms = List.sort begin fun a b ->
-    (snd a) - (snd b)
-  end terms in
-  let res_terms = List.take terms 50 in
+  end ~init:acc in
+  let terms = List.sort compare_results terms in
+  List.take terms results_limit
+
+let keep_top x y =
+  let merged = List.merge x y compare_results in
+  List.take merged results_limit
+
+let query workers needle type_ =
+  let needle = strip_special_characters needle in
+  let terms = get_terms needle type_ in
+
+  let res_terms = MultiWorker.call
+    workers
+    ~job:(check_terms needle)
+    ~neutral:([])
+    ~merge:(keep_top)
+    ~next:(Bucket.make terms)
+  in
   let res = get_terms_from_string_and_type res_terms in
   List.rev res
 

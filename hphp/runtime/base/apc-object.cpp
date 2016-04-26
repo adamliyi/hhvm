@@ -26,7 +26,6 @@
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/data-walker.h"
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/ext/apc/ext_apc.h"
@@ -238,8 +237,18 @@ Object APCObject::createObject() const {
   auto const apcProp = persistentProps();
 
   if (m_fast_init) {
-    for (unsigned i = 0; i < numProps; ++i) {
-      new (objProp + i) Variant(apcProp[i]->toLocal());
+    unsigned i = 0;
+    try {
+      while (i < numProps) {
+        new (objProp + i) Variant(apcProp[i]->toLocal());
+        ++i;
+      }
+    } catch (...) {
+      while (i < numProps) {
+        new (objProp + i) Variant();
+        ++i;
+      }
+      throw;
     }
   } else {
     for (unsigned i = 0; i < numProps; ++i) {

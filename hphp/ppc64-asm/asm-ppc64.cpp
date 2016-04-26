@@ -808,7 +808,7 @@ void Assembler::patchBctr(CodeAddress jmp, CodeAddress dest) {
 
 #ifdef DEBUG
   // skips the li64, 2*nop and a mtctr instruction
-  CodeAddress bctr_addr = jmp + kLi64InstrLen + 3 * kBytesPerInstr;
+  CodeAddress bctr_addr = jmp + kLi64InstrLen + 3 * instr_size_in_bytes;
 
   // check for instruction opcode
   DecoderInfo* dinfo = Decoder::GetDecoder().decode(bctr_addr);
@@ -826,60 +826,6 @@ void Assembler::patchBctr(CodeAddress jmp, CodeAddress dest) {
   b.li64(reg::r12, ssize_t(dest));
 }
 
-// Destroy a new frame on call stack
-void Assembler::popFrame(const Reg64& rsp) {
-  addi(rsp, rsp, 16);
-}
-
-// Create prologue when calling
-void Assembler::prologue (const Reg64& rsp,
-                          const Reg64& rtoc,
-                          const Reg64& rfuncln,
-                          const Reg64& rvmfp) {
-  // Get return address.
-  mflr(rfuncln);
-
-  // Push LR and TOC
-  stdu(rtoc, rsp[-8]);          // this toc will never be overwritten.
-  stdu(rfuncln, rsp[-8]);
-
-  // The following toc is needed for unwind purposes at 24(r1) but might be
-  // overwritten (see epilogue below)
-
-  // Allocate frame and save the rvmfp as backchain.
-  addi(reg::r1, rsp, -32);
-  std(rtoc, reg::r1[24]);
-  std(rvmfp, reg::r1[0]);
-}
-
-void Assembler::epilogue (const Reg64& rsp,
-                          const Reg64& rtoc,
-                          const Reg64& rfuncln) {
-  // The following TOC pointer recover may not be valid, as the called function
-  // might have pushed something onto the stack, thus overwriting the toc
-  // value. However, due to the specific code found below on _Unwind_Resume's
-  // prologue, this instruction needs to be directly after the branch,
-  // otherwise the TOC will be overwritten with another one on _Unwind_Resume's
-  // context:
-  //
-  // mflr    r11                // get the return address pointer
-  // lwz     r11,0(r11)         // read the instruction (4 bytes)
-  // xoris   r11,r11,59457      // validate if it's a load toc: "ld 2, 24(1)"
-  // cmplwi  r11,24
-  // beq     +8                 // skips next store if the load toc exists
-  // std     r2,3384(r1)
-  //
-  ld(reg::r2, reg::r1[24]);     // DON'T REMOVE THIS. See above
-
-  // Recover return address and toc properly.
-  ld(rfuncln, rsp[0]);
-  mtlr(rfuncln);
-  ld(rtoc, rsp[8]);
-
-  // Dealloc return address saved area.
-  addi(rsp, rsp, 16);
-}
-
 void Assembler::li64 (const Reg64& rt, int64_t imm64, bool fixedSize) {
   // li64 always emits 5 instructions i.e. 20 bytes of instructions.
   // Assumes that 0 bytes will be missing in the end.
@@ -895,9 +841,9 @@ void Assembler::li64 (const Reg64& rt, int64_t imm64, bool fixedSize) {
       // clear extended sign that should not be set
       // (32bits number. Sets the 16th bit but not the 17th, it's not negative!)
       clrldi(rt, rt, 48);
-      missing = kLi64InstrLen - 2 * kBytesPerInstr;
+      missing = kLi64InstrLen - 2 * instr_size_in_bytes;
     } else {
-      missing = kLi64InstrLen - 1 * kBytesPerInstr;
+      missing = kLi64InstrLen - 1 * instr_size_in_bytes;
     }
   } else if (HPHP::jit::deltaFits(imm64, HPHP::sz::dword)) {
     // immediate has only low 32 bits set
@@ -907,9 +853,9 @@ void Assembler::li64 (const Reg64& rt, int64_t imm64, bool fixedSize) {
       // clear extended sign
       // (64bits number. Sets the 32th bit but not the 33th, it's not negative!)
       clrldi(rt, rt, 32);
-      missing = kLi64InstrLen - 3 * kBytesPerInstr;
+      missing = kLi64InstrLen - 3 * instr_size_in_bytes;
     } else {
-      missing = kLi64InstrLen - 2 * kBytesPerInstr;
+      missing = kLi64InstrLen - 2 * instr_size_in_bytes;
     }
   } else if (imm64 >> 48 == 0) {
     // immediate has only low 48 bits set
@@ -921,7 +867,7 @@ void Assembler::li64 (const Reg64& rt, int64_t imm64, bool fixedSize) {
       // clear extended sign
       clrldi(rt, rt, 16);
     } else {
-      missing = kLi64InstrLen - 4 * kBytesPerInstr;
+      missing = kLi64InstrLen - 4 * instr_size_in_bytes;
     }
   } else {
     // load all 64 bits
@@ -945,7 +891,7 @@ int64_t Assembler::getLi64(PPC64Instr* pinstr) {
   // by counting how many nops there are inside of the code
   uint8_t nops = [&]() {
     uint8_t nNops = 0;
-    for (PPC64Instr* i = pinstr; i < pinstr + kLi64InstrLen/kBytesPerInstr;
+    for (PPC64Instr* i = pinstr; i < pinstr + kLi64InstrLen/instr_size_in_bytes;
         i++) {
       if (Decoder::GetDecoder().decode(*i)->isNop()) nNops++;
     }
@@ -1035,7 +981,7 @@ void Assembler::li32 (const Reg64& rt, int32_t imm32) {
       // (32bits number. Sets the 16th bit but not the 17th, it's not negative!)
       clrldi(rt, rt, 48);
     } else {
-      emitNop(kBytesPerInstr); // emit nop for a balanced li32 with 2 instr
+      emitNop(instr_size_in_bytes); // emit nop for a balanced li32 with 2 instr
     }
   } else {
     // immediate has 32 bits set

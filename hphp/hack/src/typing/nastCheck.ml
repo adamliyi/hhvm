@@ -29,9 +29,10 @@ open Typing_defs
 open Utils
 
 module Env = Typing_env
-module Inst = Typing_instantiate
+module Inst = Decl_instantiate
 module Phase = Typing_phase
-module TSubst = Typing_subst
+module TGenConstraint = Typing_generic_constraint
+module Subst = Decl_subst
 module TUtils = Typing_utils
 
 module CheckFunctionType = struct
@@ -297,10 +298,13 @@ and hint_ env p = function
       List.iter hl (hint env);
       hint env h;
       ()
-  | Happly ((_, x), hl) as h when Typing_env.is_typedef x ->
-      let {td_tparams; _} = Typing_heap.Typedefs.find_unsafe x in
-      check_happly env.typedef_tparams env.tenv (p, h);
-      check_params env p x td_tparams hl
+  | Happly ((_, x), hl) as h when Env.is_typedef x ->
+    begin match Typing_lazy_heap.get_typedef (Env.get_options env.tenv) x with
+      | Some {td_tparams; _} ->
+        check_happly env.typedef_tparams env.tenv (p, h);
+        check_params env p x td_tparams hl
+      | None -> ()
+    end
   | Happly ((_, x), hl) as h ->
       (match Env.get_class env.tenv x with
       | None -> ()
@@ -325,12 +329,12 @@ and check_arity env p tname arity size =
 
 and check_happly unchecked_tparams env h =
   let env = { env with Env.pos = (fst h) } in
-  let decl_ty = Typing_hint.hint env.Env.decl_env h in
+  let decl_ty = Decl_hint.hint env.Env.decl_env h in
   let env, unchecked_tparams =
     List.map_env env unchecked_tparams begin fun env (v, sid, cstr_opt) ->
       let env, cstr_opt = match cstr_opt with
         | Some (ck, cstr) ->
-            let cstr = Typing_hint.hint env.Env.decl_env cstr in
+            let cstr = Decl_hint.hint env.Env.decl_env cstr in
             env, Some (ck, cstr)
         | None -> env, None in
       env, (v, sid, cstr_opt)
@@ -356,7 +360,7 @@ and check_happly unchecked_tparams env h =
                  *)
                 let ety_env =
                   { (Phase.env_with_self env) with
-                    substs = TSubst.make tc_tparams tyl;
+                    substs = Subst.make tc_tparams tyl;
                   } in
                 iter2_shortest begin fun (_, (p, x), cstr_opt) ty ->
                   match cstr_opt with
@@ -365,7 +369,7 @@ and check_happly unchecked_tparams env h =
                       let env, cstr_ty = Phase.localize ~ety_env env cstr_ty in
                       ignore @@ Errors.try_
                         (fun () ->
-                          TSubst.check_constraint env ck cstr_ty ty
+                          TGenConstraint.check_constraint env ck cstr_ty ty
                         )
                         (fun l ->
                           Reason.explain_generic_constraint env.Env.pos r x l;

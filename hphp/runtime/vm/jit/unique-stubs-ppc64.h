@@ -17,6 +17,7 @@
 #ifndef incl_HPHP_JIT_UNIQUE_STUBS_PPC64_H_
 #define incl_HPHP_JIT_UNIQUE_STUBS_PPC64_H_
 
+#include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/abi-ppc64.h"
 #include "hphp/runtime/vm/jit/vasm-gen.h"
 #include "hphp/runtime/vm/jit/vasm-reg.h"
@@ -36,12 +37,10 @@ namespace ppc64 {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-///////////////////////////////////////////////////////////////////////////////
-
-TCA emitFunctionEnterHelper(CodeBlock& cb, UniqueStubs& us);
-TCA emitFreeLocalsHelpers(CodeBlock& cb, UniqueStubs& us);
-TCA emitCallToExit(CodeBlock& cb);
-TCA emitEndCatchHelper(CodeBlock& cb, UniqueStubs& us);
+TCA emitFunctionEnterHelper(CodeBlock& cb, DataBlock& data, UniqueStubs& us);
+TCA emitFreeLocalsHelpers(CodeBlock& cb, DataBlock& data, UniqueStubs& us);
+TCA emitCallToExit(CodeBlock& cb, DataBlock& data, const UniqueStubs& us);
+TCA emitEndCatchHelper(CodeBlock& cb, DataBlock& data, UniqueStubs& us);
 
 void enterTCImpl(TCA start, ActRec* stashedAR);
 

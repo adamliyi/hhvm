@@ -72,6 +72,11 @@ module WorkerApi = struct
     let key = strip_ns name in
     SS.WorkerApi.process_fuzzy_term key name (fst id) type_ acc
 
+  let add_autocomplete_term id type_ acc =
+    let pos, name = id in
+    let key = strip_ns name in
+    SS.WorkerApi.process_autocomplete_term key name pos type_ acc
+
   (* Called by a worker after the file is parsed *)
   let update fn ast =
     let fuzzy_defs, trie_defs =
@@ -96,7 +101,14 @@ module WorkerApi = struct
           fuzzy_defs, trie_defs
       | _ -> fuzzy_defs, trie_defs
     end ~init:(SS.Fuzzy.TMap.empty, []) in
-    SS.WorkerApi.update fn trie_defs fuzzy_defs
+    let autocomplete_defs = List.fold_left ast ~f:begin fun acc def ->
+      match def with
+      | Ast.Fun f -> add_autocomplete_term f.Ast.f_name Function acc
+      | Ast.Class c -> add_autocomplete_term
+          c.Ast.c_name (Class c.Ast.c_kind) acc
+      | _ -> acc
+    end ~init:[] in
+    SS.WorkerApi.update fn trie_defs fuzzy_defs autocomplete_defs
 end
 
 module MasterApi = struct
@@ -107,8 +119,11 @@ module MasterApi = struct
     | "typedef" -> Some Typedef
     | _ -> None
 
-  let query input type_ =
-    SS.MasterApi.query input (get_type type_)
+  let query workers input type_ =
+    SS.MasterApi.query workers input (get_type type_)
+
+  let query_autocomplete input ~limit ~filter_map =
+    SS.AutocompleteTrie.MasterApi.query input ~limit ~filter_map
 
   let clear_shared_memory =
     SS.MasterApi.clear_shared_memory
@@ -116,27 +131,6 @@ module MasterApi = struct
   let update_search_index files =
     SS.MasterApi.update_search_index files
 end
-
-(* This module does the same thing as MasterApi.update_search_index, but
- * allows to process updates in small chunks instead of blocking the process
- * for the entire duriation of index construction *)
-module IdeProcessApi = struct
-
-  let files_to_index = ref []
-  let batch_size = 1000
-
-  let enqueue_updates files =
-    files_to_index := files @ !files_to_index
-
-  let updates_pending () =
-    not (List.is_empty !files_to_index)
-
-  let process_updates () =
-    let files_to_process, files_remaining = List.split_n
-      !files_to_index batch_size in
-    SS.MasterApi.update_search_index files_to_process;
-    files_to_index := files_remaining
-  end
 
 let attach_hooks () =
   Parsing_hooks.attach_file_parsed_hook WorkerApi.update;

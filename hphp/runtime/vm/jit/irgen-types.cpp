@@ -22,7 +22,6 @@
 #include "hphp/runtime/vm/jit/irgen-exit.h"
 #include "hphp/runtime/vm/jit/irgen-interpone.h"
 #include "hphp/runtime/vm/jit/irgen-builtin.h"
-#include "hphp/runtime/vm/jit/irgen-guards.h"
 
 #include "hphp/runtime/vm/jit/irgen-internal.h"
 
@@ -133,7 +132,7 @@ void verifyTypeImpl(IRGS& env, int32_t const id) {
   auto const valType = [&]() -> Type {
     if (val->type() <= TCell) return val->type();
     if (isReturnType) PUNT(VerifyReturnTypeBoxed);
-    auto const pred = env.irb->predictedInnerType(id);
+    auto const pred = env.irb->predictedLocalInnerType(id);
     gen(env, CheckRefInner, pred, makeExit(env), val);
     val = gen(env, LdRef, pred, val);
     return pred;
@@ -155,7 +154,7 @@ void verifyTypeImpl(IRGS& env, int32_t const id) {
   auto retFail = [&] {
     updateMarker(env);
     env.irb->exceptionStackBoundary();
-    gen(env, VerifyRetFail, ldStkAddr(env, BCSPOffset{0}));
+    gen(env, VerifyRetFail, ldStkAddr(env, BCSPRelOffset{0}));
   };
 
   auto result = annotCompat(valType.toDataType(), tc.type(), tc.typeName());
@@ -536,7 +535,7 @@ void emitAssertRATL(IRGS& env, int32_t loc, RepoAuthType rat) {
 
 void emitAssertRATStk(IRGS& env, int32_t offset, RepoAuthType rat) {
   if (auto const t = ratToAssertType(env, rat)) {
-    assertTypeStack(env, BCSPOffset{offset}, *t);
+    assertTypeStack(env, BCSPRelOffset{offset}, *t);
   }
 }
 

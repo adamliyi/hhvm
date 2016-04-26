@@ -20,6 +20,7 @@
 #include "hphp/runtime/base/type-array.h"
 #include "hphp/runtime/base/type-object.h"
 #include "hphp/runtime/base/type-variant.h"
+#include "hphp/runtime/base/ini-setting.h"
 
 namespace HPHP {
 namespace req {
@@ -32,7 +33,7 @@ size_t req::root_handle::addRootHandle() {
 }
 
 size_t req::root_handle::stealRootHandle(root_handle* s) {
-  if (s->m_id == INVALID) return INVALID;
+  assert(s->m_id != INVALID);
   auto& handles = MM().m_root_handles;
   auto id = s->m_id;
   handles[id] = this;
@@ -68,5 +69,6 @@ template struct root<String>;
 template struct root<Array>;
 template struct root<Object>;
 template struct root<Variant>;
+template struct root<IniSettingMap>;
 
 }}

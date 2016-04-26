@@ -23,10 +23,12 @@ type mode =
   | Color
   | Coverage
   | Dump_symbol_info
+  | Dump_inheritance
   | Errors
   | Lint
   | Suggest
   | Dump_deps
+  | Identify_symbol of int * int
 
 type options = {
   filename : string;
@@ -46,7 +48,7 @@ let builtins =
   "interface KeyedTraversable<+Tk, +Tv> extends Traversable<Tv> {}\n"^
   "interface KeyedContainer<+Tk, +Tv> extends Container<Tv>, KeyedTraversable<Tk,Tv> {}\n"^
   "interface KeyedIterator<+Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterator<Tv> {}\n"^
-  "interface KeyedIterable<+Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> {}\n"^
+  "interface KeyedIterable<Tk, +Tv> extends KeyedTraversable<Tk, Tv>, Iterable<Tv> {}\n"^
   "interface Awaitable<+T> {"^
   "  public function getWaitHandle(): WaitHandle<T>;"^
   "}\n"^
@@ -55,7 +57,7 @@ let builtins =
   "  public function map<Tu>((function(Tv): Tu) $callback): ConstVector<Tu>;"^
   "}\n"^
   "interface ConstSet<+Tv> extends KeyedIterable<mixed, Tv>, Container<Tv>{}\n"^
-  "interface ConstMap<+Tk, +Tv> extends KeyedIterable<Tk, Tv>, KeyedContainer<Tk, Tv>{"^
+  "interface ConstMap<Tk, +Tv> extends KeyedIterable<Tk, Tv>, KeyedContainer<Tk, Tv>{"^
   "  public function map<Tu>((function(Tv): Tu) $callback): ConstMap<Tk, Tu>;"^
   "  public function mapWithKey<Tu>((function(Tk, Tv): Tu) $fn): ConstMap<Tk, Tu>;"^
   "}\n"^
@@ -75,7 +77,7 @@ let builtins =
   "  public function mapWithKey<Tu>((function(Tk, Tv): Tu) $fn): Map<Tk, Tu>;"^
   "  public function contains(Tk $k): bool;"^
   "}\n"^
-  "final class ImmMap<+Tk, +Tv> implements ConstMap<Tk, Tv>{"^
+  "final class ImmMap<Tk, +Tv> implements ConstMap<Tk, Tv>{"^
   "  public function map<Tu>((function(Tv): Tu) $callback): ImmMap<Tk, Tu>;"^
   "  public function mapWithKey<Tu>((function(Tk, Tv): Tu) $fn): ImmMap<Tk, Tu>;"^
   "}\n"^
@@ -89,7 +91,7 @@ let builtins =
   "  public function __construct(string $x) {}"^
   "  public function getMessage(): string;"^
   "}\n"^
-  "class Generator<+Tk, +Tv, -Ts> implements KeyedIterator<Tk, Tv> {\n"^
+  "class Generator<Tk, +Tv, -Ts> implements KeyedIterator<Tk, Tv> {\n"^
   "  public function next(): void;\n"^
   "  public function current(): Tv;\n"^
   "  public function key(): Tk;\n"^
@@ -104,7 +106,7 @@ let builtins =
   "interface Countable { public function count(): int; }\n"^
   "interface AsyncIterator<+Tv> {}\n"^
   "interface AsyncKeyedIterator<+Tk, +Tv> extends AsyncIterator<Tv> {}\n"^
-  "class AsyncGenerator<+Tk, +Tv, -Ts> implements AsyncKeyedIterator<Tk, Tv> {\n"^
+  "class AsyncGenerator<Tk, +Tv, -Ts> implements AsyncKeyedIterator<Tk, Tv> {\n"^
   "  public function next(): Awaitable<?(Tk, Tv)> {}\n"^
   "  public function send(?Ts $v): Awaitable<?(Tk, Tv)> {}\n"^
   "  public function raise(Exception $e): Awaitable<?(Tk, Tv)> {}"^
@@ -184,7 +186,9 @@ let builtins =
   "const string __FUNCTION__ = '';\n"^
   "const string __METHOD__ = '';\n"^
   "const string __NAMESPACE__ = '';\n"^
-  "interface Indexish<+Tk, +Tv> extends KeyedContainer<Tk, Tv> {}\n"
+  "interface Indexish<+Tk, +Tv> extends KeyedContainer<Tk, Tv> {}\n"^
+  "abstract final class dict<+Tk, +Tv> implements Indexish<Tk, Tv> {}\n"^
+  "function dict<Tk, Tv>(KeyedTraversable<Tk, Tv> $arr): dict<Tk, Tv> {}\n"
 
 (*****************************************************************************)
 (* Helpers *)
@@ -203,6 +207,7 @@ let parse_options () =
   let usage = Printf.sprintf "Usage: %s filename\n" Sys.argv.(0) in
   let mode = ref Errors in
   let no_builtins = ref false in
+  let line = ref 0 in
   let set_mode x () =
     if !mode <> Errors
     then raise (Arg.Bad "only a single mode should be specified")
@@ -239,6 +244,15 @@ let parse_options () =
     "--dump-deps",
       Arg.Unit (set_mode Dump_deps),
       "Print dependencies";
+    "--dump-inheritance",
+      Arg.Unit (set_mode Dump_inheritance),
+      "Print inheritance";
+    "--identify-symbol",
+      Arg.Tuple ([
+        Arg.Int (fun x -> line := x);
+        Arg.Int (fun column -> set_mode (Identify_symbol (!line, column)) ());
+      ]),
+      "Show info about symbol at given line and column";
   ] in
   let options = Arg.align options in
   Arg.parse options (fun fn -> fn_ref := Some fn) usage;
@@ -258,9 +272,9 @@ let suggest_and_print fn { FileInfo.funs; classes; typedefs; consts; _ } =
   let n_types = make_set typedefs in
   let n_consts = make_set consts in
   let names = { FileInfo.n_funs; n_classes; n_types; n_consts } in
-  let fast = Relative_path.Map.add fn names Relative_path.Map.empty in
+  let fast = Relative_path.Map.singleton fn names in
   let patch_map = Typing_suggest_service.go None fast in
-  match Relative_path.Map.get fn patch_map with
+  match Relative_path.Map.get patch_map fn with
     | None -> ()
     | Some l -> begin
       (* Sort so that the unit tests come out in a consistent order, normally
@@ -302,7 +316,7 @@ let file_to_files file =
     List.fold_left ~f: begin fun acc (sub_fn, content) ->
       let file =
         Relative_path.create Relative_path.Dummy (abs_fn^"--"^sub_fn) in
-      Relative_path.Map.add file content acc
+      Relative_path.Map.add acc ~key:file ~data:content
     end ~init: Relative_path.Map.empty files
   else if str_starts_with content "// @directory " then
     let contentl = Str.split (Str.regexp "\n") content in
@@ -336,36 +350,51 @@ let print_coverage fn type_acc =
   let counts = ServerCoverageMetric.count_exprs fn type_acc in
   ClientCoverageMetric.go ~json:false (Some (Leaf counts))
 
+let print_symbol symbol =
+  let open IdentifySymbolService in
+  Printf.printf "%s\n%s\n%s\n"
+    symbol.name
+    begin match symbol.type_ with
+    | Class -> "Class"
+    | Function -> "Function"
+    | Method _ -> "Method"
+    | LocalVar -> "LocalVar"
+    end
+    (Pos.string_no_file symbol.pos);
+  Option.iter symbol.name_pos begin fun x ->
+    Printf.printf "defined: %s\n"  (Pos.string_no_file x)
+  end
+
 let handle_mode mode filename tcopt files_contents files_info errors =
   match mode with
   | Ai _ -> ()
   | Autocomplete ->
       let file = cat (Relative_path.to_absolute filename) in
       let result =
-        ServerAutoComplete.auto_complete files_info file in
+        ServerAutoComplete.auto_complete tcopt files_info file in
       List.iter ~f: begin fun r ->
         let open AutocompleteService in
         Printf.printf "%s %s\n" r.res_name r.res_ty
       end result
   | Color ->
-      Relative_path.Map.iter begin fun fn fileinfo ->
+      Relative_path.Map.iter files_info begin fun fn fileinfo ->
         if fn = builtins_filename then () else begin
           let result = ServerColorFile.get_level_list begin fun () ->
-            ignore @@ Typing_check_utils.check_defs tcopt fileinfo;
+            ignore @@ Typing_check_utils.check_defs tcopt fn fileinfo;
             fn
           end in
           print_colored fn result;
         end
-      end files_info
+      end
   | Coverage ->
-      Relative_path.Map.iter begin fun fn fileinfo ->
+      Relative_path.Map.iter files_info begin fun fn fileinfo ->
         if fn = builtins_filename then () else begin
-          let type_acc = ServerCoverageMetric.accumulate_types fileinfo in
+          let type_acc = ServerCoverageMetric.accumulate_types fn fileinfo in
           print_coverage fn type_acc;
         end
-      end files_info
+      end
   | Dump_symbol_info ->
-      begin match Relative_path.Map.get filename files_info with
+      begin match Relative_path.Map.get files_info filename with
         | Some fileinfo ->
             let raw_result =
               SymbolInfoService.helper [] [(filename, fileinfo)] in
@@ -375,12 +404,12 @@ let handle_mode mode filename tcopt files_contents files_info errors =
         | None -> ()
       end
   | Lint ->
-      let lint_errors =
-        Relative_path.Map.fold begin fun fn content lint_errors ->
+      let lint_errors = Relative_path.Map.fold files_contents ~init:[]
+        ~f:begin fun fn content lint_errors ->
           lint_errors @ fst (Lint.do_ begin fun () ->
-            Linting_service.lint fn content
+            Linting_service.lint tcopt fn content
           end)
-        end files_contents [] in
+        end in
       if lint_errors <> []
       then begin
         let lint_errors = List.sort ~cmp: begin fun x y ->
@@ -392,17 +421,46 @@ let handle_mode mode filename tcopt files_contents files_info errors =
       end
       else Printf.printf "No lint errors\n"
   | Dump_deps ->
-    Relative_path.Map.iter begin fun _ fileinfo ->
-      ignore @@ Typing_check_utils.check_defs tcopt fileinfo
-    end files_info;
+    Relative_path.Map.iter files_info begin fun fn fileinfo ->
+      ignore @@ Typing_check_utils.check_defs tcopt fn fileinfo
+    end;
     Typing_deps.dump_deps stdout
+  | Dump_inheritance ->
+    Typing_deps.update_files files_info;
+    Relative_path.Map.iter files_info begin fun fn fileinfo ->
+      if fn = builtins_filename then () else begin
+        List.iter fileinfo.FileInfo.classes begin fun (_p, class_) ->
+          Printf.printf "Ancestors of %s and their overridden methods:\n"
+            class_;
+          let ancestors = MethodJumps.get_inheritance tcopt
+            class_ ~find_children:false files_info None in
+          ClientMethodJumps.print_readable ancestors ~find_children:false;
+          Printf.printf "\n";
+        end;
+        Printf.printf "\n";
+        List.iter fileinfo.FileInfo.classes begin fun (_p, class_) ->
+          Printf.printf "Children of %s and the methods they override:\n"
+            class_;
+          let children = MethodJumps.get_inheritance tcopt
+            class_ ~find_children:true files_info None in
+          ClientMethodJumps.print_readable children ~find_children:true;
+          Printf.printf "\n";
+        end;
+      end
+    end;
+  | Identify_symbol (line, column) ->
+    let file = cat (Relative_path.to_absolute filename) in
+    let result = ServerIdentifyFunction.go file line column tcopt in
+    Option.iter result print_symbol
   | Suggest
   | Errors ->
-      let errors = Relative_path.Map.fold begin fun _ fileinfo errors ->
-        errors @ Typing_check_utils.check_defs tcopt fileinfo
-      end files_info errors in
+      let errors =
+        Relative_path.Map.fold files_info ~f:begin fun fn fileinfo errors ->
+          errors @ Errors.get_error_list
+              (Typing_check_utils.check_defs tcopt fn fileinfo)
+        end ~init:errors in
       if mode = Suggest
-      then Relative_path.Map.iter suggest_and_print files_info;
+      then Relative_path.Map.iter files_info suggest_and_print;
       if errors <> []
       then (error (List.hd_exn errors); exit 2)
       else Printf.printf "No errors\n"
@@ -422,9 +480,8 @@ let decl_and_run_mode {filename; mode; no_builtins} =
     let parsed_files =
       Relative_path.Map.mapi Parser_hack.program files_contents in
     let parsed_builtins = Parser_hack.program builtins_filename builtins in
-    let parsed_files =
-      Relative_path.Map.add builtins_filename parsed_builtins parsed_files
-    in
+    let parsed_files = Relative_path.Map.add parsed_files
+      ~key:builtins_filename ~data:parsed_builtins in
 
     let files_info =
       Relative_path.Map.mapi begin fun fn parsed_file ->
@@ -436,18 +493,19 @@ let decl_and_run_mode {filename; mode; no_builtins} =
           consider_names_just_for_autoload = false }
       end parsed_files in
 
-    Relative_path.Map.iter begin fun fn fileinfo ->
+    Relative_path.Map.iter files_info begin fun fn fileinfo ->
       let {FileInfo.funs; classes; typedefs; consts; _} = fileinfo in
       NamingGlobal.make_env ~funs ~classes ~typedefs ~consts
-    end files_info;
+    end;
 
-    Relative_path.Map.iter begin fun fn _ ->
-      Typing_decl.make_env tcopt fn
-    end files_info;
+    Relative_path.Map.iter files_info begin fun fn _ ->
+      Decl.make_env tcopt fn
+    end;
 
     files_info
   end in
-  handle_mode mode filename tcopt files_contents files_info errors
+  handle_mode mode filename tcopt files_contents files_info
+    (Errors.get_error_list errors)
 
 let main_hack ({filename; mode; no_builtins;} as opts) =
   Sys_utils.signal Sys.sigusr1

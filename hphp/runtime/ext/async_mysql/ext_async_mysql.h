@@ -28,7 +28,6 @@
 #include <squangle/logger/DBEventCounter.h>
 
 #include "hphp/runtime/ext/asio/asio-external-thread-event.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
 #include "hphp/runtime/ext/extension.h"
 
 #include <folly/Format.h>
@@ -37,6 +36,9 @@ using folly::StringPiece;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
+
+struct c_Vector;
+
 namespace am = facebook::common::mysql_client;
 namespace db = facebook::db;
 
@@ -102,6 +104,7 @@ struct AsyncMysqlConnection {
   void setConnectOperation(std::shared_ptr<am::ConnectOperation> op);
   void setClientStats(db::ClientPerfStats perfStats);
   void verifyValidConnection();
+  bool isValidConnection();
   static Class* getClass();
   static Object newInstance(
       std::unique_ptr<am::Connection> conn,
@@ -128,20 +131,20 @@ struct AsyncMysqlConnection {
 struct MySSLContextProvider {
   MySSLContextProvider() {}
   explicit MySSLContextProvider(
-      std::unique_ptr<am::SSLOptionsProviderBase> provider);
+      std::shared_ptr<am::SSLOptionsProviderBase> provider);
 
   MySSLContextProvider& operator=(const MySSLContextProvider& that_) = delete;
 
   static Object newInstance(
-      std::unique_ptr<am::SSLOptionsProviderBase> ssl_provider);
+      std::shared_ptr<am::SSLOptionsProviderBase> ssl_provider);
   static Class* getClass();
-  std::unique_ptr<am::SSLOptionsProviderBase> stealSSLProvider();
-  void setSSLProvider(std::unique_ptr<am::SSLOptionsProviderBase> ssl_provider);
+  std::shared_ptr<am::SSLOptionsProviderBase> getSSLProvider();
+  void setSSLProvider(std::shared_ptr<am::SSLOptionsProviderBase> ssl_provider);
 
   static Class* s_class;
   static const StaticString s_className;
 
-  std::unique_ptr<am::SSLOptionsProviderBase> m_provider;
+  std::shared_ptr<am::SSLOptionsProviderBase> m_provider;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

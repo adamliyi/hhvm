@@ -179,6 +179,8 @@ public:
   bool isEmptyArray() const { return kind() == kEmptyKind; }
   bool isDict() const { return kind() == kDictKind; }
 
+  bool isMixedLayout() const { return isMixed() || isDict(); }
+
   /*
    * Returns whether or not this array contains "vector-like" data.
    * I.e. iteration order produces int keys 0 to m_size-1 in sequence.
@@ -252,6 +254,8 @@ public:
    */
   ArrayData *set(int64_t k, const Variant& v, bool copy);
   ArrayData *set(StringData* k, const Variant& v, bool copy);
+  ArrayData *set(int64_t k, Cell v, bool copy);
+  ArrayData *set(StringData* k, Cell v, bool copy);
 
   ArrayData *setRef(int64_t k, Variant& v, bool copy);
   ArrayData *setRef(StringData* k, Variant& v, bool copy);
@@ -424,6 +428,33 @@ public:
 
   static const char* kindToString(ArrayKind kind);
 
+  // helpers for IterateV and IterateKV
+  template <typename Fn, class... Args>
+  ALWAYS_INLINE
+  static typename std::enable_if<
+    std::is_same<typename std::result_of<Fn(Args...)>::type,
+                 void>::value, bool>::type
+  call_helper(Fn f, Args&&... args) {
+    f(std::forward<Args>(args)...);
+    return false;
+  }
+
+  template <typename Fn, class... Args>
+  ALWAYS_INLINE
+  static typename std::enable_if<
+    std::is_same<typename std::result_of<Fn(Args...)>::type,
+                 bool>::value, bool>::type
+  call_helper(Fn f, Args&&... args) {
+    return f(std::forward<Args>(args)...);
+  }
+
+  template <typename B, class... Args>
+  ALWAYS_INLINE
+  static typename std::enable_if<std::is_same<B, bool>::value, bool>::type
+  call_helper(B f, Args&&... args) {
+    return f;
+  }
+
 private:
   friend size_t getMemSize(const ArrayData*);
   static void compileTimeAssertions() {
@@ -570,10 +601,10 @@ void decRefArr(ArrayData* arr) {
   arr->decRefAndRelease();
 }
 
-ATTRIBUTE_NORETURN void throwInvalidArrayKeyException(const TypedValue* key);
-ATTRIBUTE_NORETURN void throwOOBArrayKeyException(TypedValue key);
-ATTRIBUTE_NORETURN void throwOOBArrayKeyException(int64_t key);
-ATTRIBUTE_NORETURN void throwOOBArrayKeyException(const StringData* key);
+[[noreturn]] void throwInvalidArrayKeyException(const TypedValue* key);
+[[noreturn]] void throwOOBArrayKeyException(TypedValue key);
+[[noreturn]] void throwOOBArrayKeyException(int64_t key);
+[[noreturn]] void throwOOBArrayKeyException(const StringData* key);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

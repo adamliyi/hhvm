@@ -18,7 +18,8 @@
 #include "hphp/runtime/ext/asio/ext_await-all-wait-handle.h"
 
 #include "hphp/runtime/ext/asio/ext_asio.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
+#include "hphp/runtime/ext/collections/ext_collections-map.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
 #include "hphp/runtime/ext/asio/asio-blockable.h"
 #include "hphp/runtime/ext/asio/asio-session.h"
 #include "hphp/runtime/ext/asio/ext_wait-handle.h"
@@ -45,25 +46,25 @@ req::ptr<c_AwaitAllWaitHandle> c_AwaitAllWaitHandle::Alloc(int32_t cnt) {
 namespace {
   StaticString s_awaitAll("<await-all>");
 
-  NEVER_INLINE ATTRIBUTE_NORETURN
+  [[noreturn]] NEVER_INLINE
   void failArray() {
     SystemLib::throwInvalidArgumentExceptionObject(
       "Expected dependencies to be an array");
   }
 
-  NEVER_INLINE ATTRIBUTE_NORETURN
+  [[noreturn]] NEVER_INLINE
   void failMap() {
     SystemLib::throwInvalidArgumentExceptionObject(
       "Expected dependencies to be a Map");
   }
 
-  NEVER_INLINE ATTRIBUTE_NORETURN
+  [[noreturn]] NEVER_INLINE
   void failVector() {
     SystemLib::throwInvalidArgumentExceptionObject(
       "Expected dependencies to be a Vector");
   }
 
-  NEVER_INLINE ATTRIBUTE_NORETURN
+  [[noreturn]] NEVER_INLINE
   void failWaitHandle() {
     SystemLib::throwInvalidArgumentExceptionObject(
       "Expected dependencies to be a collection of WaitHandle instances");
@@ -77,6 +78,7 @@ namespace {
     auto const waitHandle = c_WaitHandle::fromCell(src);
     if (UNLIKELY(!waitHandle)) failWaitHandle();
     if (waitHandle->isFinished()) return;
+    assert(isa<c_WaitableWaitHandle>(waitHandle));
     auto const child = static_cast<c_WaitableWaitHandle*>(waitHandle);
     ctx_idx = std::min(ctx_idx, child->getContextIdx());
     ++cnt;
@@ -89,8 +91,9 @@ namespace {
 
     waitHandle->incRefCount();
     (--dst)->m_child = static_cast<c_WaitableWaitHandle*>(waitHandle);
+    dst->m_index = idx--;
     dst->m_child->getParentChain().addParent(dst->m_blockable,
-      AsioBlockable::Kind::AwaitAllWaitHandleNode, idx--);
+      AsioBlockable::Kind::AwaitAllWaitHandleNode);
     return true;
   }
 
@@ -190,54 +193,17 @@ Object c_AwaitAllWaitHandle::createAAWH(T start, T stop,
     return Object{returnEmpty()};
   }
 
-  if (LIKELY(cnt <= kMaxNodes)) {
-    // Common case: less than 64k items
-    auto result = Alloc(cnt);
-    auto next = &result->m_children[cnt];
+  auto result = Alloc(cnt);
+  auto next = &result->m_children[cnt];
 
-    uint32_t idx = cnt - 1;
-    for (auto iter = start; iter != stop; iter = iterNext(iter, stop)) {
-      addChild(getCell(iter), next, idx);
-    }
-
-    assert(next == &result->m_children[0]);
-    result->initialize(ctx_idx);
-    return Object{std::move(result)};
+  uint32_t idx = cnt - 1;
+  for (auto iter = start; iter != stop; iter = iterNext(iter, stop)) {
+    addChild(getCell(iter), next, idx);
   }
 
-  // Slow path. When we have more than 64k items, we need child AAWHs.
-  auto iter = start;
-  uint32_t nChildAAWH = (cnt + kMaxNodes - 1) / kMaxNodes;
-  auto rootAAWH = Alloc(nChildAAWH);
-  auto nextAAWH = &rootAAWH->m_children[nChildAAWH];
-  assert(nChildAAWH > 1);
-
-  uint32_t rootIdx = nChildAAWH - 1;
-  for (uint32_t i = 0; i < nChildAAWH; ++i) {
-    uint32_t n = (i < nChildAAWH - 1) ?
-        kMaxNodes : (cnt - i * kMaxNodes);
-    auto childAAWH = Alloc(n);
-    auto next = &childAAWH->m_children[n];
-    uint32_t idx = n - 1;
-    for (uint32_t j = 0; j < n ; iter = iterNext(iter, stop), ++j) {
-      assert(iter != stop);
-      if (!addChild(getCell(iter), next, idx)) {
-        // Don't count finished wait-handles
-        --j;
-      }
-    }
-    assert(next == &childAAWH->m_children[0]);
-    childAAWH->initialize(ctx_idx);
-
-    childAAWH->incRefCount();
-    (--nextAAWH)->m_child = static_cast<c_WaitableWaitHandle*>(childAAWH.get());
-    nextAAWH->m_child->getParentChain().addParent(nextAAWH->m_blockable,
-      AsioBlockable::Kind::AwaitAllWaitHandleNode, rootIdx--);
-  }
-  assert(nextAAWH == &rootAAWH->m_children[0]);
-  rootAAWH->initialize(ctx_idx);
-
-  return Object{std::move(rootAAWH)};
+  assert(next == &result->m_children[0]);
+  result->initialize(ctx_idx);
+  return Object{std::move(result)};
 }
 
 Object c_AwaitAllWaitHandle::FromPackedArray(const ArrayData* dependencies) {
@@ -327,12 +293,6 @@ void c_AwaitAllWaitHandle::onUnblocked(uint32_t idx) {
 }
 
 void c_AwaitAllWaitHandle::markAsFinished() {
-  for (int i = 0; i < m_cap; i++) {
-    auto const child = m_children[i].m_child;
-    assert(child->isFinished());
-    decRefObj(child);
-  }
-
   auto parentChain = getParentChain();
   setState(STATE_SUCCEEDED);
   tvWriteNull(&m_resultOrException);
@@ -343,7 +303,6 @@ void c_AwaitAllWaitHandle::markAsFinished() {
 void c_AwaitAllWaitHandle::markAsFailed(const Object& exception) {
   for (uint32_t idx = 0; idx < m_cap; idx++) {
     auto const child = m_children[idx].m_child;
-    decRefObj(child);
     if (!child->isFinished()) {
       // Remove the current AAWH from the parent chain of all children.
       child->getParentChain().removeFromChain(&m_children[idx].m_blockable);

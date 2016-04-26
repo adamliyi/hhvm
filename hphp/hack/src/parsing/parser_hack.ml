@@ -731,7 +731,6 @@ and fun_ ~attr ~(sync:fun_decl_kind) env =
     f_user_attributes = attr;
     f_fun_kind = fun_kind sync is_generator;
     f_mode = env.mode;
-    f_mtime = 0.0;
     f_namespace = Namespace_env.empty;
   }
 
@@ -2599,7 +2598,6 @@ and lambda_body ~sync env params ret =
     f_user_attributes = [];
     f_fun_kind;
     f_mode = env.mode;
-    f_mtime = 0.0;
     f_namespace = Namespace_env.empty;
   }
   in Lfun f
@@ -2733,6 +2731,8 @@ and expr_atomic ~allow_class ~class_const env =
   | Tdollardollar ->
       pos, Dollardollar
   | Tunsafeexpr ->
+      (* Consume the rest of the comment. *)
+      ignore (L.comment (Buffer.create 256) env.file env.lb);
       let e = expr env in
       let end_ = Pos.make env.file env.lb in
       Pos.btw pos end_, Unsafeexpr e
@@ -2763,7 +2763,7 @@ and expr_atomic_word ~allow_class ~class_const env pos = function
       expr_anon_async env pos
   | "function" ->
       expr_anon_fun env pos ~sync:FDeclSync
-  | name when is_collection env ->
+  | name when is_collection env name ->
       expr_collection env pos name
   | "await" ->
       expr_await env pos
@@ -2955,39 +2955,38 @@ and check_call_time_reference = function
 (* Collections *)
 (*****************************************************************************)
 
-and is_collection env = peek env = Tlcb
+and is_collection env name =
+  (peek env = Tlcb) || (name = "dict" && peek env = Tlb)
 
 and expr_collection env pos name =
-  if is_collection env
-  then build_collection env pos name
-  else pos, Id (pos, name)
-
-and build_collection env pos name =
-  let name = pos, name in
-  let fds = collection_field_list env in
+  let sentinels = match name with
+    | x when x = "dict" -> (Tlb, Trb)
+    | _ -> (Tlcb, Trcb)
+  in
+  let fds = collection_field_list env sentinels in
   let end_ = Pos.make env.file env.lb in
-  Pos.btw pos end_, Collection (name, fds)
+  Pos.btw pos end_, Collection ((pos, name), fds)
 
-and collection_field_list env =
-  expect env Tlcb;
-  collection_field_list_remain env
+and collection_field_list env (start_sentinel, end_sentinel) =
+  expect env start_sentinel;
+  collection_field_list_remain env end_sentinel
 
-and collection_field_list_remain env =
+and collection_field_list_remain env end_sentinel =
   match L.token env.file env.lb with
-  | Trcb -> []
+  | x when x = end_sentinel -> []
   | _ ->
       L.back env.lb;
       let error_state = !(env.errors) in
       let fd = array_field env in
       match L.token env.file env.lb with
-      | Trcb ->
+      | x when x = end_sentinel ->
           [fd]
       | Tcomma ->
           if !(env.errors) != error_state
           then [fd]
-          else fd :: collection_field_list_remain env
+          else fd :: collection_field_list_remain env end_sentinel
       | _ ->
-          error_expect env "}"; []
+          error_expect env (L.token_to_string end_sentinel); []
 
 (*****************************************************************************)
 (* Imports - require/include/require_once/include_once *)
@@ -3101,7 +3100,6 @@ and expr_anon_fun env pos ~(sync:fun_decl_kind) =
     f_user_attributes = [];
     f_fun_kind = fun_kind sync is_generator;
     f_mode = env.mode;
-    f_mtime = 0.0;
     f_namespace = Namespace_env.empty;
   }
   in
@@ -3728,8 +3726,9 @@ and xhp_attribute_string env start abs_start =
 and xhp_body pos name env =
   (* First grab any literal text that appears before the next
    * bit of markup *)
-  let start = Pos.make env.file env.lb in
   let abs_start = env.lb.Lexing.lex_curr_pos in
+  let start_pos = File_pos.of_lexing_pos env.lb.Lexing.lex_curr_p in
+  let start = Pos.make_from_file_pos env.file start_pos start_pos in
   let text = xhp_text env start abs_start in
   (* Now handle any markup *)
   text @ xhp_body_inner pos name env

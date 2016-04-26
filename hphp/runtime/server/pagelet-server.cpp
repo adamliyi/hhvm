@@ -16,8 +16,6 @@
 
 #include "hphp/runtime/server/pagelet-server.h"
 
-#include <folly/Singleton.h>
-
 #include "hphp/runtime/server/transport.h"
 #include "hphp/runtime/server/http-request-handler.h"
 #include "hphp/runtime/server/upload.h"
@@ -360,21 +358,17 @@ void PageletServer::Restart() {
          nullptr);
 
       auto monitor = getSingleton<HostHealthMonitor>();
-
       monitor->subscribe(s_dispatcher);
-      monitor->start();
     }
     s_dispatcher->start();
-    BootTimer::mark("pagelet server started");
+    BootStats::mark("pagelet server started");
   }
 }
 
 void PageletServer::Stop() {
   if (s_dispatcher) {
-
     auto monitor = getSingleton<HostHealthMonitor>();
-
-    monitor->stop();
+    monitor->unsubscribe(s_dispatcher);
     s_dispatcher->stop();
     Lock l(s_dispatchMutex);
     delete s_dispatcher;

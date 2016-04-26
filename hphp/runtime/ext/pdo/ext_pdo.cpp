@@ -26,7 +26,6 @@
 #include "hphp/util/string-vsnprintf.h"
 
 #include "hphp/runtime/base/array-init.h"
-#include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/base/file.h"
 #include "hphp/runtime/base/ini-setting.h"
@@ -2452,7 +2451,7 @@ int pdo_parse_params(sp_PDOStatement stmt, const String& in, String &out) {
         query_type |= PDO_PLACEHOLDER_POSITIONAL;
       }
 
-      plc = (placeholder*)req::malloc(sizeof(*plc));
+      plc = req::make_raw<placeholder>();
       memset(plc, 0, sizeof(*plc));
       plc->next = NULL;
       plc->pos = s.tok;

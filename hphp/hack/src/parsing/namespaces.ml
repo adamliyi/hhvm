@@ -37,6 +37,7 @@ let autoimport_classes = [
   "Collection";
   "Vector";
   "ImmVector";
+  "dict";
   "Map";
   "ImmMap";
   "StableMap";
@@ -56,9 +57,6 @@ let autoimport_classes = [
   "AsyncFunctionWaitHandle";
   "AsyncGeneratorWaitHandle";
   "AwaitAllWaitHandle";
-  "GenArrayWaitHandle";
-  "GenMapWaitHandle";
-  "GenVectorWaitHandle";
   "ConditionWaitHandle";
   "RescheduleWaitHandle";
   "SleepWaitHandle";

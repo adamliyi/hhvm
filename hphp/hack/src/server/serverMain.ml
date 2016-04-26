@@ -11,6 +11,7 @@
 open Core
 open ServerEnv
 open ServerUtils
+open Reordered_argument_collections
 open Utils
 
 type recheck_loop_stats = {
@@ -69,10 +70,10 @@ module Program =
     let run_once_and_exit genv env =
       ServerError.print_errorl
         (ServerArgs.json_mode genv.options)
-        (List.map env.errorl Errors.to_absolute) stdout;
+        (List.map (Errors.get_error_list env.errorl) Errors.to_absolute) stdout;
       match ServerArgs.convert genv.options with
       | None ->
-         exit (if env.errorl = [] then 0 else 1)
+         exit (if Errors.is_empty env.errorl then 0 else 1)
       | Some dirname ->
          ServerConvert.go genv env dirname;
          exit 0
@@ -82,7 +83,7 @@ module Program =
       let root = Path.to_string @@ ServerArgs.root genv.options in
       (* Because of symlinks, we can have updates from files that aren't in
        * the .hhconfig directory *)
-      let updates = SSet.filter (fun p -> str_starts_with p root) updates in
+      let updates = SSet.filter updates (fun p -> str_starts_with p root) in
       Relative_path.(relativize_set Root updates)
 
     let recheck genv old_env typecheck_updates =
@@ -93,7 +94,8 @@ module Program =
           Relative_path.Set.union typecheck_updates old_env.failed_parsing in
         let check_env = { old_env with failed_parsing = failed_parsing } in
         let new_env, total_rechecked = ServerTypeCheck.check genv check_env in
-        ServerStamp.touch_stamp_errors old_env.errorl new_env.errorl;
+        ServerStamp.touch_stamp_errors (Errors.get_error_list old_env.errorl)
+                                       (Errors.get_error_list new_env.errorl);
         new_env, total_rechecked
       end
 
@@ -103,14 +105,24 @@ module Program =
 (* The main loop *)
 (*****************************************************************************)
 
-let sleep_and_check in_fd =
-  let ready_fd_l, _, _ = Unix.select [in_fd] [] [] (1.0) in
-  ready_fd_l <> []
+let sleep_and_check in_fd ide_process =
+  match ide_process with
+  | Some ide_process ->
+    let ide_fd = ide_process.IdeProcessPipe.in_fd in
+    let ready_fd_l, _, _ = Unix.select [in_fd; ide_fd] [] [] (1.0) in
+    begin match ready_fd_l with
+      | [x] when x = in_fd -> true, false
+      | [x] when x = ide_fd -> false, true
+      | [] -> false, false
+      | _ -> true, true
+    end
+  | None ->
+    let ready_fd_l, _, _ = Unix.select [in_fd] [] [] (1.0) in
+    ready_fd_l <> [], false
 
 let handle_connection_ genv env ic oc =
   try
-    output_string oc "Hello\n";
-    flush oc;
+    ServerCommand.say_hello oc;
     ServerCommand.handle genv env (ic, oc)
   with
   | Sys_error("Broken pipe") | ServerCommand.Read_command_timeout ->
@@ -137,11 +149,11 @@ let handle_connection genv env ic oc =
 
 let recheck genv old_env updates =
   let to_recheck =
-    Relative_path.Set.filter begin fun update ->
+    Relative_path.Set.filter updates begin fun update ->
       ServerEnv.file_filter (Relative_path.suffix update)
-    end updates in
+    end in
   let config_in_updates =
-    Relative_path.Set.mem ServerConfig.filename updates in
+    Relative_path.Set.mem updates ServerConfig.filename in
   if config_in_updates then begin
     let new_config = ServerConfig.(load filename genv.options) in
     if not (ServerConfig.is_compatible genv.config new_config) then begin
@@ -156,6 +168,11 @@ let recheck genv old_env updates =
   let env, total_rechecked = Program.recheck genv old_env to_recheck in
   BuildMain.incremental_update genv old_env env updates;
   env, to_recheck, total_rechecked
+
+let ide_recheck_finished ide_process =
+  Option.iter ide_process begin fun x ->
+    IdeProcessPipe.send x (IdeProcessMessage.Recheck_finished);
+  end
 
 (* When a rebase occurs, dfind takes a while to give us the full list of
  * updates, and it often comes in batches. To get an accurate measurement
@@ -189,33 +206,64 @@ let get_client_channels parent_in_fd =
   let socket = Libancillary.ancil_recv_fd parent_in_fd in
   (Timeout.in_channel_of_descr socket), (Unix.out_channel_of_descr socket)
 
-let run_ide_process ide_process =
+let ide_typechecker_init_done ide_process =
   Option.iter ide_process begin fun x ->
-    IdeProcessPipe.send x IdeProcessMessage.RunIdeCommands;
-  end
-
-let join_ide_process ide_process =
-  Option.iter ide_process begin fun x ->
-    IdeProcessPipe.send x IdeProcessMessage.StopIdeCommands;
-    match IdeProcessPipe.recv x with
-    | IdeProcessMessage.IdeCommandsDone -> ();
+    IdeProcessPipe.send x IdeProcessMessage.Typechecker_init_done;
   end
 
 let ide_sync_files_info ide_process files_info =
   Option.iter ide_process begin fun x ->
-    IdeProcessPipe.send x (IdeProcessMessage.SyncFileInfo files_info);
+    IdeProcessPipe.send x (IdeProcessMessage.Sync_file_info files_info);
   end
 
 let ide_update_files_info ide_process files_info updated_files_info =
   Option.iter ide_process begin fun x ->
-    let updated_files_info = Relative_path.Set.fold begin fun path acc ->
-        match Relative_path.Map.get path files_info with
-        | Some file_info -> Relative_path.Map.add path file_info acc
+    let updated_files_info =
+      Relative_path.Set.fold updated_files_info ~f:begin fun path acc ->
+        match Relative_path.Map.get files_info path with
+        | Some file_info -> Relative_path.Map.add acc ~key:path ~data:file_info
         | None -> acc
-      end
-      updated_files_info
-      Relative_path.Map.empty in
-    IdeProcessPipe.send x (IdeProcessMessage.SyncFileInfo updated_files_info);
+      end ~init:Relative_path.Map.empty in
+    IdeProcessPipe.send x (IdeProcessMessage.Sync_file_info updated_files_info);
+  end
+
+let ide_update_error_list ide_process new_error_list old_error_list =
+  (* Compare the first few elements to catch the common case of just few errors
+   * existing, but short circuit when the list of errors is big. *)
+  let rec cheap_equals l1 l2 max_comparisons =
+    if max_comparisons = 0 then false else
+    match l1, l2 with
+      | [], [] -> true
+      | (h1::t1), (h2::t2) -> h1 = h2 && cheap_equals t1 t2 (max_comparisons-1)
+      | _ -> false
+    in
+  let cheap_equals l1 l2 = cheap_equals l1 l2 5 in
+
+  Option.iter ide_process begin fun x ->
+    if not (cheap_equals (Errors.get_error_list new_error_list)
+                         (Errors.get_error_list old_error_list))
+    then IdeProcessPipe.send x
+           (IdeProcessMessage.Sync_error_list new_error_list);
+  end
+
+let rec ide_recv_messages_loop ide_process genv env =
+  let ide_fd = ide_process.IdeProcessPipe.in_fd in
+  match Unix.select [ide_fd] [] [] 0.0 with
+  | [], _, _ -> ()
+  | _ ->
+    match IdeProcessPipe.recv ide_process with
+    | IdeProcessMessage.Find_refs_call (id, action) ->
+        let res = ServerFindRefs.go action genv env in
+        let msg = IdeProcessMessage.Find_refs_response (id, res) in
+        IdeProcessPipe.send ide_process msg;
+        ide_recv_messages_loop ide_process genv env
+    (* Start_recheck doesn't do anything except breaking out of sleep_and_check
+     * loop so we can proceed to the rechecking of files changed on disk *)
+    | IdeProcessMessage.Start_recheck -> ()
+
+let ide_recv_messages genv env =
+  Option.iter genv.ide_process begin fun ide_process ->
+    ide_recv_messages_loop ide_process genv env
   end
 
 let serve genv env in_fd _ =
@@ -223,13 +271,17 @@ let serve genv env in_fd _ =
   let last_stats = ref empty_recheck_loop_stats in
   let recheck_id = ref (Random_id.short_string ()) in
   ide_sync_files_info genv.ide_process !env.files_info;
+  ide_update_error_list genv.ide_process !env.errorl Errors.empty;
+  ide_typechecker_init_done genv.ide_process;
   while true do
     ServerMonitorUtils.exit_if_parent_dead ();
-    run_ide_process genv.ide_process;
-    let has_client = sleep_and_check in_fd in
+    SharedMem.hashtable_mutex_unlock ();
+    let has_client, has_ide_messages =
+      sleep_and_check in_fd genv.ide_process in
     (* For now we only run IDE commands in idle loop, with plan to vet more
      * places where it's safe to do so in parallel. *)
-    join_ide_process genv.ide_process;
+    SharedMem.hashtable_mutex_lock ();
+    if has_ide_messages then ide_recv_messages genv !env;
     let has_parsing_hook = !ServerTypeCheck.hook_after_parsing <> None in
     if not has_client && not has_parsing_hook
     then begin
@@ -248,16 +300,19 @@ let serve genv env in_fd _ =
     let start_t = Unix.gettimeofday () in
     HackEventLogger.with_id ~stage:`Recheck !recheck_id @@ fun () ->
     let stats, new_env = recheck_loop genv !env in
-    env := new_env;
     if stats.rechecked_count > 0 then begin
       HackEventLogger.recheck_end start_t has_parsing_hook
         stats.rechecked_batches
         stats.rechecked_count
         stats.total_rechecked_count;
-      Hh_logger.log "Recheck id: %s" !recheck_id;
       ide_update_files_info
-        genv.ide_process !env.files_info stats.reparsed_files
+        genv.ide_process new_env.files_info stats.reparsed_files;
+      ide_update_error_list
+        genv.ide_process new_env.errorl !env.errorl;
+      Hh_logger.log "Recheck id: %s" !recheck_id;
     end;
+    ide_recheck_finished genv.ide_process;
+    env := new_env;
     last_stats := stats;
     if has_client then
       (try
@@ -275,7 +330,6 @@ let serve genv env in_fd _ =
         HackEventLogger.get_client_channels_exception e;
         Hh_logger.log
           "Getting Client FDs failed. Ignoring.");
-       ;
   done
 
 let program_init genv =
@@ -305,6 +359,7 @@ let program_init genv =
 
 let setup_server options ide_process =
   let root = ServerArgs.root options in
+  SharedMem.hashtable_mutex_lock ();
   (* The OCaml default is 500, but we care about minimizing the memory
    * overhead *)
   let gc_control = Gc.get () in
@@ -319,7 +374,6 @@ let setup_server options ide_process =
   if Sys_utils.is_test_mode ()
   then EventLogger.init (Daemon.devnull ()) 0.0
   else HackEventLogger.init root (Unix.gettimeofday ());
-
   let root_s = Path.to_string root in
   if Sys_utils.is_nfs root_s && not enable_on_nfs then begin
     Hh_logger.log "Refusing to run on %s: root is on NFS!" root_s;
@@ -355,8 +409,8 @@ let run_once options =
 let daemon_main options (ic, oc) =
   let in_fd = Daemon.descr_of_in_channel ic in
   let out_fd = Daemon.descr_of_out_channel oc in
-  let ide_process = IdeProcessPipeInit.typechecker_recv in_fd in
-  let genv = setup_server options (Some ide_process) in
+  (* let ide_process = None IdeProcessPipeInit.typechecker_recv in_fd in *)
+  let genv = setup_server options None in
   if ServerArgs.check_mode genv.options then
     (Hh_logger.log "Invalid program args - can't run daemon in check mode.";
     Exit_status.(exit Input_error));

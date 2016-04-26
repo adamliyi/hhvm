@@ -66,14 +66,14 @@ let error el =
 let type_fun tcopt x fn =
   try
     let fun_ = Naming_heap.FunHeap.find_unsafe x in
-    Typing.fun_def tcopt x fun_;
+    Typing.fun_def tcopt fun_;
   with Not_found ->
     ()
 
 let type_class tcopt x fn =
   try
     let class_ = Naming_heap.ClassHeap.find_unsafe x in
-    Typing.class_def tcopt x class_
+    Typing.class_def tcopt class_
   with Not_found ->
     ()
 
@@ -112,13 +112,13 @@ let declare_file fn content =
     Naming_heap.FunPosHeap.remove fname;
     Naming_heap.FunCanonHeap.remove (NamingGlobal.canon_key fname);
     Naming_heap.FunHeap.remove fname;
-    Typing_env.Funs.remove fname;
+    Typing_heap.Funs.remove fname;
   end;
   List.iter old_classes begin fun (_, cname) ->
     Naming_heap.TypeIdHeap.remove cname;
     Naming_heap.TypeCanonHeap.remove (NamingGlobal.canon_key cname);
     Naming_heap.ClassHeap.remove cname;
-    Typing_env.Classes.remove cname;
+    Typing_heap.Classes.remove cname;
   end;
   try
     Autocomplete.auto_complete := false;
@@ -136,12 +136,12 @@ let declare_file fn content =
       let all_classes = List.fold_right classes ~f:begin fun (_, cname) acc ->
         SMap.add cname (Relative_path.Set.singleton fn) acc
       end ~init:SMap.empty in
-      Typing_decl.make_env tcopt fn;
+      Decl.make_env tcopt fn;
       let sub_classes = get_sub_classes all_classes in
       SSet.iter begin fun cname ->
         match Naming_heap.ClassHeap.get cname with
         | None -> ()
-        | Some c -> Typing_decl.class_decl tcopt c
+        | Some c -> Decl.class_decl tcopt c
       end sub_classes
     end
     else Hashtbl.replace globals fn (false, [], [])
@@ -191,7 +191,7 @@ let hh_check fn =
         let funs, classes, typedefs, consts = make_funs_classes ast in
         let tcopt = TypecheckerOptions.permissive in
         NamingGlobal.make_env ~funs ~classes ~typedefs ~consts;
-        Typing_decl.make_env tcopt fn;
+        Decl.make_env tcopt fn;
         List.iter funs (fun (_, fname) -> type_fun tcopt fname fn);
         List.iter classes (fun (_, cname) -> type_class tcopt cname fn);
         error []
@@ -208,21 +208,21 @@ let hh_check_syntax fn content =
   error errors
 
 let hh_auto_complete fn =
+  let tcopt = TypecheckerOptions.permissive in
   let fn = Relative_path.create Relative_path.Root fn in
   AutocompleteService.attach_hooks();
   try
     let ast = Parser_heap.ParserHeap.find_unsafe fn in
     Errors.ignore_ begin fun () ->
       List.iter ast begin fun def ->
-        let tcopt = TypecheckerOptions.permissive in
         match def with
         | Ast.Fun f ->
           let f = Naming.fun_ tcopt f in
-          Typing.fun_def tcopt (snd f.Nast.f_name) f
+          Typing.fun_def tcopt f
         | Ast.Class c ->
           let c = Naming.class_ tcopt c in
-          Typing_decl.class_decl tcopt c;
-          Typing.class_def tcopt (snd c.Nast.c_name) c
+          Decl.class_decl tcopt c;
+          Typing.class_def tcopt c
         | _ -> ()
       end;
     end;
@@ -234,7 +234,7 @@ let hh_auto_complete fn =
       | Some Autocomplete.Acclass_get -> "class_get"
       | Some Autocomplete.Acprop -> "var"
       | None -> "none" in
-    let result = AutocompleteService.get_results [] [] in
+    let result = AutocompleteService.get_results tcopt SSet.empty SSet.empty in
     let result =
       List.map result AutocompleteService.autocomplete_result_to_json
     in
@@ -252,19 +252,19 @@ let hh_get_method_at_position fn line char =
   Autocomplete.auto_complete := false;
   let fn = Relative_path.create Relative_path.Root fn in
   let result = ref None in
+  let tcopt = TypecheckerOptions.permissive in
   IdentifySymbolService.attach_hooks result line char;
   try
     let ast = Parser_heap.ParserHeap.find_unsafe fn in
     Errors.ignore_ begin fun () ->
       List.iter ast begin fun def ->
-        let tcopt = TypecheckerOptions.permissive in
         match def with
         | Ast.Fun f ->
           let f = Naming.fun_ tcopt f in
-          Typing.fun_def tcopt (snd f.Nast.f_name) f
+          Typing.fun_def tcopt f
         | Ast.Class c ->
           let c = Naming.class_ tcopt c in
-          Typing.class_def tcopt (snd c.Nast.c_name) c
+          Typing.class_def tcopt c
         | _ -> ()
       end;
     end;
@@ -272,10 +272,11 @@ let hh_get_method_at_position fn line char =
     let result =
       match !result with
       | Some res ->
+          let res = IdentifySymbolService.infer_method_position tcopt res in
           let result_type =
             match res.IdentifySymbolService.type_ with
             | IdentifySymbolService.Class -> "class"
-            | IdentifySymbolService.Method -> "method"
+            | IdentifySymbolService.Method _ -> "method"
             | IdentifySymbolService.Function -> "function"
             | IdentifySymbolService.LocalVar -> "local" in
           JSON_Object [ "name",           JSON_String res.IdentifySymbolService.name;
@@ -305,12 +306,12 @@ let hh_get_deps =
         result :=
           (match dep with
           | Typing_deps.Dep.Class s
-            when Typing_env.Classes.get s = None ->
+            when Typing_heap.Classes.get s = None ->
               (JSON_Object [ "name", JSON_String s;
                         "type", JSON_String "class";
                       ]) :: !result
           | Typing_deps.Dep.Fun s
-            when Typing_env.Funs.get s = None ->
+            when Typing_heap.Funs.get s = None ->
               (JSON_Object [ "name", JSON_String s;
                         "type", JSON_String "fun";
                       ]) :: !result
@@ -438,11 +439,11 @@ let hh_arg_info fn line char =
   Errors.ignore_ begin fun () ->
     List.iter funs begin fun (_, f_name) ->
       let f = Naming_heap.FunHeap.find_unsafe f_name in
-      Typing.fun_def TypecheckerOptions.permissive f_name f
+      Typing.fun_def TypecheckerOptions.permissive f
     end;
     List.iter classes begin fun (_, c_name) ->
       let c = Naming_heap.ClassHeap.find_unsafe c_name in
-      Typing.class_def TypecheckerOptions.permissive c_name c
+      Typing.class_def TypecheckerOptions.permissive c
     end;
   end;
   let result = ArgumentInfoService.get_result() in

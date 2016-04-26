@@ -18,7 +18,6 @@
 #define incl_HPHP_VM_BYTECODE_H_
 
 #include "hphp/runtime/base/array-iterator.h"
-#include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/rds-util.h"
 #include "hphp/runtime/base/tv-arith.h"
@@ -128,6 +127,7 @@ private:
 
 private:
   TypedValue m_extraArgs[];
+  TYPE_SCAN_FLEXIBLE_ARRAY_FIELD(m_extraArgs);
 };
 
 /*
@@ -837,12 +837,25 @@ void resetCoverageCounters();
 using InterpOneFunc = jit::TCA (*) (ActRec*, TypedValue*, Offset);
 extern InterpOneFunc interpOneEntryPoints[];
 
-bool doFCallArrayTC(PC pc, int32_t numArgs);
+bool doFCallArrayTC(PC pc, int32_t numArgs, void*);
 bool doFCall(ActRec* ar, PC& pc);
 jit::TCA dispatchBB();
 void pushLocalsAndIterators(const Func* func, int nparams = 0);
 Array getDefinedVariables(const ActRec*);
 jit::TCA suspendStack(PC& pc);
+
+enum class StackArgsState { // tells prepareFuncEntry how much work to do
+  // the stack may contain more arguments than the function expects
+  Untrimmed,
+  // the stack has already been trimmed of any extra arguments, which
+  // have been teleported away into ExtraArgs and/or a variadic param
+  Trimmed
+};
+void enterVMAtFunc(ActRec* enterFnAr, StackArgsState stk, VarEnv* varEnv);
+void enterVMAtCurPC();
+bool prepareArrayArgs(ActRec* ar, const Cell args, Stack& stack,
+                      int nregular, bool doCufRefParamChecks,
+                      TypedValue* retval);
 
 ///////////////////////////////////////////////////////////////////////////////
 

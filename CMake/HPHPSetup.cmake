@@ -68,7 +68,6 @@ set(HHVM_LINK_LIBRARIES
   ${HHVM_ANCHOR_SYMS}
   ${HHVM_WRAP_SYMS}
   hphp_analysis
-  ext_hhvm_static
   hphp_system
   hphp_parser
   hphp_zend
@@ -126,6 +125,12 @@ include(HPHPCompiler)
 include(HPHPFunctions)
 include(HPHPFindLibs)
 
+# Ubuntu 15.10 and 14.04 have been failing to include a dependency on jemalloc
+# as a these linked flags force the dependency to be recorded
+if (JEMALLOC_ENABLED AND LINUX)
+  LIST(APPEND HHVM_LINK_LIBRARIES -Wl,--no-as-needed ${JEMALLOC_LIB} -Wl,--as-needed)
+endif()
+
 if (HHVM_VERSION_OVERRIDE)
   parse_version("HHVM_VERSION_" ${HHVM_VERSION_OVERRIDE})
   add_definitions("-DHHVM_VERSION_OVERRIDE")
@@ -158,6 +163,14 @@ if(FOLLY_HAVE_WEAK_SYMBOLS)
   add_definitions(-DFOLLY_HAVE_WEAK_SYMBOLS=1)
 else()
   add_definitions(-DFOLLY_HAVE_WEAK_SYMBOLS=0)
+endif()
+
+include(CheckFunctionExists)
+CHECK_FUNCTION_EXISTS(memrchr FOLLY_HAVE_MEMRCHR)
+if (FOLLY_HAVE_MEMRCHR)
+  add_definitions("-DFOLLY_HAVE_MEMRCHR=1")
+else()
+  add_definitions("-DFOLLY_HAVE_MEMRCHR=0")
 endif()
 
 add_definitions(-D_REENTRANT=1 -D_PTHREADS=1 -D__STDC_FORMAT_MACROS)
@@ -305,6 +318,7 @@ include_directories("${TP_DIR}/folly")
 include_directories("${TP_DIR}/folly/src")
 include_directories("${TP_DIR}/thrift/src")
 include_directories("${TP_DIR}/wangle/src")
+include_directories("${TP_DIR}/brotli/src")
 include_directories(${TP_DIR})
 
 include_directories(${HPHP_HOME}/hphp)

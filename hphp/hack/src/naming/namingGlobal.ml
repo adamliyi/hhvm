@@ -148,19 +148,19 @@ let add_files_to_rename failed defl defs_in_env =
     | None -> failed
     | Some previous_definition_position ->
       let filename = Pos.filename previous_definition_position in
-      Relative_path.Set.add filename failed
+      Relative_path.Set.add failed filename
   end ~init:failed defl
 
-let ndecl_file fn { FileInfo.file_mode; funs; classes; typedefs; consts;
-                    consider_names_just_for_autoload; comments } =
+let ndecl_file fn { FileInfo.file_mode = _; funs; classes; typedefs; consts;
+                    consider_names_just_for_autoload; comments = _} =
   let errors, _ = Errors.do_ begin fun () ->
     dn ("Naming decl: "^Relative_path.to_absolute fn);
     if not consider_names_just_for_autoload then
       make_env ~funs ~classes ~typedefs ~consts
   end in
-  match errors with
-  | [] -> [], Relative_path.Set.empty
-  | l ->
+  if Errors.is_empty errors
+  then errors, Relative_path.Set.empty
+  else
   (* IMPORTANT:
    * If a file has name collisions, we MUST add the list of files that
    * were previously defining the type to the set of "failed" files.
@@ -197,4 +197,4 @@ let ndecl_file fn { FileInfo.file_mode; funs; classes; typedefs; consts;
   let failed = add_files_to_rename failed classes GEnv.type_pos in
   let failed = add_files_to_rename failed typedefs GEnv.type_pos in
   let failed = add_files_to_rename failed consts ConstPosHeap.get in
-  l, failed
+  errors, failed

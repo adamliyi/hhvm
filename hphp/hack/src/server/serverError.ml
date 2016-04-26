@@ -15,20 +15,21 @@
 open Core
 open Utils
 
+let get_errorl_json el =
+  if el = [] then
+    Hh_json.JSON_Object [ "passed", Hh_json.JSON_Bool true;
+                  "errors", Hh_json.JSON_Array [];
+                  "version", Hh_json.JSON_String Build_id.build_id_ohai;
+                ]
+  else
+    let errors_json = List.map ~f:Errors.to_json el in
+    Hh_json.JSON_Object [ "passed", Hh_json.JSON_Bool false;
+                  "errors", Hh_json.JSON_Array errors_json;
+                  "version", Hh_json.JSON_String Build_id.build_id_ohai;
+                ]
+
 let print_errorl_json oc el =
-  let res =
-    if el = [] then
-      Hh_json.JSON_Object [ "passed", Hh_json.JSON_Bool true;
-                    "errors", Hh_json.JSON_Array [];
-                    "version", Hh_json.JSON_String Build_id.build_id_ohai;
-                  ]
-    else
-      let errors_json = List.map ~f:Errors.to_json el in
-      Hh_json.JSON_Object [ "passed", Hh_json.JSON_Bool false;
-                    "errors", Hh_json.JSON_Array errors_json;
-                    "version", Hh_json.JSON_String Build_id.build_id_ohai;
-                  ]
-  in
+  let res = get_errorl_json el in
   output_string oc (Hh_json.json_to_string res);
   flush oc
 
@@ -51,8 +52,3 @@ let print_errorl use_json el oc =
       end sl
   end;
   flush oc
-
-let sort_errorl el =
-  List.sort ~cmp:begin fun x y ->
-    Pos.compare (Errors.get_pos x) (Errors.get_pos y)
-  end el

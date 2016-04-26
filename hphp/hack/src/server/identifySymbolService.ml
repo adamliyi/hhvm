@@ -9,17 +9,29 @@
  *)
 
 open Core
+open Typing_defs
 
 type target_type =
 | Class
 | Function
-| Method
+| Method of string * string
 | LocalVar
 
-type find_symbol_result = {
+type 'a find_symbol_result = {
   name:  string;
+  (* Where the name is defined, so click-to-definition can be implemented with
+   * only one roundtrip to the server. Optional, because user can identify
+   * undefined symbol, and we also don't return definitions for local
+   * variables *)
+  name_pos: 'a Pos.pos option;
   type_: target_type;
-  pos: Pos.t;
+  (* Extents of the symbol itself *)
+  pos: 'a Pos.pos;
+}
+
+let to_absolute x = { x with
+  name_pos = Option.map x.name_pos Pos.to_absolute;
+  pos = Pos.to_absolute x.pos;
 }
 
 let is_target target_line target_char pos =
@@ -30,18 +42,37 @@ let is_target target_line target_char pos =
 let process_class_id result_ref is_target_fun cid _ =
   if is_target_fun (fst cid)
   then begin
-    result_ref := Some { name  = snd cid;
+    let name = snd cid in
+    let name_pos = Option.map (Naming_heap.TypeIdHeap.get name) fst in
+    result_ref := Some { name;
+                         name_pos;
                          type_ = Class;
                          pos   = fst cid
                        }
   end
 
+(* We have the method element from typing phase, but it doesn't have positional
+ * information - we need to go back and fetch relevant named AST *)
+let get_method_pos _type method_name m  =
+  let open Option.Monad_infix in
+  Naming_heap.ClassHeap.get m.ce_origin >>= fun class_ ->
+  let methods = match _type with
+    | `Constructor -> Option.to_list class_.Nast.c_constructor
+    | `Method -> class_.Nast.c_methods
+    | `Smethod ->  class_.Nast.c_static_methods
+  in
+  List.find methods (fun m -> (snd m.Nast.m_name) = method_name) >>= fun m ->
+  Some (fst m.Nast.m_name)
+
 let process_method result_ref is_target_fun c_name id =
   if is_target_fun (fst id)
   then begin
+    let method_name = (snd id) in
     result_ref :=
-      Some { name  = (c_name ^ "::" ^ (snd id));
-             type_ = Method;
+      Some { name  = (c_name ^ "::" ^ method_name);
+             (* Method position is calculated later in infer_method_position *)
+             name_pos = None;
+             type_ = Method (c_name, method_name);
              pos   = fst id
            }
   end
@@ -52,13 +83,17 @@ let process_method_id result_ref is_target_fun class_ id _ _ ~is_method =
 
 let process_constructor result_ref is_target_fun class_ _ p =
   process_method_id
-    result_ref is_target_fun class_ (p, "__construct") () () ~is_method:true
+    result_ref is_target_fun
+      class_ (p, Naming_special_names.Members.__construct) () () ~is_method:true
 
 let process_fun_id result_ref is_target_fun id =
   if is_target_fun (fst id)
   then begin
+    let name = snd id in
+    let name_pos = Naming_heap.FunPosHeap.get name in
     result_ref :=
-      Some { name  = snd id;
+      Some { name;
+             name_pos;
              type_ = Function;
              pos   = fst id
            }
@@ -68,6 +103,8 @@ let process_lvar_id result_ref is_target_fun _ id _ =
   if is_target_fun (fst id)
   then begin
     result_ref := Some { name  = snd id;
+                         (* TODO: return the position of first occurence *)
+                         name_pos = None;
                          type_ = LocalVar;
                          pos   = fst id
                        }
@@ -91,6 +128,32 @@ let process_named_class result_ref is_target_fun class_ =
 let process_named_fun result_ref is_target_fun fun_ =
   process_fun_id result_ref is_target_fun fun_.Nast.f_name
 
+(* We cannot compute method position in process_method hook because
+ * it can be called from naming phase when the naming heap is not populated
+ * yet. We do it here in separate function called afterwards. *)
+let infer_method_position tcopt result =
+  let name_pos = match result.type_ with
+    | Method (c_name, method_name) ->
+      let open Option.Monad_infix in
+      (* Classes on typing heap have all the methods from inheritance hierarchy
+       * folded together, so we will correctly identify them even if method_name
+       * is not defined directly in class c_name *)
+      Typing_lazy_heap.get_class tcopt c_name >>= fun class_ ->
+      if method_name = Naming_special_names.Members.__construct then begin
+        match fst class_.tc_construct with
+          | Some m -> get_method_pos `Constructor method_name m
+          | None -> Some class_.tc_pos
+      end else begin
+        match SMap.get method_name class_.tc_methods with
+        | Some m -> get_method_pos `Method method_name m
+        | None ->
+          (SMap.get method_name class_.tc_smethods) >>=
+          (get_method_pos `Smethod method_name)
+      end
+    | _ -> result.name_pos
+  in
+  { result with name_pos = name_pos }
+
 let attach_hooks result_ref line char =
   let is_target_fun = is_target line char in
   let process_method_id = process_method_id result_ref is_target_fun in
@@ -99,7 +162,7 @@ let attach_hooks result_ref line char =
   Typing_hooks.attach_constructor_hook
     (process_constructor result_ref is_target_fun);
   Typing_hooks.attach_fun_id_hook (process_fun_id result_ref is_target_fun);
-  Typing_hooks.attach_class_id_hook (process_class_id result_ref is_target_fun);
+  Decl_hooks.attach_class_id_hook (process_class_id result_ref is_target_fun);
   Naming_hooks.attach_lvar_hook (process_lvar_id result_ref is_target_fun);
   Naming_hooks.attach_class_named_hook
     (process_named_class result_ref is_target_fun);
@@ -107,5 +170,7 @@ let attach_hooks result_ref line char =
     (process_named_fun result_ref is_target_fun)
 
 let detach_hooks () =
+  Naming_hooks.remove_all_hooks ();
+  Decl_hooks.remove_all_hooks ();
   Typing_hooks.remove_all_hooks ();
-  Naming_hooks.remove_all_hooks ()
+  ()

@@ -28,6 +28,15 @@
 #include "hphp/runtime/base/tv-helpers.h"
 #include "hphp/runtime/base/typed-value.h"
 #include "hphp/runtime/base/zend-functions.h"
+
+#include "hphp/runtime/ext/collections/ext_collections-map.h"
+#include "hphp/runtime/ext/collections/ext_collections-pair.h"
+#include "hphp/runtime/ext/collections/ext_collections-set.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
+#include "hphp/runtime/ext/hh/ext_hh.h"
+#include "hphp/runtime/ext/std/ext_std_closure.h"
+#include "hphp/runtime/ext/std/ext_std_function.h"
+
 #include "hphp/runtime/vm/class.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/member-operations.h"
@@ -35,11 +44,6 @@
 #include "hphp/runtime/vm/type-constraint.h"
 #include "hphp/runtime/vm/unit-util.h"
 #include "hphp/runtime/vm/unwind.h"
-
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
-#include "hphp/runtime/ext/hh/ext_hh.h"
-#include "hphp/runtime/ext/std/ext_std_closure.h"
-#include "hphp/runtime/ext/std/ext_std_function.h"
 
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/minstr-helpers.h"
@@ -570,22 +574,6 @@ TypedValue arrayIdxI(ArrayData* a, int64_t key, TypedValue def) {
 
 TypedValue arrayIdxIc(ArrayData* a, int64_t key, TypedValue def) {
   return arrayIdxI(a, key, def);
-}
-
-const StaticString s_idx("hh\\idx");
-
-TypedValue genericIdx(TypedValue obj, TypedValue key, TypedValue def) {
-  EagerVMRegAnchor _;
-  static auto func = Unit::loadFunc(s_idx.get());
-  assertx(func != nullptr);
-  TypedValue args[] = {
-    obj,
-    key,
-    def
-  };
-  TypedValue ret;
-  g_context->invokeFuncFew(&ret, func, nullptr, nullptr, 3, &args[0]);
-  return ret;
 }
 
 TypedValue mapIdx(ObjectData* mapOD, StringData* key, TypedValue def) {
@@ -1290,9 +1278,8 @@ StringData* stringGetI(StringData* base, uint64_t x) {
   if (LIKELY(x < base->size())) {
     return base->getChar(x);
   }
-  if (RuntimeOption::EnableHipHopSyntax) {
-    raise_warning("Out of bounds");
-  }
+  raise_notice("Uninitialized string offset: %" PRId64,
+               static_cast<int64_t>(x));
   return staticEmptyString();
 }
 
@@ -1308,7 +1295,7 @@ uint64_t vectorIsset(c_Vector* vec, int64_t index) {
 
 void bindElemC(TypedValue* base, TypedValue key, RefData* val) {
   TypedValue localTvRef;
-  auto elem = HPHP::ElemD<false, true>(localTvRef, base, key);
+  auto elem = HPHP::ElemD<MOpFlags::DefineReffy>(localTvRef, base, key);
 
   if (UNLIKELY(elem == &localTvRef)) {
     // Skip binding a TypedValue that's about to be destroyed and just destroy
@@ -1323,7 +1310,7 @@ void bindElemC(TypedValue* base, TypedValue key, RefData* val) {
 void setWithRefElemC(TypedValue* base, TypedValue keyTV, TypedValue val) {
   TypedValue localTvRef;
   auto const keyC = tvToCell(&keyTV);
-  auto elem = HPHP::ElemD<false, false>(localTvRef, base, *keyC);
+  auto elem = HPHP::ElemD<MOpFlags::Define>(localTvRef, base, *keyC);
   // Intentionally leak the old value pointed to by elem, including from magic
   // methods.
   tvDup(val, *elem);

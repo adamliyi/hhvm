@@ -8,45 +8,14 @@
  *
 *)
 
+open Core
+open IdeEnv
 open IdeJson
 
-type env = {
-  client : (in_channel * out_channel) option;
-  (* When this is true, we are between points when typechecker process
-   * sent us RunIdeCommands and StopIdeCommands, and it's safe to use
-   * data from shared heap. *)
-  run_ide_commands : bool;
-  (* IDE process's version of ServerEnv.file_info, synchronized periodically
-   * from typechecker process. *)
-  files_info : FileInfo.t Relative_path.Map.t;
-}
-
-let empty_env = {
-  client = None;
-  run_ide_commands = false;
-  files_info = Relative_path.Map.empty;
-}
-
-let get_ready_channel monitor_ic client typechecker ~should_block =
-  let monitor_in_fd = Daemon.descr_of_in_channel monitor_ic in
-  let typechecker_in_fd = typechecker.IdeProcessPipe.in_fd in
-  let wait_time = if should_block then 1.0 else 0.0 in
-  match client with
-  | None ->
-    let readable, _, _ =
-      Unix.select [monitor_in_fd; typechecker_in_fd] [] [] wait_time in
-    if readable = [] then `None
-    else if List.mem typechecker_in_fd readable then `Typechecker
-    else  `Monitor
-  | Some ((client_ic, _) as client) ->
-    let client_in_fd = Unix.descr_of_in_channel client_ic in
-    let readable, _, _ =
-      Unix.select [monitor_in_fd; client_in_fd; typechecker_in_fd]
-        [] [] wait_time in
-    if readable = [] then `None
-    else if List.mem typechecker_in_fd readable then `Typechecker
-    else if List.mem client_in_fd readable then `Client client
-    else `Monitor
+(* Wrapper to ensure flushing and type safety of sent type *)
+let write_string_to_channel (s : string) oc =
+  let oc_fd = Unix.descr_of_out_channel oc in
+  Marshal_tools.to_fd_with_preamble oc_fd s
 
 let handle_already_has_client oc =
   let response = Hh_json.(json_to_string (
@@ -58,64 +27,146 @@ let handle_already_has_client oc =
       );
     ]
   )) in
-  Marshal.to_channel oc response [];
+  write_string_to_channel response oc;
   close_out oc
 
-let handle_new_client env parent_ic =
-  let parent_in_fd = Daemon.descr_of_in_channel parent_ic in
-  let socket = Libancillary.ancil_recv_fd parent_in_fd in
-  let ic, oc =
-    (Unix.in_channel_of_descr socket), (Unix.out_channel_of_descr socket) in
-  match env.client with
-  | None ->
-    Hh_logger.log "Connected new client";
-    { env with client = Some (ic, oc) }
-  | Some _ ->
-    Hh_logger.log "Rejected a client";
-    handle_already_has_client oc; env
+(* This is similar to ServerCommand.handle, except that it handles only SEARCH
+ * queries which cannot be handled there anymore *)
+let handle_waiting_hh_client_request (ic, oc) env =
+  Hh_logger.log "Handling hh_client request";
+  (try
+    ServerCommand.say_hello oc;
+    let msg = ServerCommand.read_client_msg ic in
 
+    match msg with
+    | ServerCommand.Rpc ServerRpc.SEARCH (query, type_) ->
+      let response = ServerSearch.go None query type_ in
+      ServerCommand.send_response_to_client (ic, oc) response;
+    | _ -> assert false
+
+  with
+  | Sys_error("Broken pipe")
+  | ServerCommand.Read_command_timeout ->
+    ServerUtils.shutdown_client (ic, oc));
+  env
+
+let send_call_to_typechecker env id = function
+  | IdeServerCall.Find_refs_call action ->
+    let msg = IdeProcessMessage.Find_refs_call (id, action) in
+    IdeProcessPipe.send env.typechecker msg;
+    env
+  | IdeServerCall.Status_call ->
+    let msg = IdeProcessMessage.Start_recheck in
+    IdeProcessPipe.send env.typechecker msg;
+    { env with persistent_client_requests =
+      (id, Status_call) :: env.persistent_client_requests;
+    }
+
+let send_typechecker_response_to_client env id response =
+  Option.iter env.client begin fun (_, oc) ->
+    let response = IdeJsonUtils.json_string_of_response id response in
+    write_string_to_channel response oc;
+  end
+
+(* Will return a response for the client, or None if the response is going to
+ * be computed asynchronously *)
 let get_call_response env id call =
-  if not env.run_ide_commands then
-    IdeJsonUtils.json_string_of_server_busy id
-  else
-    IdeServerCall.get_call_response id call env.files_info
+  let response = IdeServerCall.get_call_response id call env in
+  match response with
+  | IdeServerCall.Deferred_to_typechecker call ->
+      send_call_to_typechecker env id call, None
+  | IdeServerCall.Result response ->
+      env, Some (IdeJsonUtils.json_string_of_response id response)
+  | IdeServerCall.Server_busy ->
+      env, Some (IdeJsonUtils.json_string_of_server_busy id)
 
-let handle_gone_client env =
+let handle_gone_client ic env =
   Hh_logger.log "Client went away";
+  let fd = Unix.descr_of_in_channel ic in
+  IdeScheduler.stop_waiting_for_channel fd;
   { env with client = None }
 
-let handle_client_request env (ic, oc) =
+let handle_client_request (ic, oc) env =
   Hh_logger.log "Handling client request";
   try
     let request = Marshal.from_channel ic in
     match IdeJsonUtils.call_of_string request with
-    | ParsingError e ->
+    | Parsing_error e ->
       Hh_logger.log "Received malformed request: %s" e;
       env
-    | InvalidCall (id, e) ->
+    | Invalid_call (id, e) ->
       let response = IdeJsonUtils.json_string_of_invalid_call id e in
-      Marshal.to_channel oc response [];
+      write_string_to_channel response oc;
       flush oc;
       env
     | Call (id, call) ->
-      let response = get_call_response env id call in
-      Marshal.to_channel oc response [];
-      flush oc;
+      let env, response = get_call_response env id call in
+      begin match response with
+        | Some response -> write_string_to_channel response oc
+        | None -> ()
+      end;
       env
   with
   | End_of_file
   | Sys_error _ ->
     (* client went away in the meantime *)
-    handle_gone_client env
+    handle_gone_client ic env
 
-let handle_typechecker_message env typechecker_process =
-  match IdeProcessPipe.recv typechecker_process with
-  | IdeProcessMessage.RunIdeCommands ->
-    { env with run_ide_commands = true }
-  | IdeProcessMessage.StopIdeCommands ->
-    IdeProcessPipe.send typechecker_process IdeProcessMessage.IdeCommandsDone;
-    { env with run_ide_commands = false }
-  | IdeProcessMessage.SyncFileInfo updated_files_info ->
+let handle_recheck_done env =
+  (* if rechecking is done, we assume that the error list is stabilized, and
+   * we can answer any pending Status calls. *)
+  let ready_requests, pending_requests =
+    List.partition_map env.persistent_client_requests ~f:begin function
+      | (id, Status_call) -> `Fst id
+      | x -> `Snd x
+    end in
+  List.iter ready_requests (fun id ->
+    let errorl = List.map (Errors.get_error_list env.errorl)
+        Errors.to_absolute in
+    let response = Status_response (ServerError.get_errorl_json errorl) in
+    send_typechecker_response_to_client env id response
+  );
+  { env with persistent_client_requests = pending_requests }
+
+let handle_new_client parent_in_fd env  =
+  let socket = Libancillary.ancil_recv_fd parent_in_fd in
+  let ic, oc =
+    (Unix.in_channel_of_descr socket), (Unix.out_channel_of_descr socket) in
+  let client_type =
+    Marshal_tools.from_fd_with_preamble (Unix.descr_of_in_channel ic) in
+
+  match client_type with
+  | ServerMonitorUtils.Persistent ->
+    begin match env.client with
+    | None ->
+      Hh_logger.log "Connected new persistent client";
+      IdeScheduler.wait_for_channel
+        (Unix.descr_of_in_channel ic)
+        (handle_client_request (ic, oc))
+        ~priority:IdePriorities.persistent_client_request;
+      { env with client = Some (ic, oc) }
+    | Some _ ->
+      Hh_logger.log "Rejected a client";
+      handle_already_has_client oc; env
+    end
+  | ServerMonitorUtils.Request ->
+    Hh_logger.log "Connected new single request client";
+    let ic, oc = Timeout.in_channel_of_descr socket, oc in
+    IdeScheduler.wait_for_fun
+      (fun env ->
+        env.typechecker_init_done && (not (IdeSearch.updates_pending ()))
+      )
+      (handle_waiting_hh_client_request (ic, oc))
+      ~once:true
+      ~priority:IdePriorities.hh_client_request;
+    env
+
+let handle_typechecker_message env =
+  match IdeProcessPipe.recv env.typechecker with
+  | IdeProcessMessage.Typechecker_init_done ->
+    let env = handle_recheck_done env in
+    { env with typechecker_init_done = true }
+  | IdeProcessMessage.Sync_file_info updated_files_info ->
     Hh_logger.log "Received file info updates for %d files"
       (Relative_path.Map.cardinal updated_files_info);
     let new_files_info = Relative_path.Map.merge begin fun _ x y ->
@@ -123,38 +174,52 @@ let handle_typechecker_message env typechecker_process =
       end
       env.files_info
       updated_files_info in
-    HackSearchService.IdeProcessApi.enqueue_updates
-      (Relative_path.Map.keys updated_files_info);
+    IdeSearch.enqueue_updates (Relative_path.Map.keys updated_files_info);
     { env with files_info = new_files_info }
+  | IdeProcessMessage.Sync_error_list errorl ->
+    Hh_logger.log "Received error list update";
+    { env with errorl = errorl }
+  | IdeProcessMessage.Find_refs_response (id, response) ->
+    let response = IdeJson.Find_refs_response response in
+    send_typechecker_response_to_client env id response;
+    env
+  | IdeProcessMessage.Recheck_finished ->
+    handle_recheck_done env
 
-let handle_server_idle env =
-  if env.run_ide_commands then IdeIdle.go ();
-  env
+let init_scheduler monitor_in_fd typechecker_in_fd =
+  IdeScheduler.wait_for_channel
+    monitor_in_fd
+    (handle_new_client monitor_in_fd)
+    ~priority:IdePriorities.new_client;
+  IdeScheduler.wait_for_channel
+    typechecker_in_fd
+    handle_typechecker_message
+    ~priority:IdePriorities.typechecker_message;
+  ()
 
-let daemon_main _ (parent_ic, _parent_oc) =
+let daemon_main options (parent_ic, _parent_oc) =
   Printexc.record_backtrace true;
+
+  let gc_control = Gc.get () in
+  Gc.set {gc_control with Gc.max_overhead = 200};
+
   SharedMem.enable_local_writes ();
   let parent_in_fd = Daemon.descr_of_in_channel parent_ic in
   let typechecker_process = IdeProcessPipeInit.ide_recv parent_in_fd in
-  let env = ref empty_env in
-  IdeIdle.init ();
+
+  let config = ServerConfig.(load filename options) in
+  let tcopt = ServerConfig.typechecker_options config in
+  let env = ref (build_env typechecker_process tcopt) in
+
+  init_scheduler parent_in_fd typechecker_process.IdeProcessPipe.in_fd;
   while true do
     ServerMonitorUtils.exit_if_parent_dead ();
-    let should_block = not (IdeIdle.has_tasks ()) in
     let new_env = try
-        match get_ready_channel parent_ic
-          !env.client
-          typechecker_process
-          should_block
-        with
-        | `None -> handle_server_idle !env
-        | `Typechecker -> handle_typechecker_message !env typechecker_process
-        | `Monitor -> handle_new_client !env parent_ic
-        | `Client c -> handle_client_request !env c
-      with
-      | IdeProcessPipe.IDE_process_pipe_broken ->
-        Hh_logger.log "Typechecker has died, exiting too.";
-        Exit_status.(exit IDE_typechecker_died);
+      IdeScheduler.wait_and_run_ready !env
+    with
+    | IdeProcessPipe.IDE_process_pipe_broken ->
+      Hh_logger.log "Typechecker has died, exiting too.";
+      Exit_status.(exit IDE_typechecker_died);
     in
     env := new_env
   done

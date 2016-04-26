@@ -28,6 +28,9 @@
 #include "hphp/runtime/ext/asio/ext_asio.h"
 #include "hphp/runtime/ext/asio/ext_await-all-wait-handle.h"
 #include "hphp/runtime/ext/collections/ext_collections-pair.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
+#include "hphp/runtime/ext/collections/hash-collection.h"
+
 #include <algorithm>
 
 namespace HPHP {
@@ -53,6 +56,8 @@ struct Header {
     GlobalsArray globals_;
     ObjectData obj_;
     c_Pair pair_;
+    BaseVector vector_;
+    HashCollection hashcoll_;
     ResourceHdr res_;
     RefData ref_;
     SmallNode small_;
@@ -299,6 +304,7 @@ template<class Fn> void MemoryManager::forEachObject(Fn fn) {
 // information about heap objects, indexed by valid object starts.
 struct PtrMap {
   using Region = std::pair<const Header*, std::size_t>;
+  static constexpr auto Mask = 0xffffffffffffULL; // 48 bit address space
 
   void insert(const Header* h) {
     assert(!sorted_);
@@ -308,6 +314,7 @@ struct PtrMap {
   const Region* region(const void* p) const {
     assert(sorted_);
     // Find the first region which begins beyond p.
+    p = reinterpret_cast<void*>(uintptr_t(p) & Mask);
     auto it = std::upper_bound(regions_.begin(), regions_.end(), p,
       [](const void* p, const Region& region) {
         return p < region.first;

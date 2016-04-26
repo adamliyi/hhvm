@@ -338,14 +338,8 @@ Offset* instrJumpOffset(PC const origPC) {
   assert(!isSwitch(op));  // BLA doesn't work here
 
   if (op == OpIterBreak) {
-    auto const veclen = decode_raw<uint32_t>(pc);
-    assert(veclen > 0);
-    auto const target = const_cast<Offset*>(
-      reinterpret_cast<const Offset*>(
-        reinterpret_cast<const uint32_t*>(pc) + 2 * veclen
-      )
-    );
-    return target;
+    // offset is imm number 0
+    return const_cast<Offset*>(reinterpret_cast<const Offset*>(pc));
   }
 
   int mask = jumpMask[size_t(op)];
@@ -366,13 +360,8 @@ Offset* instrJumpOffset(PC const origPC) {
 }
 
 Offset instrJumpTarget(PC instrs, Offset pos) {
-  Offset* offset = instrJumpOffset(instrs + pos);
-
-  if (!offset) {
-    return InvalidAbsoluteOffset;
-  } else {
-    return *offset + pos;
-  }
+  auto offset = instrJumpOffset(instrs + pos);
+  return offset ? *offset + pos : InvalidAbsoluteOffset;
 }
 
 OffsetSet instrSuccOffsets(PC opc, const Unit* unit) {
@@ -413,7 +402,11 @@ int numSuccs(PC const origPC) {
   auto const op = decode_op(pc);
   if ((instrFlags(op) & TF) != 0) {
     if (isSwitch(op)) {
-      return decode_raw<int32_t>(pc);
+      if (op == Op::Switch) {
+        decode_raw<SwitchKind>(pc); // skip bounded flag
+        decode_raw<int64_t>(pc); // skip base
+      }
+      return decode_raw<int32_t>(pc); // vector length
     }
     if (isUnconditionalJmp(op) || op == OpIterBreak) return 1;
     return 0;
@@ -1173,8 +1166,10 @@ ImmVector getImmVector(PC opcode) {
     if (t == BLA || t == SLA || t == ILA) {
       void* vp = getImmPtr(opcode, k);
       return ImmVector::createFromStream(
-        static_cast<const int32_t*>(vp));
-    } else if (t == VSA) {
+        static_cast<const int32_t*>(vp)
+      );
+    }
+    if (t == VSA) {
       const int32_t* vp = (int32_t*)getImmPtr(opcode, k);
       return ImmVector(reinterpret_cast<const uint8_t*>(vp + 1),
                        vp[0], vp[0]);
@@ -1191,26 +1186,6 @@ int instrFpToArDelta(const Func* func, PC opcode) {
   auto const fpi = func->findFPI(func->unit()->offsetOf(opcode));
   assert(fpi != nullptr);
   return fpi->m_fpOff;
-}
-
-std::string show(MInstrAttr mia) {
-  if (mia == MIA_none) return "none";
-
-  std::string ret;
-  auto sep = "";
-#define X(n) if (mia & MIA_##n) {               \
-    folly::toAppend(sep, #n, &ret);             \
-    sep = "|";                                  \
-  }
-  X(warn);
-  X(define);
-  X(reffy);
-  X(unset);
-  X(new);
-  X(final_get);
-#undef X
-
-  return ret;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

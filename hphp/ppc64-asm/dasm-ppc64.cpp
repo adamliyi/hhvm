@@ -38,7 +38,7 @@ void Disassembler::disassembly(std::ostream& out, uint8_t* instr) {
   int pos;
   uint32_t instruction = 0;
 
-  for (pos  = 0; pos < Assembler::kBytesPerInstr; ++pos) {
+  for (pos = 0; pos < instr_size_in_bytes; ++pos) {
      //if (print_encoding_) {
      out << folly::format("{:02x} ", (uint8_t)instr[pos]);
      //}

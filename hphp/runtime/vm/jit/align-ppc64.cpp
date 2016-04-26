@@ -35,7 +35,7 @@ namespace {
 /*
  * Targets of jmps on ppc64 must be aligned to instruction.
  */
-constexpr size_t kJmpTargetAlign = ppc64_asm::Assembler::kBytesPerInstr;
+constexpr size_t kJmpTargetAlign = ppc64_asm::instr_size_in_bytes;
 
 struct AlignImpl {
   static DECLARE_ALIGN_TABLE(s_table);

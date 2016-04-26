@@ -358,8 +358,8 @@ void XDebugServer::onRequestInit() {
     return;
   }
 
-  // Need to turn on debugging regardless of the remote mode in order to
-  // capture exceptions/errors
+  // Need to turn on debugging regardless of the remote mode in order to capture
+  // exceptions/errors.
   if (!DebuggerHook::attach<XDebugHook>()) {
     raise_warning("Could not attach xdebug remote debugger to the current "
                   "thread. A debugger is already attached.");
@@ -422,6 +422,13 @@ void XDebugServer::attach(Mode mode) {
       detach();
     }
   } catch (...) {
+    // If we fail to attach to a debugger, then we can choose to wait for an
+    // exception to be thrown so we try again, or we can just detach the
+    // debugger hook completely.  Leaving the debugger hook attached encurs a
+    // large performance cost.
+    if (LIKELY(XDEBUG_GLOBAL(RemoteMode) == "req")) {
+      DebuggerHook::detach();
+    }
     // Fail silently, continue running the request.
   }
 }
@@ -764,7 +771,7 @@ bool XDebugServer::readInput() {
       m_bufferSize = (m_bufferSize == 0) ?
         INPUT_BUFFER_INIT_SIZE : m_bufferSize * INPUT_BUFFER_EXPANSION;
       bytes_left = m_bufferSize - bytes_read;
-      m_buffer = (char*) req::realloc(m_buffer, m_bufferSize);
+      m_buffer = (char*) req::realloc_noptrs(m_buffer, m_bufferSize);
     }
 
     // Read into the buffer

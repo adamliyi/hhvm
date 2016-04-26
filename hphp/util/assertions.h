@@ -34,11 +34,13 @@
 
 #define IMPLIES(a, b) (!(a) || (b))
 
-#if defined(__INTEL_COMPILER) || defined(_MSC_VER)
+#if defined(__INTEL_COMPILER)
 #define not_reached()                                                \
   do {                                                               \
     assert(false);                                                   \
   } while (true)
+#elif defined(_MSC_VER)
+#define not_reached() __assume(0)
 #else
 #define not_reached() /* gcc-4.5 supports __builtin_unreachable() */  \
   do {                                                                \
@@ -68,14 +70,14 @@ namespace HPHP {
  *
  * These are intended for use primarily by the assert macros below.
  */
-ATTRIBUTE_NORETURN
+[[noreturn]]
 void assert_fail(const char* e,
                  const char* file,
                  unsigned int line,
                  const char* func,
                  const std::string& msg);
 
-ATTRIBUTE_NORETURN
+[[noreturn]]
 void assert_fail_no_log(const char* e,
                         const char* file,
                         unsigned int line,

@@ -497,6 +497,21 @@ void RequestInjectionData::threadInit() {
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
                    "zlib.output_compression_level", &m_gzipCompressionLevel);
 
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
+                   "brotli.chunked_compression", &m_brotliChunkedEnabled);
+  IniSetting::Bind(
+      IniSetting::CORE,
+      IniSetting::PHP_INI_ALL,
+      "brotli.compression_quality",
+      std::to_string(RuntimeOption::BrotliCompressionQuality).c_str(),
+      &m_brotliQuality);
+  IniSetting::Bind(
+      IniSetting::CORE,
+      IniSetting::PHP_INI_ALL,
+      "brotli.compression_lgwin",
+      std::to_string(RuntimeOption::BrotliCompressionLgWindowSize).c_str(),
+      &m_brotliLgWindowSize);
+
   // Assertions
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
     "zend.assertions", "1",
@@ -648,16 +663,16 @@ void RequestInjectionData::setFlag(SurpriseFlag flag) {
 void RequestInjectionData::setMemoryLimit(std::string limit) {
   int64_t newInt = strtoll(limit.c_str(), nullptr, 10);
   if (newInt <= 0) {
-   newInt = std::numeric_limits<int64_t>::max();
-   m_maxMemory = std::to_string(newInt);
+    newInt = std::numeric_limits<int64_t>::max();
+    m_maxMemory = std::to_string(newInt);
   } else {
-   m_maxMemory = limit;
-   newInt = convert_bytes_to_long(limit);
-   if (newInt <= 0) {
-     newInt = std::numeric_limits<int64_t>::max();
-   }
+    m_maxMemory = limit;
+    newInt = convert_bytes_to_long(limit);
+    if (newInt <= 0) {
+      newInt = std::numeric_limits<int64_t>::max();
+    }
   }
-  MM().getStatsNoRefresh().maxBytes = newInt;
+  MM().setMemoryLimit(newInt);
   m_maxMemoryNumeric = newInt;
 }
 }

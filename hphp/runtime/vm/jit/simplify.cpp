@@ -25,9 +25,9 @@
 
 #include "hphp/runtime/base/array-data-defs.h"
 #include "hphp/runtime/base/comparisons.h"
+#include "hphp/runtime/base/packed-array.h"
 #include "hphp/runtime/base/repo-auth-type-array.h"
 #include "hphp/runtime/base/type-conversions.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
 #include "hphp/runtime/vm/hhbc.h"
 #include "hphp/runtime/vm/jit/analysis.h"
 #include "hphp/runtime/vm/jit/containers.h"
@@ -76,7 +76,7 @@ SSATmp* simplifyWork(State&, const IRInstruction*);
 
 bool mightRelax(State& env, SSATmp* tmp) {
   if (!env.typesMightRelax) return false;
-  return jit::typeMightRelax(tmp);
+  return irgen::typeMightRelax(tmp);
 }
 
 template<class... Args>
@@ -123,6 +123,7 @@ bool arrayKindNeedsVsize(const ArrayData::ArrayKind kind) {
     case ArrayData::kMixedKind:
     case ArrayData::kEmptyKind:
     case ArrayData::kApcKind:
+    case ArrayData::kDictKind:
       return false;
     default:
       return true;
@@ -1795,7 +1796,7 @@ SSATmp* simplifyConvCellToDbl(State& env, const IRInstruction* inst) {
 SSATmp* simplifyConvObjToBool(State& env, const IRInstruction* inst) {
   auto const ty = inst->src(0)->type();
 
-  if (!typeMightRelax(inst->src(0)) &&
+  if (!irgen::typeMightRelax(inst->src(0)) &&
       ty < TObj &&
       ty.clsSpec().cls() &&
       ty.clsSpec().cls()->isCollectionClass()) {
@@ -2167,6 +2168,22 @@ SSATmp* simplifyArrayGet(State& env, const IRInstruction* inst) {
   return nullptr;
 }
 
+SSATmp* simplifyMixedArrayGetK(State& env, const IRInstruction* inst) {
+  if (inst->src(0)->hasConstVal() && inst->src(1)->hasConstVal()) {
+    if (inst->src(1)->type() <= TInt) {
+      if (auto result = arrIntKeyImpl(env, inst)) {
+        return result;
+      }
+    }
+    if (inst->src(1)->type() <= TStr) {
+      if (auto result = arrStrKeyImpl(env, inst)) {
+        return result;
+      }
+    }
+  }
+  return nullptr;
+}
+
 SSATmp* simplifyArrayIdx(State& env, const IRInstruction* inst) {
   if (inst->src(0)->hasConstVal() && inst->src(1)->hasConstVal()) {
     if (inst->src(1)->isA(TInt)) {
@@ -2332,7 +2349,7 @@ SSATmp* simplifyIsWaitHandle(State& env, const IRInstruction* inst) {
 SSATmp* simplifyIsCol(State& env, const IRInstruction* inst) {
   auto const ty = inst->src(0)->type();
 
-  if (!typeMightRelax(inst->src(0)) &&
+  if (!irgen::typeMightRelax(inst->src(0)) &&
       ty < TObj &&
       ty.clsSpec().cls()) {
     return cns(env, ty.clsSpec().cls()->isCollectionClass());
@@ -2583,6 +2600,7 @@ SSATmp* simplifyWork(State& env, const IRInstruction* inst) {
   X(CmpRes)
   X(EqCls)
   X(ArrayGet)
+  X(MixedArrayGetK)
   X(ArrayIdx)
   X(AKExistsArr)
   X(OrdStr)

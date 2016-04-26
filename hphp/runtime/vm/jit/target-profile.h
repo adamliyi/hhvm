@@ -16,13 +16,14 @@
 #ifndef incl_HPHP_TARGET_PROFILE_H_
 #define incl_HPHP_TARGET_PROFILE_H_
 
-#include <folly/Optional.h>
-
 #include "hphp/runtime/base/type-string.h"
 #include "hphp/runtime/base/static-string-table.h"
 #include "hphp/runtime/base/rds.h"
+
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/ir-instruction.h"
+
+#include <folly/Optional.h>
 
 namespace HPHP {
 struct Func;
@@ -167,6 +168,8 @@ private:
   rds::Link<T> const m_link;
   TransKind const m_kind;
 };
+
+//////////////////////////////////////////////////////////////////////
 
 struct ClassProfile {
   static const size_t kClassProfileSampleSize = 4;
@@ -368,6 +371,8 @@ std::vector<SwitchCaseCount> sortedSwitchProfile(
   TargetProfile<SwitchProfile>& profile,
   int32_t nCases
 );
+
+//////////////////////////////////////////////////////////////////////
 
 }}
 

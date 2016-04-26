@@ -38,17 +38,17 @@ struct c_AsyncGeneratorWaitHandle final : c_ResumableWaitHandle {
   WAITHANDLE_CLASSOF(AsyncGeneratorWaitHandle);
   WAITHANDLE_DTOR(AsyncGeneratorWaitHandle);
 
-  explicit c_AsyncGeneratorWaitHandle(Class* cls =
-      c_AsyncGeneratorWaitHandle::classof())
-    : c_ResumableWaitHandle(cls) {}
+  c_AsyncGeneratorWaitHandle(AsyncGenerator* gen, c_WaitableWaitHandle* child);
   ~c_AsyncGeneratorWaitHandle();
 
  public:
   static constexpr ptrdiff_t blockableOff() {
     return offsetof(c_AsyncGeneratorWaitHandle, m_blockable);
   }
-  static c_AsyncGeneratorWaitHandle* Create(AsyncGenerator* gen,
-                                            c_WaitableWaitHandle* child);
+
+  static req::ptr<c_AsyncGeneratorWaitHandle>
+  Create(AsyncGenerator* gen, c_WaitableWaitHandle* child);
+
   void resume();
   void onUnblocked();
   void await(c_WaitableWaitHandle* child);
@@ -62,12 +62,11 @@ struct c_AsyncGeneratorWaitHandle final : c_ResumableWaitHandle {
 
  private:
   void setState(uint8_t state) { setKindState(Kind::AsyncGenerator, state); }
-  void initialize(AsyncGenerator* gen, c_WaitableWaitHandle* child);
   void prepareChild(c_WaitableWaitHandle* child);
 
-  AsyncGenerator* m_generator;
+  Object m_generator; // has AsyncGenerator nativedata.
 
-  // valid if STATE_SCHEDULED || STATE_BLOCKED
+  // valid if STATE_READY || STATE_BLOCKED
   c_WaitableWaitHandle* m_child;
   AsioBlockable m_blockable;
 };

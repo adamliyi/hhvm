@@ -49,9 +49,13 @@
 #include "hphp/runtime/ext_zend_compat/php-src/TSRM/TSRM.h"
 #endif
 
+#include "hphp/util/type-scan.h"
+
 namespace HPHP {
 
-template<class F> void scanHeader(const Header* h, F& mark) {
+template<class F> void scanHeader(const Header* h,
+                                  F& mark,
+                                  type_scan::Scanner* scanner = nullptr) {
   switch (h->kind()) {
     case HeaderKind::Proxy:
       return h->proxy_.scan(mark);
@@ -72,23 +76,49 @@ template<class F> void scanHeader(const Header* h, F& mark) {
     case HeaderKind::WaitHandle:
     case HeaderKind::ResumableObj:
     case HeaderKind::AwaitAllWH:
-    case HeaderKind::Vector:
-    case HeaderKind::Map:
-    case HeaderKind::Set:
-    case HeaderKind::ImmVector:
-    case HeaderKind::ImmMap:
-    case HeaderKind::ImmSet:
       return h->obj_.scan(mark);
     case HeaderKind::Pair:
       return h->pair_.scan(mark);
+    case HeaderKind::Vector:
+    case HeaderKind::ImmVector:
+      return h->vector_.scan(mark);
+    case HeaderKind::Map:
+    case HeaderKind::ImmMap:
+    case HeaderKind::Set:
+    case HeaderKind::ImmSet:
+      return h->hashcoll_.scan(mark);
     case HeaderKind::Resource:
-      return h->res_.data()->scan(mark);
+      if (scanner) {
+        return scanner->scanByIndex(
+          h->res_.typeIndex(),
+          h->res_.data(),
+          h->res_.heapSize() - sizeof(ResourceHdr)
+        );
+      } else {
+        return h->res_.data()->scan(mark);
+      }
     case HeaderKind::Ref:
       return h->ref_.scan(mark);
     case HeaderKind::SmallMalloc:
-      return mark((&h->small_)+1, h->small_.padbytes - sizeof(SmallNode));
+      if (scanner) {
+        return scanner->scanByIndex(
+          h->small_.typeIndex(),
+          (&h->small_)+1,
+          h->small_.padbytes - sizeof(SmallNode)
+        );
+      } else {
+        return mark((&h->small_)+1, h->small_.padbytes - sizeof(SmallNode));
+      }
     case HeaderKind::BigMalloc:
-      return mark((&h->big_)+1, h->big_.nbytes - sizeof(BigNode));
+      if (scanner) {
+        return scanner->scanByIndex(
+          h->big_.typeIndex(),
+          (&h->big_)+1,
+          h->big_.nbytes - sizeof(BigNode)
+        );
+      } else {
+        return mark((&h->big_)+1, h->big_.nbytes - sizeof(BigNode));
+      }
     case HeaderKind::NativeData:
       return h->nativeObj()->scan(mark);
     case HeaderKind::ResumableFrame:
@@ -115,12 +145,11 @@ template<class F> void ObjectData::scan(F& mark) const {
     mark(frame, uintptr_t(this) - uintptr_t(frame));
     auto node = reinterpret_cast<const ResumableNode*>(frame) - 1;
     mark(this + 1, uintptr_t(node) + r->size() - uintptr_t(this + 1));
-  } else if (m_hdr.kind == HeaderKind::WaitHandle) {
-    // scan C++ properties after [ObjectData] header
+  } else if (m_hdr.kind == HeaderKind::WaitHandle ||
+             m_hdr.kind == HeaderKind::AwaitAllWH) {
+    // scan C++ properties after [ObjectData] header. should pick up
+    // unioned and bit-packed fields
     mark(this + 1, asio_object_size(this) - sizeof(*this));
-  } else if (m_hdr.kind == HeaderKind::AwaitAllWH) {
-    auto wh = static_cast<const c_AwaitAllWaitHandle*>(this);
-    wh->scanChildren(mark);
   }
 
   if (getAttribute(HasNativeData)) {
@@ -131,7 +160,6 @@ template<class F> void ObjectData::scan(F& mark) const {
   auto props = propVec();
   if (getAttribute(IsCppBuiltin)) {
     // [ObjectData][C++ fields][props]
-    // TODO t6169228 virtual call for exact marking
     mark(this + 1, uintptr_t(props) - uintptr_t(this + 1));
   }
   for (size_t i = 0, n = m_cls->numDeclProperties(); i < n; ++i) {

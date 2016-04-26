@@ -28,7 +28,10 @@
 #include "hphp/runtime/base/shape.h"
 #include "hphp/runtime/base/apc-local-array.h"
 #include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
+#include "hphp/runtime/ext/collections/ext_collections-map.h"
+#include "hphp/runtime/ext/collections/ext_collections-pair.h"
+#include "hphp/runtime/ext/collections/ext_collections-set.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
 
 #include "hphp/runtime/base/mixed-array-defs.h"
 #include "hphp/runtime/base/packed-array-defs.h"
@@ -1115,7 +1118,7 @@ int64_t iter_next_free_struct(Iter* iter, ArrayData* arr) {
 
 static NEVER_INLINE
 int64_t iter_next_free_mixed(Iter* iter, ArrayData* arr) {
-  assert(arr->isMixed());
+  assert(arr->isMixedLayout());
   assert(arr->decWillRelease());
   // Use non-specialized release call so ArrayTracer can track its destruction
   arr->release();
@@ -1172,7 +1175,7 @@ int64_t new_iter_array(Iter* dest, ArrayData* ad, TypedValue* valOut) {
   if (UNLIKELY(ad->getSize() == 0)) {
     if (UNLIKELY(ad->decWillRelease())) {
       if (ad->isPacked()) return iter_next_free_packed(dest, ad);
-      if (ad->isMixed()) return iter_next_free_mixed(dest, ad);
+      if (ad->isMixedLayout()) return iter_next_free_mixed(dest, ad);
       if (ad->isStruct()) return iter_next_free_struct(dest, ad);
     }
     ad->decRefCount();
@@ -1198,7 +1201,7 @@ int64_t new_iter_array(Iter* dest, ArrayData* ad, TypedValue* valOut) {
     return 1;
   }
 
-  if (LIKELY(ad->isMixed())) {
+  if (LIKELY(ad->isMixedLayout())) {
     auto const mixed = MixedArray::asMixed(ad);
     aiter.m_pos = mixed->getIterBegin();
     aiter.m_itypeAndNextHelperIdx =
@@ -1230,7 +1233,7 @@ int64_t new_iter_array_key(Iter*       dest,
   if (UNLIKELY(ad->getSize() == 0)) {
     if (UNLIKELY(ad->decWillRelease())) {
       if (ad->isPacked()) return iter_next_free_packed(dest, ad);
-      if (ad->isMixed()) return iter_next_free_mixed(dest, ad);
+      if (ad->isMixedLayout()) return iter_next_free_mixed(dest, ad);
       if (ad->isStruct()) return iter_next_free_struct(dest, ad);
     }
     ad->decRefCount();
@@ -1265,7 +1268,7 @@ int64_t new_iter_array_key(Iter*       dest,
     return 1;
   }
 
-  if (ad->isMixed()) {
+  if (ad->isMixedLayout()) {
     auto const mixed = MixedArray::asMixed(ad);
     aiter.m_pos = mixed->getIterBegin();
     aiter.m_itypeAndNextHelperIdx =
@@ -1553,7 +1556,7 @@ int64_t witer_next_key(Iter* iter, TypedValue* valOut, TypedValue* keyOut) {
   {
     auto const ad       = const_cast<ArrayData*>(arrIter->getArrayData());
     auto const isPacked = ad->isPacked();
-    auto const isMixed  = ad->isMixed();
+    auto const isMixed  = ad->isMixedLayout();
     auto const isStruct = ad->isStruct();
 
     if (UNLIKELY(!isMixed && !isStruct && !isPacked)) {
@@ -1935,7 +1938,7 @@ int64_t iterNextArrayMixed(Iter* it, TypedValue* valOut) {
   TRACE(2, "iterNextArrayMixed: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData() &&
-         it->arr().getArrayData()->isMixed());
+         it->arr().getArrayData()->isMixedLayout());
   return iter_next_mixed_impl<false>(it, valOut, nullptr);
 }
 
@@ -1945,7 +1948,7 @@ int64_t iterNextKArrayMixed(Iter* it,
   TRACE(2, "iterNextKArrayMixed: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData() &&
-         it->arr().getArrayData()->isMixed());
+         it->arr().getArrayData()->isMixedLayout());
   return iter_next_mixed_impl<true>(it, valOut, keyOut);
 }
 
@@ -1954,7 +1957,7 @@ int64_t iterNextArray(Iter* it, TypedValue* valOut) {
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData());
   assert(!it->arr().getArrayData()->isPacked());
-  assert(!it->arr().getArrayData()->isMixed());
+  assert(!it->arr().getArrayData()->isMixedLayout());
 
   ArrayIter& iter = it->arr();
   auto const ad = const_cast<ArrayData*>(iter.getArrayData());
@@ -1970,7 +1973,7 @@ int64_t iterNextKArray(Iter* it,
   TRACE(2, "iterNextKArray: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData());
-  assert(!it->arr().getArrayData()->isMixed());
+  assert(!it->arr().getArrayData()->isMixedLayout());
   assert(!it->arr().getArrayData()->isPacked());
 
   ArrayIter& iter = it->arr();

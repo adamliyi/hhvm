@@ -91,6 +91,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -144,7 +145,7 @@ static size_t heap_size;
 #define HASHTBL_POW     18
 #else
 #define DEP_POW         26
-#define HASHTBL_POW     25
+#define HASHTBL_POW     26
 #endif
 
 /* Convention: .*_B = Size in bytes. */
@@ -166,10 +167,6 @@ static size_t heap_size;
 #define CACHE_LINE_SIZE (1 << 6)
 #define CACHE_MASK      (~(CACHE_LINE_SIZE - 1))
 #define ALIGNED(x)      ((x + CACHE_LINE_SIZE - 1) & CACHE_MASK)
-
-/* Fix the location of our shared memory so we can save and restore the
- * hashtable easily */
-#define SHARED_MEM_INIT 0x500000000000ll
 
 /* As a sanity check when loading from a file */
 static uint64_t MAGIC_CONSTANT = 0xfacefacefaceb000ll;
@@ -195,7 +192,7 @@ typedef struct {
 static size_t shared_mem_size;
 
 /* Beginning of shared memory */
-static char* shared_mem = 0;
+static char* shared_mem = NULL;
 
 /* ENCODING: The first element is the size stored in bytes, the rest is
  * the data. The size is set to zero when the storage is empty.
@@ -232,17 +229,65 @@ static char* heap_init;
 /* This should only be used by the master */
 static size_t heap_init_size = 0;
 
-static size_t used_heap_size() {
+/*****************************************************************************/
+/* Locking */
+/*****************************************************************************/
+
+#ifndef _WIN32
+pthread_mutex_t* hashtable_mutex;
+#endif
+
+CAMLprim value hh_hashtable_mutex_lock(void) {
+  CAMLparam0();
+#ifdef _WIN32
+  // TODO
+#else
+  int res = pthread_mutex_lock(hashtable_mutex);
+  if (res != 0) {
+    caml_failwith("Error acquiring the lock");
+  }
+#endif
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value hh_hashtable_mutex_trylock(void) {
+  CAMLparam0();
+  int res = 0;
+#ifdef _WIN32
+  // TODO
+#else
+  res = pthread_mutex_trylock(hashtable_mutex);
+  if ((res != 0) && (res != EBUSY)) {
+    caml_failwith("Error trying to acquire the lock");
+  }
+#endif
+  CAMLreturn(Val_bool(res == 0));
+}
+
+CAMLprim value hh_hashtable_mutex_unlock(void) {
+  CAMLparam0();
+#ifdef _WIN32
+  // TODO
+#else
+  int res = pthread_mutex_unlock(hashtable_mutex);
+  if (res != 0) {
+    caml_failwith("Error releasing the lock");
+  }
+#endif
+  CAMLreturn(Val_unit);
+}
+
+static size_t used_heap_size(void) {
   return *heap - heap_init;
 }
 
 /* Expose so we can display diagnostics */
-value hh_heap_size() {
+CAMLprim value hh_heap_size(void) {
   CAMLparam0();
   CAMLreturn(Val_long(used_heap_size()));
 }
 
-value hh_hash_used_slots() {
+CAMLprim value hh_hash_used_slots(void) {
   CAMLparam0();
   uint64_t count = 0;
   uintptr_t i = 0;
@@ -254,7 +299,7 @@ value hh_hash_used_slots() {
   CAMLreturn(Val_long(count));
 }
 
-value hh_hash_slots() {
+CAMLprim value hh_hash_slots(void) {
   CAMLparam0();
   CAMLreturn(Val_long(HASHTBL_SIZE));
 }
@@ -280,21 +325,13 @@ static void init_shared_globals(char* mem) {
 
 #ifdef _WIN32
   if (!VirtualAlloc(mem,
-                    global_size_b + page_size +
+                    page_size + global_size_b +
                       2 * DEP_SIZE_B + HASHTBL_SIZE_B,
                     MEM_COMMIT, PAGE_READWRITE)) {
     win32_maperr(GetLastError());
     uerror("VirtualAlloc2", Nothing);
   }
 #endif
-
-  /* Global storage initialization:
-   * We store this at the start of the shared memory section as it never
-   * needs to get saved (always reset after each typechecking run) */
-  global_storage = (value*)mem;
-  // Initial size is zero
-  global_storage[0] = 0;
-  mem += global_size_b;
 
   /* BEGINNING OF THE SMALL OBJECTS PAGE
    * We keep all the small objects in this page.
@@ -305,19 +342,34 @@ static void init_shared_globals(char* mem) {
    * We will atomically increment *heap every time we want to allocate.
    */
   heap = (char**)mem;
-  assert(CACHE_LINE_SIZE >= sizeof(char*));
 
   // The number of elements in the hashtable
+  assert(CACHE_LINE_SIZE >= sizeof(int));
   hcounter = (int*)(mem + CACHE_LINE_SIZE);
   *hcounter = 0;
 
+  assert (CACHE_LINE_SIZE >= sizeof(uintptr_t));
   counter = (uintptr_t*)(mem + 2*CACHE_LINE_SIZE);
   *counter = early_counter + 1;
 
+  assert (CACHE_LINE_SIZE >= sizeof(pthread_mutex_t));
+  hashtable_mutex = (pthread_mutex_t*)(mem + 3*CACHE_LINE_SIZE);
+
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+  pthread_mutex_init(hashtable_mutex, &attr);
+
   mem += page_size;
   // Just checking that the page is large enough.
-  assert(page_size > CACHE_LINE_SIZE + (int)sizeof(int));
+  assert(page_size > 3*CACHE_LINE_SIZE + (int)sizeof(int));
   /* END OF THE SMALL OBJECTS PAGE */
+
+  /* Global storage initialization */
+  global_storage = (value*)mem;
+  // Initial size is zero
+  global_storage[0] = 0;
+  mem += global_size_b;
 
   /* Dependencies */
   deptbl = (uint64_t*)mem;
@@ -339,7 +391,7 @@ static void init_shared_globals(char* mem) {
 /* Must be called by the master BEFORE forking the workers! */
 /*****************************************************************************/
 
-value hh_shared_init(
+CAMLprim value hh_shared_init(
   value global_size_val,
   value heap_size_val
 ) {
@@ -393,11 +445,8 @@ value hh_shared_init(
   shared_mem = MapViewOfFileEx(
     handle,
     FILE_MAP_ALL_ACCESS,
-    0, 0,
-    0,
-    (char *)SHARED_MEM_INIT);
-  if (shared_mem != (char *)SHARED_MEM_INIT) {
-    shared_mem = NULL;
+    0, 0, 0);
+  if (shared_mem == NULL) {
     win32_maperr(GetLastError());
     uerror("MapViewOfFileEx", Nothing);
   }
@@ -407,12 +456,10 @@ value hh_shared_init(
   /* MAP_NORESERVE is because we want a lot more virtual memory than what
    * we are actually going to use.
    */
-  int flags = MAP_SHARED | MAP_ANON | MAP_NORESERVE | MAP_FIXED;
+  int flags = MAP_SHARED | MAP_ANON | MAP_NORESERVE;
   int prot  = PROT_READ  | PROT_WRITE;
 
-  shared_mem =
-    (char*)mmap((void*)SHARED_MEM_INIT,  shared_mem_size, prot,
-                flags, 0, 0);
+  shared_mem = (char*)mmap(NULL, shared_mem_size, prot, flags, 0, 0);
   if(shared_mem == MAP_FAILED) {
     printf("Error initializing: %s\n", strerror(errno));
     exit(2);
@@ -481,7 +528,7 @@ void hh_worker_init() {
  */
 /*****************************************************************************/
 
-value hh_counter_next() {
+CAMLprim value hh_counter_next(void) {
   CAMLparam0();
   CAMLlocal1(result);
 
@@ -501,6 +548,7 @@ value hh_counter_next() {
 /*****************************************************************************/
 
 void hh_shared_store(value data) {
+  CAMLparam1(data);
   size_t size = caml_string_length(data);
 
   assert(my_pid == master_pid);                  // only the master can store
@@ -509,6 +557,8 @@ void hh_shared_store(value data) {
 
   global_storage[0] = size;
   memcpy(&global_storage[1], &Field(data, 0), size);
+
+  CAMLreturn0;
 }
 
 /*****************************************************************************/
@@ -519,7 +569,7 @@ void hh_shared_store(value data) {
  */
 /*****************************************************************************/
 
-value hh_shared_load() {
+CAMLprim value hh_shared_load(void) {
   CAMLparam0();
   CAMLlocal1(result);
 
@@ -531,7 +581,7 @@ value hh_shared_load() {
   CAMLreturn(result);
 }
 
-void hh_shared_clear() {
+void hh_shared_clear(void) {
   assert(my_pid == master_pid);
   global_storage[0] = 0;
 }
@@ -582,17 +632,20 @@ static int htable_add(uint64_t* table, unsigned long hash, uint64_t value) {
 }
 
 void hh_add_dep(value ocaml_dep) {
+  CAMLparam1(ocaml_dep);
   uint64_t dep = Long_val(ocaml_dep);
   unsigned long hash = (dep >> 31) * (dep & ((1ul << 31) - 1));
 
   if(!htable_add(deptbl_bindings, hash, hash)) {
-    return;
+    CAMLreturn0;
   }
 
   htable_add(deptbl, dep >> 31, dep);
+
+  CAMLreturn0;
 }
 
-value hh_dep_used_slots() {
+CAMLprim value hh_dep_used_slots(void) {
   CAMLparam0();
   uint64_t count = 0;
   uintptr_t slot = 0;
@@ -604,13 +657,13 @@ value hh_dep_used_slots() {
   CAMLreturn(Val_long(count));
 }
 
-value hh_dep_slots() {
+CAMLprim value hh_dep_slots(void) {
   CAMLparam0();
   CAMLreturn(Val_long(DEP_SIZE));
 }
 
 /* Given a key, returns the list of values bound to it. */
-value hh_get_dep(value dep) {
+CAMLprim value hh_get_dep(value dep) {
   CAMLparam1(dep);
   CAMLlocal2(result, cell);
 
@@ -876,7 +929,7 @@ value hh_mem(value key) {
 /*****************************************************************************/
 /* Returns the value associated to a given key. The key MUST be present. */
 /*****************************************************************************/
-value hh_get(value key) {
+CAMLprim value hh_get(value key) {
   CAMLparam1(key);
   CAMLlocal1(result);
 

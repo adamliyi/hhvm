@@ -20,18 +20,23 @@
 
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
+#include "hphp/runtime/base/collections.h"
 #include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/base/dummy-resource.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/zend-strtod.h"
+
+#include "hphp/runtime/ext/collections/ext_collections-map.h"
+#include "hphp/runtime/ext/collections/ext_collections-pair.h"
+#include "hphp/runtime/ext/collections/ext_collections-set.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
+
 #include "hphp/runtime/vm/native-data.h"
 #include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/runtime/vm/repo.h"
-
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
-#include "hphp/runtime/ext/std/ext_std_classobj.h"
 
 #include "hphp/runtime/vm/jit/perf-counters.h"
 
@@ -57,54 +62,54 @@ void unserializeSet(ObjectData*, VariableUnserializer*, int64_t sz,
 void unserializePair(ObjectData*, VariableUnserializer*, int64_t sz,
                      char type);
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnexpectedSep(char expect, char actual) {
   throw Exception("Expected '%c' but got '%c'", expect, actual);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwOutOfRange(int64_t id) {
   throw Exception("Id %" PRId64 " out of range", id);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnexpectedStr(const char* expect, folly::StringPiece& actual) {
   throw Exception("Expected '%s' but got '%.*s'", expect,
                   (int)actual.size(), actual.data());
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnknownType(char type) {
   throw Exception("Unknown type '%c'", type);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwInvalidPair() {
   throw Exception("Pair objects must have exactly 2 elements");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwInvalidOFormat(const String& clsName) {
   throw Exception("%s does not support the 'O' serialization format",
                   clsName.data());
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwMangledPrivateProperty() {
   throw Exception("Mangled private object property");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnterminatedProperty() {
   throw Exception("Object property not terminated properly");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwNotCollection(const String& clsName) {
   throw Exception("%s is not a collection class", clsName.data());
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnexpectedType(const String& key, const ObjectData* obj,
                          const Variant& type) {
   auto msg = folly::format(
@@ -117,67 +122,67 @@ void throwUnexpectedType(const String& key, const ObjectData* obj,
   throw Exception(msg);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnexpectedType(const StringData* key, const ObjectData* obj,
                          const Variant& type) {
   String str(key->data(), key->size(), CopyString);
   throwUnexpectedType(str, obj, type);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwArraySizeOutOfBounds() {
   throw Exception("Array size out of bounds");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwInvalidKey() {
   throw Exception("Invalid key");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnterminatedElement() {
   throw Exception("Array element not terminated properly");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwLargeStringSize(int64_t size) {
   throw Exception("Size of serialized string (%ld) exceeds max", size);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwNegativeStringSize(int64_t size) {
   throw Exception("Size of serialized string (%ld) must not be negative", size);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwBadFormat(const ObjectData* obj, char type) {
   throw Exception("%s does not support the '%c' serialization format",
                   header_names[(int)obj->headerKind()], type);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwInvalidHashKey(const ObjectData* obj) {
   throw Exception("%s values must be integers or strings",
                   header_names[(int)obj->headerKind()]);
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwColRKey() {
   throw Exception("Referring to collection keys using the 'r' encoding "
                     "is not supported");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwColRefValue() {
   throw Exception("Collection values cannot be taken by reference");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwColRefKey() {
   throw Exception("Collection keys cannot be taken by reference");
 }
 
-NEVER_INLINE ATTRIBUTE_NORETURN
+[[noreturn]] NEVER_INLINE
 void throwUnexpectedEOB() {
   throw Exception("Unexpected end of buffer during unserialization");
 }
@@ -1076,12 +1081,18 @@ void unserializeMap(ObjectData* obj, VariableUnserializer* uns,
       auto h = k.toInt64();
       tv = map->findForUnserialize(h);
       // Be robust against manually crafted inputs with conflicting elements
-      if (UNLIKELY(!tv)) goto do_unserialize;
+      if (UNLIKELY(!tv)) {
+        tv = k.asTypedValue();
+        goto do_unserialize;
+      }
     } else if (k.isString()) {
       auto key = k.getStringData();
       tv = map->findForUnserialize(key);
       // Be robust against manually crafted inputs with conflicting elements
-      if (UNLIKELY(!tv)) goto do_unserialize;
+      if (UNLIKELY(!tv)) {
+        tv = k.asTypedValue();
+        goto do_unserialize;
+      }
     } else {
       throwInvalidKey();
     }

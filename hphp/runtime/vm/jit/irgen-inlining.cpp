@@ -17,7 +17,6 @@
 
 #include "hphp/runtime/vm/jit/analysis.h"
 
-#include "hphp/runtime/vm/jit/irgen-guards.h"
 #include "hphp/runtime/vm/jit/irgen-exit.h"
 #include "hphp/runtime/vm/jit/irgen-sprop-global.h"
 
@@ -29,36 +28,11 @@ bool isInlining(const IRGS& env) {
   return env.inlineLevel > 0;
 }
 
-/*
- * Attempts to begin inlining, and returns whether or not it successed.
- *
- * When doing gen-time inlining, we set up a series of IR instructions
- * that looks like this:
- *
- *   fp0  = DefFP
- *   sp   = DefSP<offset>
- *
- *   // ... normal stuff happens ...
- *
- *   // FPI region:
- *     SpillFrame sp, ...
- *     // ... probably some StStks due to argument expressions
- *             BeginInlining<offset> sp
- *     fp2   = DefInlineFP<func,retBC,retSP,off> sp
- *
- *         // ... callee body ...
- *
- *     InlineReturn fp2
- *
- * In DCE we attempt to remove the InlineReturn and DefInlineFP instructions if
- * they aren't needed.
- */
 bool beginInlining(IRGS& env,
                    unsigned numParams,
                    const Func* target,
                    Offset returnBcOffset,
-                   Block* returnTarget,
-                   bool multipleReturns) {
+                   ReturnTarget returnTarget) {
   auto const& fpiStack = env.irb->fs().fpiStack();
 
   assertx(!fpiStack.empty() &&
@@ -86,19 +60,23 @@ bool beginInlining(IRGS& env,
   auto const& info = fpiStack.front();
   always_assert(!isFPushCuf(info.fpushOpc) && !info.interp);
 
+  // NB: the arguments were just popped from the VM stack above, so the VM
+  // stack-pointer is conceptually pointing to the callee's ActRec at this
+  // point.
+  IRSPRelOffset calleeAROff = bcSPOffset(env);
+
   auto ctx = [&] {
     if (info.ctx || isFPushFunc(info.fpushOpc)) {
       return info.ctx;
     }
-
-    constexpr int32_t adjust = offsetof(ActRec, m_r) - offsetof(ActRec, m_this);
-    IRSPOffset ctxOff{invSPOff(env) - info.returnSPOff - adjust};
-    return gen(env, LdStk, TCtx, IRSPOffsetData{ctxOff}, sp(env));
+    constexpr int32_t adjust = AROFF(m_this) / sizeof(Cell);
+    IRSPRelOffset ctxOff = calleeAROff + adjust;
+    return gen(env, LdStk, TCtx, IRSPRelOffsetData{ctxOff}, sp(env));
   }();
 
   if (RuntimeOption::EvalHHIRGenerateAsserts) {
-    IRSPOffset arOff = offsetFromIRSP(env, BCSPOffset{0});
-    auto arFunc = gen(env, LdARFuncPtr, IRSPOffsetData{arOff}, sp(env));
+    auto arFunc = gen(env, LdARFuncPtr,
+                      IRSPRelOffsetData{calleeAROff}, sp(env));
     gen(env, DbgAssertFunc, arFunc, cns(env, target));
   }
 
@@ -108,15 +86,14 @@ bool beginInlining(IRGS& env,
                      fpiFunc ? fpiFunc->fullName()->data() : "null",
                      target  ? target->fullName()->data()  : "null");
 
-  auto inlineStack = offsetFromIRSP(env, BCSPOffset{0});
-  gen(env, BeginInlining, IRSPOffsetData{inlineStack}, sp(env));
+  gen(env, BeginInlining, IRSPRelOffsetData{calleeAROff}, sp(env));
 
   DefInlineFPData data;
   data.target        = target;
   data.retBCOff      = returnBcOffset;
   data.ctx           = ctx;
   data.retSPOff      = prevSPOff;
-  data.spOffset      = offsetFromIRSP(env, BCSPOffset{0});
+  data.spOffset      = calleeAROff;
   data.numNonDefault = numParams;
 
   // Push state and update the marker before emitting any instructions so
@@ -127,9 +104,7 @@ bool beginInlining(IRGS& env,
     false
   };
   env.bcStateStack.emplace_back(key);
-  env.inlineReturnTarget.emplace_back(
-    ReturnTarget { returnTarget, multipleReturns }
-  );
+  env.inlineReturnTarget.emplace_back(returnTarget);
   env.inlineLevel++;
   updateMarker(env);
 
@@ -155,17 +130,14 @@ bool beginInlining(IRGS& env,
   return true;
 }
 
-void endInlinedCommon(IRGS& env) {
+void implInlineReturn(IRGS& env) {
   assertx(!curFunc(env)->isPseudoMain());
-
   assertx(!resumed(env));
 
-  decRefLocalsInline(env);
-  decRefThis(env);
-
+  // Return to the caller function.
   gen(env, InlineReturn, fp(env));
 
-  // Return to the caller function.  Careful between here and the
+  // Pop the inlined frame in our IRGS.  Be careful between here and the
   // updateMarker() below, where the caller state isn't entirely set up.
   env.inlineLevel--;
   env.bcStateStack.pop_back();
@@ -178,8 +150,11 @@ void endInlinedCommon(IRGS& env) {
 }
 
 void endInlining(IRGS& env) {
+  decRefLocalsInline(env);
+  decRefThis(env);
+
   auto const retVal = pop(env, DataTypeGeneric);
-  endInlinedCommon(env);
+  implInlineReturn(env);
   push(env, retVal);
 }
 

@@ -105,6 +105,9 @@ struct Vgen {
   void emit(const tailcallphp& i);
   void emit(const callarray& i);
   void emit(const contenter& i);
+
+  // vm entry abi
+  void emit(const calltc&);
   void emit(const leavetc&) { a.ret(); }
 
   // exceptions
@@ -129,7 +132,9 @@ struct Vgen {
   void emit(const addqim& i);
   void emit(addsd i) { commute(i); a.addsd(i.s0, i.d); }
   void emit(const cloadq& i);
-  void emit(const cmovq& i);
+  template<class cmov> void emit_cmov(const cmov& i);
+  void emit(const cmovb& i) { emit_cmov(i); }
+  void emit(const cmovq& i) { emit_cmov(i); }
   void emit(const cmpb& i) { a.cmpb(i.s0, i.s1); }
   void emit(const cmpbi& i) { a.cmpb(i.s0, i.s1); }
   void emit(const cmpbim& i) { a.cmpb(i.s0, i.s1); }
@@ -168,11 +173,13 @@ struct Vgen {
   void emit(const jmpi& i);
   void emit(const lea& i);
   void emit(const leap& i) { a.lea(i.s, i.d); }
+  void emit(const lead& i) { a.lea(rip[(intptr_t)i.s.get()], i.d); }
   void emit(const loadups& i) { a.movups(i.s, i.d); }
   void emit(const loadtqb& i) { a.loadb(i.s, i.d); }
   void emit(const loadb& i) { a.loadb(i.s, i.d); }
   void emit(const loadl& i) { a.loadl(i.s, i.d); }
   void emit(const loadqp& i) { a.loadq(i.s, i.d); }
+  void emit(const loadqd& i) { a.loadq(rip[(intptr_t)i.s.get()], i.d); }
   void emit(const loadsd& i) { a.movsd(i.s, i.d); }
   void emit(const loadzbl& i) { a.loadzbl(i.s, i.d); }
   void emit(const loadzbq& i) { a.loadzbl(i.s, Reg32(i.d)); }
@@ -181,6 +188,7 @@ struct Vgen {
   void emit(const movl& i) { a.movl(i.s, i.d); }
   void emit(const movzbl& i) { a.movzbl(i.s, i.d); }
   void emit(const movzbq& i) { a.movzbl(i.s, Reg32(i.d)); }
+  void emit(const movzlq& i) { a.movl(i.s, Reg32(i.d)); }
   void emit(mulsd i) { commute(i); a.mulsd(i.s0, i.d); }
   void emit(neg i) { unary(i); a.neg(i.d); }
   void emit(const nop& i) { a.nop(); }
@@ -241,6 +249,11 @@ struct Vgen {
   void emit(xorl i) { commuteSF(i); a.xorl(i.s0, i.d); }
   void emit(xorq i);
   void emit(xorqi i) { binary(i); a.xorq(i.s0, i.d); }
+
+  void emit_nop() {
+    emit(lea{rax[8], rax});
+    emit(lea{rax[-8], rax});
+  }
 
 private:
   // helpers
@@ -383,7 +396,7 @@ void Vgen::emit_simd_imm(int64_t val, Vreg d) {
   if (val == 0) {
     a.pxor(d, d); // does not modify flags
   } else {
-    auto addr = mcg->allocLiteral(val, env.meta);
+    auto addr = alloc_literal(env, val);
     a.movsd(rip[(intptr_t)addr], d);
   }
 }
@@ -477,8 +490,12 @@ void Vgen::emit(const call& i) {
     // assumes the data section is near the current code section.  Since
     // this sequence is directly in-line, rip-relative like this is
     // more compact than loading a 64-bit immediate.
-    auto addr = mcg->allocLiteral((uint64_t)i.target, env.meta);
+    auto addr = alloc_literal(env, (uint64_t)i.target);
     a.call(rip[(intptr_t)addr]);
+  }
+  if (i.watch) {
+    *i.watch = a.frontier();
+    env.meta.watchpoints.push_back(i.watch);
   }
 }
 
@@ -534,6 +551,21 @@ void Vgen::emit(const tailcallphp& i) {
 void Vgen::emit(const callarray& i) {
   emit(call{i.target, i.args});
 }
+
+void Vgen::emit(const calltc& i) {
+  a.push(i.exittc);
+  a.push(i.fp[AROFF(m_savedRip)]);
+
+  Label stub;
+  a.call(stub);
+
+  asm_label(a, stub);
+  assertx(!i.args.contains(reg::rax));
+  a.pop(reg::rax);  // unused
+  a.jmp(i.target);
+}
+
+///////////////////////////////////////////////////////////////////////////////
 
 void Vgen::emit(const contenter& i) {
   Label Stub, End;
@@ -596,14 +628,15 @@ void Vgen::emit(const cloadq& i) {
 
 // add s0 s1 d => mov s1->d; d += s0
 // cmov cc s d => if cc { mov s->d }
-void Vgen::emit(const cmovq& i) {
+template<class cmov>
+void Vgen::emit_cmov(const cmov& i) {
   if (i.f != i.d && i.t == i.d) {
     // negate the condition and swap t/f operands so we dont clobber i.t
-    return emit(cmovq{ccNegate(i.cc), i.sf, i.t, i.f, i.d});
+    return emit(cmov{ccNegate(i.cc), i.sf, i.t, i.f, i.d});
   } else {
     prep(i.f, i.d);
   }
-  a.cmov_reg64_reg64(i.cc, i.t, i.d);
+  a.cmov_reg64_reg64(i.cc, r64(i.t), r64(i.d));
 }
 
 void Vgen::emit(const cvtsi2sd& i) {
@@ -644,7 +677,7 @@ void Vgen::emit(const jmpi& i) {
     a.jmp(i.target);
   } else {
     // can't do a near jmp - use rip-relative addressing
-    auto addr = mcg->allocLiteral((uint64_t)i.target, env.meta);
+    auto addr = alloc_literal(env, (uint64_t)i.target);
     a.jmp(rip[(intptr_t)addr]);
   }
 }
@@ -715,16 +748,7 @@ void Vgen::emit(xorq i) {
 
 template<typename Lower>
 void lower_impl(Vunit& unit, Vlabel b, size_t i, Lower lower) {
-  auto& blocks = unit.blocks;
-  auto const& vinstr = blocks[b].code[i];
-
-  auto const scratch = unit.makeScratchBlock();
-  SCOPE_EXIT { unit.freeScratchBlock(scratch); };
-  Vout v(unit, scratch, vinstr.origin);
-
-  lower(v);
-
-  vector_splice(blocks[b].code, i, 1, blocks[scratch].code);
+  vmodify(unit, b, i, [&] (Vout& v) { lower(v); return 1; });
 }
 
 template<typename Inst>
@@ -744,10 +768,18 @@ void lower(Vunit& unit, phplogue& inst, Vlabel b, size_t i) {
   unit.blocks[b].code[i] = popm{inst.fp[AROFF(m_savedRip)]};
 }
 
+void lower(Vunit& unit, loadstubret& inst, Vlabel b, size_t i) {
+  unit.blocks[b].code[i] = load{reg::rsp[8], inst.d};
+}
+
 void lower(Vunit& unit, stubtophp& inst, Vlabel b, size_t i) {
+  unit.blocks[b].code[i] = lea{reg::rsp[16], reg::rsp};
+}
+
+void lower(Vunit& unit, resumetc& inst, Vlabel b, size_t i) {
   lower_impl(unit, b, i, [&] (Vout& v) {
-    v << lea{reg::rsp[8], reg::rsp};
-    v << popm{inst.fp[AROFF(m_savedRip)]};
+    v << callr{inst.target, inst.args};
+    v << jmpi{inst.exittc};
   });
 }
 
@@ -832,6 +864,8 @@ void lower_vcallarray(Vunit& unit, Vlabel b) {
  * Lower a few abstractions to facilitate straightforward x64 codegen.
  */
 void lowerForX64(Vunit& unit) {
+  Timer timer(Timer::vasm_lower);
+
   // This pass relies on having no critical edges in the unit.
   splitCriticalEdges(unit);
 
@@ -878,31 +912,28 @@ void optimizeX64(Vunit& unit, const Abi& abi) {
   optimizeJmps(unit);
   optimizeExits(unit);
 
-  lowerForX64(unit);
+  assertx(checkWidths(unit));
 
+  lowerForX64(unit);
   simplify(unit);
 
   if (!unit.constToReg.empty()) {
     foldImms<x64::ImmFolder>(unit);
   }
-  {
-    Timer timer(Timer::vasm_copy);
-    optimizeCopies(unit, abi);
-  }
+
+  optimizeCopies(unit, abi);
+
   if (unit.needsRegAlloc()) {
-    Timer timer(Timer::vasm_xls);
     removeDeadCode(unit);
     allocateRegisters(unit, abi);
   }
   if (unit.blocks.size() > 1) {
-    Timer timer(Timer::vasm_jumps);
     optimizeJmps(unit);
   }
 }
 
 void emitX64(const Vunit& unit, Vtext& text, CGMeta& fixups,
              AsmInfo* asmInfo) {
-  Timer timer(Timer::vasm_gen);
   vasm_emit<Vgen>(unit, text, fixups, asmInfo);
 }
 

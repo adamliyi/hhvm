@@ -87,10 +87,12 @@
 #include "hphp/util/shm-counter.h"
 #include "hphp/util/stack-trace.h"
 #include "hphp/util/timer.h"
+#include "hphp/util/type-scan.h"
 
 #include <folly/Range.h>
 #include <folly/Portability.h>
 #include <folly/Singleton.h>
+#include <folly/portability/Environment.h>
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/program_options/options_description.hpp>
@@ -103,6 +105,7 @@
 #include <signal.h>
 #include <libxml/parser.h>
 
+#include <chrono>
 #include <exception>
 #include <fstream>
 #include <iterator>
@@ -118,7 +121,6 @@
 
 using namespace boost::program_options;
 using std::cout;
-extern char **environ;
 
 constexpr auto MAX_INPUT_NESTING_LEVEL = 64;
 
@@ -814,7 +816,7 @@ static void pagein_self(void) {
   if (buf == nullptr)
     return;
 
-  BootTimer::Block timer("mapping self");
+  BootStats::Block timer("mapping self");
   fp = fopen("/proc/self/maps", "r");
   if (fp != nullptr) {
     while (!feof(fp)) {
@@ -886,14 +888,47 @@ static void set_execution_mode(folly::StringPiece mode) {
   }
 }
 
+/* Reads a file into the OS page cache, with rate limiting. */
+static bool readahead_rate(const char* path, int64_t mbPerSec) {
+  int ret = open(path, O_RDONLY);
+  if (ret < 0) return false;
+  const int fd = ret;
+  SCOPE_EXIT { close(fd); };
+
+  constexpr size_t kReadaheadBytes = 1 << 20;
+  std::unique_ptr<char[]> buf(new char[kReadaheadBytes]);
+  int64_t total = 0;
+  auto startTime = std::chrono::steady_clock::now();
+  do {
+    ret = read(fd, buf.get(), kReadaheadBytes);
+    if (ret > 0) {
+      total += ret;
+      // Unit math: bytes / (MB / seconds) = microseconds
+      auto endTime = startTime + std::chrono::microseconds(total / mbPerSec);
+      auto sleepT = endTime - std::chrono::steady_clock::now();
+      // Don't sleep too frequently.
+      if (sleepT >= std::chrono::seconds(1)) {
+        Logger::Info(folly::sformat(
+          "readahead sleeping {}ms after total {}b",
+          std::chrono::duration_cast<std::chrono::milliseconds>(sleepT).count(),
+          total));
+        /* sleep override */ std::this_thread::sleep_for(sleepT);
+      }
+    }
+  } while (ret > 0);
+  return ret == 0;
+}
+
 static int start_server(const std::string &username, int xhprof) {
+  BootStats::start();
+  HttpServer::ReduceOldServerLoad();
+  HttpServer::CheckMemAndWait();
   InitFiniNode::ServerPreInit();
-  BootTimer::start();
 
   // Before we start the webserver, make sure the entire
   // binary is paged into memory.
   pagein_self();
-  BootTimer::mark("pagein_self");
+  BootStats::mark("pagein_self");
 
   set_execution_mode("server");
   HttpRequestHandler::GetAccessLog().init
@@ -914,7 +949,9 @@ static int start_server(const std::string &username, int xhprof) {
 #if !defined(SKIP_USER_CHANGE)
   if (!username.empty()) {
     if (Logger::UseCronolog) {
-      Cronolog::changeOwner(username, RuntimeOption::LogFileSymLink);
+      for (const auto& el : RuntimeOption::ErrorLogs) {
+        Cronolog::changeOwner(username, el.second.symLink);
+      }
     }
     Capability::ChangeUnixUser(username);
     LightProcess::ChangeUser(username);
@@ -922,6 +959,13 @@ static int start_server(const std::string &username, int xhprof) {
   Capability::SetDumpable();
 #endif
 
+  if (RuntimeOption::ServerInternalWarmupThreads > 0) {
+    HttpServer::CheckMemAndWait();
+    InitFiniNode::WarmupConcurrentStart(
+      RuntimeOption::ServerInternalWarmupThreads);
+  }
+
+  HttpServer::CheckMemAndWait();
   // Create the HttpServer before any warmup requests to properly
   // initialize the process
   HttpServer::Server = std::make_shared<HttpServer>();
@@ -930,8 +974,35 @@ static int start_server(const std::string &username, int xhprof) {
     HHVM_FN(xhprof_enable)(xhprof, uninit_null().toArray());
   }
 
+  std::unique_ptr<std::thread> readaheadThread;
+
+  if (RuntimeOption::RepoLocalReadaheadRate > 0 &&
+      !RuntimeOption::RepoLocalPath.empty()) {
+    HttpServer::CheckMemAndWait();
+    readaheadThread = folly::make_unique<std::thread>([&] {
+        BootStats::Block timer("Readahead Repo");
+        auto path = RuntimeOption::RepoLocalPath.c_str();
+        Logger::Info("readahead %s", path);
+        const auto mbPerSec = RuntimeOption::RepoLocalReadaheadRate;
+        if (!readahead_rate(path, mbPerSec)) {
+          Logger::Error("readahead failed: %s", strerror(errno));
+        }
+      });
+    if (!RuntimeOption::RepoLocalReadaheadConcurrent) {
+      // TODO(10152762): Run this concurrently with non-disk warmup.
+      readaheadThread->join();
+      readaheadThread.reset();
+    }
+  }
+
+  if (RuntimeOption::ServerInternalWarmupThreads > 0) {
+    BootStats::Block timer("concurrentWaitForEnd");
+    InitFiniNode::WarmupConcurrentWaitForEnd();
+  }
+
   if (RuntimeOption::RepoPreload) {
-    BootTimer::Block timer("Preloading Repo");
+    HttpServer::CheckMemAndWait();
+    BootStats::Block timer("Preloading Repo");
     profileWarmupStart();
     preloadRepo();
     profileWarmupEnd();
@@ -945,12 +1016,13 @@ static int start_server(const std::string &username, int xhprof) {
     SCOPE_EXIT { profileWarmupEnd(); };
     std::map<std::string, int> seen;
     for (auto& file : RuntimeOption::ServerWarmupRequests) {
+      HttpServer::CheckMemAndWait();
       // Take only the last part
       folly::StringPiece f(file);
       auto pos = f.rfind('/');
       std::string str(pos == f.npos ? file : f.subpiece(pos + 1).str());
       auto count = seen[str];
-      BootTimer::Block timer(folly::sformat("warmup:{}:{}", str, count++));
+      BootStats::Block timer(folly::sformat("warmup:{}:{}", str, count++));
       seen[str] = count;
 
       HttpRequestHandler handler(0);
@@ -978,7 +1050,14 @@ static int start_server(const std::string &username, int xhprof) {
       }
     }
   }
-  BootTimer::mark("warmup");
+  BootStats::mark("warmup");
+
+  if (readaheadThread.get()) {
+    readaheadThread->join();
+    readaheadThread.reset();
+  }
+
+  if (RuntimeOption::StopOldServer) HttpServer::StopOldServer();
 
   if (RuntimeOption::EvalEnableNuma) {
 #ifdef USE_JEMALLOC
@@ -993,9 +1072,10 @@ static int start_server(const std::string &username, int xhprof) {
     }
 #endif
     enable_numa(RuntimeOption::EvalEnableNumaLocal);
-    BootTimer::mark("enable_numa");
+    BootStats::mark("enable_numa");
   }
 
+  HttpServer::CheckMemAndWait(true); // Final wait
   HttpServer::Server->runOrExitProcess();
   HttpServer::Server.reset();
   return 0;
@@ -1073,45 +1153,46 @@ int execute_program(int argc, char **argv) {
   return ret_code;
 }
 
-/* -1 - cannot open file
- * 0  - no need to open file
- * 1 - fopen
- * 2 - popen
- */
-static int open_server_log_file() {
-  if (!RuntimeOption::LogFile.empty()) {
-    if (Logger::UseCronolog) {
-      if (strchr(RuntimeOption::LogFile.c_str(), '%')) {
-        Logger::cronOutput.m_template = RuntimeOption::LogFile;
-        Logger::cronOutput.setPeriodicity();
-        Logger::cronOutput.m_linkName = RuntimeOption::LogFileSymLink;
-        return 0;
+static bool open_server_log_files() {
+  bool openedLog = false;
+  for (const auto& el : RuntimeOption::ErrorLogs) {
+    bool ok = true;
+    const auto& name    = el.first;
+    const auto& errlog = el.second;
+    if (!errlog.logFile.empty()) {
+      if (errlog.isPipeOutput()) {
+        auto output = popen(errlog.logFile.substr(1).c_str(), "w");
+        ok = (output != nullptr);
+        Logger::SetOutput(name, output, true);
+      } else if (Logger::UseCronolog && errlog.hasTemplate()) {
+        auto cronoLog = Logger::CronoOutput(name);
+        always_assert(cronoLog);
+        cronoLog->m_template = errlog.logFile;
+        cronoLog->setPeriodicity();
+        cronoLog->m_linkName = errlog.symLink;
       } else {
-        Logger::Output = fopen(RuntimeOption::LogFile.c_str(), "a");
-        if (Logger::Output) return 1;
+        auto output = fopen(errlog.logFile.c_str(), "a");
+        ok = (output != nullptr);
+        Logger::SetOutput(name, output, false);
       }
-    } else {
-      if (Logger::IsPipeOutput) {
-        Logger::Output = popen(RuntimeOption::LogFile.substr(1).c_str(), "w");
-        if (Logger::Output) return 2;
-      } else {
-        Logger::Output = fopen(RuntimeOption::LogFile.c_str(), "a");
-        if (Logger::Output) return 1;
-      }
+      if (!ok) Logger::Error("Can't open log file: %s", errlog.logFile.c_str());
+      openedLog |= ok;
     }
-    Logger::Error("Cannot open log file: %s", RuntimeOption::LogFile.c_str());
-    return -1;
   }
-  return 0;
+  return openedLog;
 }
 
-static void close_server_log_file(int kind) {
-  if (kind == 1) {
-    fclose(Logger::Output);
-  } else if (kind == 2) {
-    pclose(Logger::Output);
-  } else {
-    always_assert(!Logger::Output);
+static void close_server_log_files() {
+  for (const auto& el : RuntimeOption::ErrorLogs) {
+    const auto& logNameAndPipe = Logger::GetOutput(el.first);
+    const auto& errlog = el.second;
+    if (logNameAndPipe.second) {
+      pclose(logNameAndPipe.first);
+    } else if (Logger::UseCronolog && errlog.hasTemplate()) {
+      always_assert(!logNameAndPipe.first);
+    } else {
+      fclose(logNameAndPipe.first);
+    }
   }
 }
 
@@ -1556,15 +1637,14 @@ static int execute_program_impl(int argc, char** argv) {
   MM().resetRuntimeOptions();
 
   if (po.mode == "daemon") {
-    if (RuntimeOption::LogFile.empty()) {
+    if (!open_server_log_files()) {
       Logger::Error("Log file not specified under daemon mode.\n\n");
     }
-    int ret = open_server_log_file();
     Process::Daemonize();
-    close_server_log_file(ret);
+    close_server_log_files();
   }
 
-  open_server_log_file();
+  open_server_log_files();
   if (RuntimeOption::ServerExecutionMode()) {
     for (auto const& m : messages) {
       Logger::Info(m);
@@ -1588,6 +1668,17 @@ static int execute_program_impl(int argc, char** argv) {
                            inherited_fds);
 #endif
 
+  // We want to do this as early as possible because any allocations before-hand
+  // will get a generic unknown type type-index.
+  if (RuntimeOption::EvalEnableGC && RuntimeOption::EvalEnableGCTypeScan) {
+    try {
+      type_scan::init();
+    } catch (const type_scan::InitException& exn) {
+      Logger::Error("Unable to initialize GC type-scanners: %s", exn.what());
+      exit(HPHP_EXIT_FAILURE);
+    }
+  }
+
   if (!ShmCounters::initialize(true, Logger::Error)) {
     exit(HPHP_EXIT_FAILURE);
   }
@@ -1599,7 +1690,13 @@ static int execute_program_impl(int argc, char** argv) {
     Logger::LogLevel = Logger::LogInfo;
     Logger::UseCronolog = false;
     Logger::UseLogFile = true;
-    Logger::SetNewOutput(nullptr);
+    // we're linting, reset whatever logger settings and write once to stdout
+    Logger::ClearThreadLog();
+    for (auto& el : RuntimeOption::ErrorLogs) {
+      const auto& name = el.first;
+      Logger::SetTheLogger(name, nullptr);
+    }
+    Logger::SetTheLogger(Logger::DEFAULT, new Logger());
 
     if (po.isTempFile) {
       tempFile = po.lint;
@@ -1898,16 +1995,16 @@ void hphp_process_init() {
 #endif
   init_stack_limits(&attr);
   pthread_attr_destroy(&attr);
-  BootTimer::mark("pthread_init");
+  BootStats::mark("pthread_init");
 
   Process::InitProcessStatics();
-  BootTimer::mark("Process::InitProcessStatics");
+  BootStats::mark("Process::InitProcessStatics");
 
   HHProf::Init();
 
   // initialize the tzinfo cache.
   timezone_init();
-  BootTimer::mark("timezone_init");
+  BootStats::mark("timezone_init");
 
   hphp_thread_init();
 
@@ -1919,24 +2016,21 @@ void hphp_process_init() {
 #endif
   // start takes milliseconds, Period is a double in seconds
   Xenon::getInstance().start(1000 * RuntimeOption::XenonPeriodSeconds);
-  BootTimer::mark("xenon");
-
-  ClassInfo::Load();
-  BootTimer::mark("ClassInfo::Load");
+  BootStats::mark("xenon");
 
   // reinitialize pcre table
   pcre_reinit();
-  BootTimer::mark("pcre_reinit");
+  BootStats::mark("pcre_reinit");
 
   // the liboniguruma docs say this isnt needed,
   // but the implementation of init is not
   // thread safe due to bugs
   onig_init();
-  BootTimer::mark("onig_init");
+  BootStats::mark("onig_init");
 
   // simple xml also needs one time init
   xmlInitParser();
-  BootTimer::mark("xmlInitParser");
+  BootStats::mark("xmlInitParser");
 
   g_context.getCheck();
   InitFiniNode::ProcessPreInit();
@@ -1946,26 +2040,26 @@ void hphp_process_init() {
   InitFiniNode::ProcessInitConcurrentStart(maxWorkers);
   SCOPE_EXIT {
     InitFiniNode::ProcessInitConcurrentWaitForEnd();
-    BootTimer::mark("extra_process_init_concurrent_wait");
+    BootStats::mark("extra_process_init_concurrent_wait");
   };
   g_vmProcessInit();
-  BootTimer::mark("g_vmProcessInit");
+  BootStats::mark("g_vmProcessInit");
 
   PageletServer::Restart();
-  BootTimer::mark("PageletServer::Restart");
+  BootStats::mark("PageletServer::Restart");
   XboxServer::Restart();
-  BootTimer::mark("XboxServer::Restart");
+  BootStats::mark("XboxServer::Restart");
   Stream::RegisterCoreWrappers();
-  BootTimer::mark("Stream::RegisterCoreWrappers");
+  BootStats::mark("Stream::RegisterCoreWrappers");
   ExtensionRegistry::moduleInit();
-  BootTimer::mark("ExtensionRegistry::moduleInit");
+  BootStats::mark("ExtensionRegistry::moduleInit");
 
   // Now that constants have been bound we can update options using constants
   // in ini files (e.g., E_ALL) and sync some other options
   update_constants_and_options();
 
   InitFiniNode::ProcessInit();
-  BootTimer::mark("extra_process_init");
+  BootStats::mark("extra_process_init");
   {
     UnlimitSerializationScope unlimit;
     // TODO(9755792): Add real execution mode for snapshot generation.
@@ -1975,16 +2069,16 @@ void hphp_process_init() {
     } else {
       apc_load(apcExtension::LoadThread);
     }
-    BootTimer::mark("apc_load");
+    BootStats::mark("apc_load");
   }
 
   rds::requestExit();
-  BootTimer::mark("rds::requestExit");
+  BootStats::mark("rds::requestExit");
   // Reset the preloaded g_context
   ExecutionContext *context = g_context.getNoCheck();
   context->~ExecutionContext();
   new (context) ExecutionContext();
-  BootTimer::mark("ExecutionContext");
+  BootStats::mark("ExecutionContext");
 
   // TODO(9755792): Add real execution mode for snapshot generation.
   if (apcExtension::PrimeLibraryUpgradeDest != "") {

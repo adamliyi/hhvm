@@ -59,10 +59,11 @@ private:
   CallDest callDest(Vreg reg0) const;
   CallDest callDest(Vreg reg0, Vreg reg1) const;
   CallDest callDest(const IRInstruction*) const;
+  CallDest callDest(const IRInstruction*, const Vloc& loc) const;
   CallDest callDestTV(const IRInstruction*) const;
+  CallDest callDestTV(const IRInstruction*, const Vloc& loc) const;
   CallDest callDestDbl(const IRInstruction*) const;
 
-  // Main call helper:
   void cgCallHelper(Vout& v, CallSpec call, const CallDest& dstInfo,
                     SyncOptions sync, const ArgGroup& args);
   void cgInterpOneCommon(IRInstruction* inst);
@@ -146,8 +147,6 @@ private:
     return marker.resumed();
   };
 
-  Fixup makeFixup(const BCMarker& marker,
-                  SyncOptions sync = SyncOptions::Sync);
   int iterOffset(const BCMarker& marker, uint32_t id);
 
   void emitConvBoolOrIntToDbl(IRInstruction* inst);

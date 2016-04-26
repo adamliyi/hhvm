@@ -724,6 +724,10 @@ static void HHVM_FUNCTION(_xdebug_check_trigger_vars) {
   }
 }
 
+bool HHVM_FUNCTION(xdebug_remote_attached) {
+  return XDebugServer::isAttached();
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Module implementation
 
@@ -851,8 +855,17 @@ void XDebugExtension::moduleLoad(const IniSetting::Map& ini, Hdf xdebug_hdf) {
   if (Enable) {
     constexpr auto key = "Eval.Debugger.XDebugDefaultEnable";
     if (Config::GetBool(ini, xdebug_hdf, key, true)) {
-      Logger::SetTheLogger(new ExtendedLogger());
+#ifdef FACEBOOK
+      if (RuntimeOption::UseThriftLogger) {
+        Logger::Warning("ThriftLogger enabled, won't use ExtendedLogger");
+      } else {
+        Logger::SetTheLogger(Logger::DEFAULT, new ExtendedLogger());
+        ExtendedLogger::EnabledByDefault = true;
+      }
+#else
+      Logger::SetTheLogger(Logger::DEFAULT, new ExtendedLogger());
       ExtendedLogger::EnabledByDefault = true;
+#endif
     }
   }
 }
@@ -901,6 +914,7 @@ void XDebugExtension::moduleInit() {
   HHVM_FE(xdebug_time_index);
   HHVM_FE(xdebug_var_dump);
   HHVM_FE(_xdebug_check_trigger_vars);
+  HHVM_FALIAS(HH\\xdebug_remote_attached, xdebug_remote_attached);
   loadSystemlib("xdebug");
 }
 

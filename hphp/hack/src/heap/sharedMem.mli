@@ -97,6 +97,21 @@ val invalidate_caches: unit -> unit
  * persist outside of this process, and factoring out the side effect is
  * too annoying. *)
 val enable_local_writes: unit -> unit
+
+(* Thread safety of master and worker processes is achieved implicitly by
+ * ordering of Hack typing phases - only master is allowed to perform
+ * non-parallelizable operations (moves and removals from hashtable), and does
+ * it when workers are not doing any tasks.
+ *
+ * Lock below is exposed for use of non-worker processes (like IDE process)
+ * that want to read shared memory at arbitrary times. *)
+
+val hashtable_mutex_lock: unit -> unit
+val hashtable_mutex_trylock: unit -> bool
+val hashtable_mutex_unlock: unit -> unit
+
+val try_lock_hashtable: do_:(unit -> 'a) -> 'a option
+
 (*****************************************************************************)
 (* The signature of a shared memory hashtable.
  * To create one: SharedMem.NoCache(struct type = my_type_of_value end).
@@ -108,7 +123,7 @@ val enable_local_writes: unit -> unit
  *)
 (*****************************************************************************)
 
-module type S = sig
+module type NoCache = sig
   type key
   type t
   module KeySet : Set.S with type elt = key
@@ -144,6 +159,11 @@ module type S = sig
   val revive_batch: KeySet.t -> unit
 end
 
+module type WithCache = sig
+  include NoCache
+  val write_through : key -> t -> unit
+end
+
 module type UserKeyType = sig
   type t
   val to_string : t -> string
@@ -153,7 +173,7 @@ end
 module NoCache :
   functor (UserKeyType : UserKeyType) ->
   functor (Value:Value.Type) ->
-  S with type t = Value.t
+  NoCache with type t = Value.t
     and type key = UserKeyType.t
     and module KeySet = Set.Make (UserKeyType)
     and module KeyMap = MyMap.Make (UserKeyType)
@@ -161,7 +181,7 @@ module NoCache :
 module WithCache :
   functor (UserKeyType : UserKeyType) ->
   functor (Value:Value.Type) ->
-  S with type t = Value.t
+  WithCache with type t = Value.t
     and type key = UserKeyType.t
     and module KeySet = Set.Make (UserKeyType)
     and module KeyMap = MyMap.Make (UserKeyType)

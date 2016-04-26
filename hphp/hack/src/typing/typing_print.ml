@@ -397,6 +397,12 @@ module PrintClass = struct
       "\n"^indent^field^": "^(class_elt v)^acc
     end m ""
 
+  let class_const_smap m =
+    SMap.fold begin fun field cc acc ->
+      let synth = if cc.cc_synthesized then "synthetic " else "" in
+      "("^field^": "^synth^Full.to_string_decl cc.cc_type^") "^acc
+    end m ""
+
   let typeconst {
     ttc_name = tc_name;
     ttc_constraint = tc_constraint;
@@ -422,7 +428,7 @@ module PrintClass = struct
       "\n("^(typeconst v)^")"^acc
     end m ""
 
-  let ancestors_smap m =
+  let ancestors_smap tcopt m =
     (* Format is as follows:
      *    ParentKnownToHack
      *  ! ParentCompletelyUnknown
@@ -431,7 +437,7 @@ module PrintClass = struct
      * ParentPartiallyKnown must inherit one of the ! Unknown parents, so that
      * sigil could be omitted *)
     SMap.fold begin fun field v acc ->
-      let sigil, kind = match Typing_env.Classes.get field with
+      let sigil, kind = match Typing_lazy_heap.get_class tcopt field with
         | None -> "!", ""
         | Some {tc_members_fully_known; tc_kind; _} ->
           (if tc_members_fully_known then " " else "~"),
@@ -440,11 +446,6 @@ module PrintClass = struct
       let ty_str = Full.to_string_decl v in
       "\n"^indent^sigil^" "^ty_str^kind^acc
     end m ""
-
-  let user_attribute_list xs =
-    List.fold_left xs ~f:begin fun acc { Nast.ua_name; _ } ->
-      acc^"("^snd ua_name^": expr) "
-    end ~init:""
 
   let constructor (ce_opt, consist) =
     let consist_str = if consist then " (consistent in hierarchy)" else "" in
@@ -458,7 +459,7 @@ module PrintClass = struct
       acc ^ Full.to_string_decl x ^ ", "
     end
 
-  let class_type c =
+  let class_type tcopt c =
     let tc_need_init = bool c.tc_need_init in
     let tc_members_fully_known = bool c.tc_members_fully_known in
     let tc_abstract = bool c.tc_abstract in
@@ -466,18 +467,17 @@ module PrintClass = struct
     let tc_kind = class_kind c.tc_kind in
     let tc_name = c.tc_name in
     let tc_tparams = tparam_list c.tc_tparams in
-    let tc_consts = class_elt_smap c.tc_consts in
+    let tc_consts = class_const_smap c.tc_consts in
     let tc_typeconsts = typeconst_smap c.tc_typeconsts in
     let tc_props = class_elt_smap c.tc_props in
     let tc_sprops = class_elt_smap c.tc_sprops in
     let tc_methods = class_elt_smap_with_breaks c.tc_methods in
     let tc_smethods = class_elt_smap_with_breaks c.tc_smethods in
     let tc_construct = constructor c.tc_construct in
-    let tc_ancestors = ancestors_smap c.tc_ancestors in
+    let tc_ancestors = ancestors_smap tcopt c.tc_ancestors in
     let tc_req_ancestors = req_ancestors c.tc_req_ancestors in
     let tc_req_ancestors_extends = sset c.tc_req_ancestors_extends in
     let tc_extends = sset c.tc_extends in
-    let tc_user_attributes = user_attribute_list c.tc_user_attributes in
     "tc_need_init: "^tc_need_init^"\n"^
     "tc_members_fully_known: "^tc_members_fully_known^"\n"^
     "tc_abstract: "^tc_abstract^"\n"^
@@ -496,7 +496,6 @@ module PrintClass = struct
     "tc_extends: "^tc_extends^"\n"^
     "tc_req_ancestors: "^tc_req_ancestors^"\n"^
     "tc_req_ancestors_extends: "^tc_req_ancestors_extends^"\n"^
-    "tc_user_attributes: "^tc_user_attributes^"\n"^
     ""
 end
 
@@ -563,7 +562,7 @@ let debug env ty =
   let e_str = error (snd ty) in
   let f_str = full_strip_ns env ty in
   e_str^" "^f_str
-let class_ c = PrintClass.class_type c
+let class_ tcopt c = PrintClass.class_type tcopt c
 let gconst gc = Full.to_string_decl gc
 let fun_ f = PrintFun.fun_type f
 let typedef td = PrintTypedef.typedef td

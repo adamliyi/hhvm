@@ -202,6 +202,15 @@ void lower(Vunit& unit, syncvmsp& inst, Vlabel b, size_t i) {
   unit.blocks[b].code[i] = copy{inst.s, rvmsp()};
 }
 
+void lower(Vunit& unit, defvmret& inst, Vlabel b, size_t i) {
+  unit.blocks[b].code[i] = copy2{rret_data(), rret_type(),
+                                 inst.data,   inst.type};
+}
+void lower(Vunit& unit, syncvmret& inst, Vlabel b, size_t i) {
+  unit.blocks[b].code[i] = copy2{inst.data,   inst.type,
+                                 rret_data(), rret_type()};
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 }
@@ -209,8 +218,6 @@ void lower(Vunit& unit, syncvmsp& inst, Vlabel b, size_t i) {
 ///////////////////////////////////////////////////////////////////////////////
 
 void vlower(Vunit& unit, Vlabel b, size_t i) {
-  Timer _t(Timer::vasm_lower);
-
   auto& inst = unit.blocks[b].code[i];
 
   switch (inst.op) {
@@ -225,14 +232,15 @@ void vlower(Vunit& unit, Vlabel b, size_t i) {
 }
 
 void vlower(Vunit& unit) {
+  Timer timer(Timer::vasm_lower);
+
   // This pass relies on having no critical edges in the unit.
   splitCriticalEdges(unit);
 
   auto& blocks = unit.blocks;
 
-  // The lowering operations for individual instructions may allocate scratch
-  // blocks, which may invalidate iterators on `blocks'.  Correctness of this
-  // pass relies on PostorderWalker /not/ using standard iterators on `blocks'.
+  // The vlower() implementations may allocate scratch blocks and modify
+  // instruction streams, so we cannot use standard iterators here.
   PostorderWalker{unit}.dfs([&] (Vlabel b) {
     assertx(!blocks[b].code.empty());
     for (size_t i = 0; i < blocks[b].code.size(); ++i) {

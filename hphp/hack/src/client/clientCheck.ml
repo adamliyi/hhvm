@@ -47,9 +47,24 @@ let expand_path file =
       exit 2
     end
 
+let parse_position_string arg =
+  let tpos = Str.split (Str.regexp ":") arg in
+  try
+    match tpos with
+    | [line; char] ->
+        int_of_string line, int_of_string char
+    | _ -> raise Exit
+  with _ ->
+    Printf.eprintf "Invalid position\n";
+    raise Exit_status.(Exit_with Input_error)
+
 let main args =
   let mode_s = ClientEnv.mode_to_string args.mode in
-  HackEventLogger.client_check args.from mode_s;
+  HackEventLogger.client_set_from args.from;
+  HackEventLogger.client_set_mode mode_s;
+
+  HackEventLogger.client_check ();
+
   let conn = ClientConnect.connect { ClientConnect.
     root = args.root;
     autostart = args.autostart;
@@ -57,6 +72,8 @@ let main args =
     retry_if_init = args.retry_if_init;
     expiry = args.timeout;
     no_load = args.no_load;
+    to_ide = false;
+    ai_mode = args.ai_mode;
   } in
   let exit_status =
     match args.mode with
@@ -90,7 +107,7 @@ let main args =
       Exit_status.Ok
     | MODE_FIND_CLASS_REFS name ->
       let results =
-        Cmd.rpc conn @@ Rpc.FIND_REFS (ServerFindRefs.Class name) in
+        Cmd.rpc conn @@ Rpc.FIND_REFS (FindRefsService.Class name) in
       ClientFindRefs.go results args.output_json;
       Exit_status.Ok
     | MODE_FIND_REFS name ->
@@ -99,8 +116,8 @@ let main args =
         try
           match pieces with
           | class_name :: method_name :: _ ->
-              ServerFindRefs.Method (class_name, method_name)
-          | method_name :: _ -> ServerFindRefs.Function method_name
+              FindRefsService.Method (class_name, method_name)
+          | method_name :: _ -> FindRefsService.Function method_name
           | _ -> raise Exit
         with _ ->
           Printf.eprintf "Invalid input\n";
@@ -115,25 +132,29 @@ let main args =
     | MODE_DUMP_AI_INFO files ->
       ClientAiInfo.go conn files expand_path;
       Exit_status.Ok
+    | MODE_FIND_DEPENDENT_FILES files ->
+      ClientFindDependentFiles.go conn files expand_path;
+      Exit_status.Ok
     | MODE_REFACTOR (ref_mode, before, after) ->
       ClientRefactor.go conn args ref_mode before after;
       Exit_status.Ok
     | MODE_IDENTIFY_FUNCTION arg ->
-      let tpos = Str.split (Str.regexp ":") arg in
-      let line, char =
-        try
-          match tpos with
-          | [line; char] ->
-              int_of_string line, int_of_string char
-          | _ -> raise Exit
-        with _ ->
-          Printf.eprintf "Invalid position\n";
-          raise Exit_status.(Exit_with Input_error)
-      in
+      let line, char = parse_position_string arg in
       let content = Sys_utils.read_stdin_to_string () in
       let result =
         Cmd.rpc conn @@ Rpc.IDENTIFY_FUNCTION (content, line, char) in
+      let result = match result with
+        | Some result -> Utils.strip_ns result.IdentifySymbolService.name
+        | _ -> ""
+      in
       print_endline result;
+      Exit_status.Ok
+    | MODE_GET_DEFINITION arg ->
+      let line, char = parse_position_string arg in
+      let content = Sys_utils.read_stdin_to_string () in
+      let result =
+        Cmd.rpc conn @@ Rpc.IDENTIFY_FUNCTION (content, line, char) in
+      ClientGetDefinition.go result args.output_json;
       Exit_status.Ok
     | MODE_TYPE_AT_POS arg ->
       let tpos = Str.split (Str.regexp ":") arg in
@@ -247,6 +268,26 @@ let main args =
       let stats = Cmd.rpc conn @@ Rpc.STATS in
       print_string @@ Hh_json.json_to_multiline (Stats.to_json stats);
       Exit_status.Ok
+    | MODE_FIND_LVAR_REFS arg ->
+      let line, char = parse_position_string arg in
+      let content = Sys_utils.read_stdin_to_string () in
+      let results =
+        Cmd.rpc conn @@ Rpc.FIND_LVAR_REFS (content, line, char) in
+      ClientFindLocals.go results args.output_json;
+      Exit_status.Ok
+    | MODE_GET_METHOD_NAME arg ->
+      let line, char = parse_position_string arg in
+      let content = Sys_utils.read_stdin_to_string () in
+      let result =
+        Cmd.rpc conn @@ Rpc.IDENTIFY_FUNCTION (content, line, char) in
+      ClientGetMethodName.go result args.output_json;
+      Exit_status.Ok
+    | MODE_FORMAT (from, to_) ->
+      let content = Sys_utils.read_stdin_to_string () in
+      let result =
+        Cmd.rpc conn @@ Rpc.FORMAT (content, from, to_) in
+      ClientFormat.go result args.output_json;
+      Exit_status.Ok
   in
-  HackEventLogger.client_check_finish args.from mode_s exit_status;
+  HackEventLogger.client_check_finish exit_status;
   exit_status

@@ -13,23 +13,29 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+
 #include "hphp/runtime/vm/jit/frame-state.h"
 
-#include <algorithm>
-
-#include "hphp/util/trace.h"
-#include "hphp/util/dataflow-worklist.h"
 #include "hphp/runtime/vm/jit/analysis.h"
 #include "hphp/runtime/vm/jit/cfg.h"
 #include "hphp/runtime/vm/jit/ir-instruction.h"
+#include "hphp/runtime/vm/jit/location.h"
 #include "hphp/runtime/vm/jit/minstr-effects.h"
 #include "hphp/runtime/vm/jit/simplify.h"
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
-#include "hphp/runtime/vm/jit/stack-offsets-defs.h"
+#include "hphp/runtime/vm/jit/stack-offsets.h"
+#include "hphp/runtime/vm/jit/translator.h"
+
+#include "hphp/util/dataflow-worklist.h"
+#include "hphp/util/trace.h"
+
+#include <boost/range/adaptor/reversed.hpp>
+
+#include <algorithm>
 
 TRACE_SET_MOD(hhir);
 
-namespace HPHP { namespace jit {
+namespace HPHP { namespace jit { namespace irgen {
 
 namespace {
 
@@ -61,40 +67,34 @@ bool merge_into(TypeSourceSet& dst, const TypeSourceSet& src) {
 }
 
 /*
- * Merge SlotStates, returning whether anything changed.
+ * Merge LocationStates, returning whether anything changed.
  */
-template<bool Stack>
-bool merge_into(SlotState<Stack>& dst, const SlotState<Stack>& src) {
+template<LTag tag>
+bool merge_into(LocationState<tag>& dst, const LocationState<tag>& src) {
   auto changed = false;
 
-  if (merge_util(dst.type, dst.type | src.type)) {
-    changed = true;
-  }
+  changed |= merge_util(dst.type, dst.type | src.type);
 
   // Get the least common ancestor across both states.
-  if (merge_util(dst.value, least_common_ancestor(dst.value, src.value))) {
-    changed = true;
-  }
+  changed |= merge_util(dst.value, least_common_ancestor(dst.value, src.value));
 
   // We may have changed either dst.value or dst.type in a way that could fail
-  // to preserve SlotState invariants.  So check if we can't keep the value.
+  // to preserve LocationState invariants.  So check if we can't keep the value.
   if (dst.value != nullptr && dst.value->type() != dst.type) {
     dst.value = nullptr;
     changed = true;
   }
 
-  if (merge_into(dst.typeSrcs, src.typeSrcs)) {
-    changed = true;
-  }
+  changed |= merge_into(dst.typeSrcs, src.typeSrcs);
 
   if (!dst.maybeChanged && src.maybeChanged) {
     dst.maybeChanged = true;
     changed = true;
   }
 
-  return
-    merge_util(dst.predictedType, dst.predictedType | src.predictedType) ||
-    changed;
+  changed |= merge_util(dst.predictedType,
+                       dst.predictedType | src.predictedType);
+  return changed;
 }
 
 bool merge_memory_stack_into(jit::vector<StackState>& dst,
@@ -106,7 +106,7 @@ bool merge_memory_stack_into(jit::vector<StackState>& dst,
   auto const result_size = std::min(dst.size(), src.size());
   dst.resize(result_size);
   for (auto i = uint32_t{0}; i < result_size; ++i) {
-    if (merge_into(dst[i], src[i])) changed = true;
+    changed |= merge_into(dst[i], src[i]);
   }
   return changed;
 }
@@ -115,13 +115,13 @@ bool merge_memory_stack_into(jit::vector<StackState>& dst,
  * Merge one FrameState into another, returning whether it changed.  Frame
  * pointers and stack depth must match.  If the stack pointer tmps are
  * different, clear the tracked value (we can make a new one, given fp and
- * spOffset).
+ * irSPOff).
  */
 bool merge_into(FrameState& dst, const FrameState& src) {
   auto changed = false;
 
-  // Cannot merge spOffset state, so assert they match.
-  always_assert(dst.spOffset == src.spOffset);
+  // Cannot merge irSPOff state, so assert they match.
+  always_assert(dst.irSPOff == src.irSPOff);
   always_assert(dst.curFunc == src.curFunc);
 
   // The only thing that can change the FP is inlining, but we can't have one
@@ -140,17 +140,16 @@ bool merge_into(FrameState& dst, const FrameState& src) {
     changed = true;
   }
 
-  if (dst.mbase.ptr != src.mbase.ptr) {
-    dst.mbase.ptr = nullptr;
-    changed = true;
-  }
-  if (merge_util(dst.mbase.ptrType, dst.mbase.ptrType | src.mbase.ptrType)) {
-    changed = true;
-  }
   if (dst.mbase.value != src.mbase.value) {
     dst.mbase.value = nullptr;
     changed = true;
   }
+  if (dst.mbase.ptr != src.mbase.ptr) {
+    dst.mbase.ptr = nullptr;
+    changed = true;
+  }
+  changed |= merge_util(dst.mbase.ptrType,
+                        dst.mbase.ptrType | src.mbase.ptrType);
 
   // The tracked FPI state must always be the same, notice that the size of the
   // FPI stacks may differ as the FPush associated with one of the merged blocks
@@ -191,33 +190,24 @@ bool merge_into(FrameState& dst, const FrameState& src) {
   }
 
   // This is available iff it's available in both states
-  if (merge_util(dst.thisAvailable, dst.thisAvailable && src.thisAvailable)) {
-    changed = true;
-  }
+  changed |= merge_util(dst.thisAvailable,
+                        dst.thisAvailable && src.thisAvailable);
 
   // The frame may span a call if it could have done so in either state.
-  if (merge_util(dst.frameMaySpanCall,
-                 dst.frameMaySpanCall || src.frameMaySpanCall)) {
-    changed = true;
-  }
+  changed |= merge_util(dst.frameMaySpanCall,
+                        dst.frameMaySpanCall || src.frameMaySpanCall);
 
   for (auto i = uint32_t{0}; i < src.locals.size(); ++i) {
-    if (merge_into(dst.locals[i], src.locals[i])) {
-      changed = true;
-    }
+    changed |= merge_into(dst.locals[i], src.locals[i]);
   }
 
-  if (merge_memory_stack_into(dst.stack, src.stack)) {
-    changed = true;
-  }
+  changed |= merge_memory_stack_into(dst.stack, src.stack);
 
-  if (merge_util(dst.stackModified,
-                 dst.stackModified || src.stackModified)) {
-    changed = true;
-  }
+  changed |= merge_util(dst.stackModified,
+                        dst.stackModified || src.stackModified);
 
   // Eval stack depth should be the same at merge points.
-  assertx(dst.syncedSpLevel == src.syncedSpLevel);
+  assertx(dst.bcSPOff == src.bcSPOff);
 
   for (auto const& srcPair : src.predictedTypes) {
     auto dstIt = dst.predictedTypes.find(srcPair.first);
@@ -245,7 +235,7 @@ bool merge_into(jit::vector<FrameState>& dst, const jit::vector<FrameState>& src
   always_assert(src.size() == dst.size());
   auto changed = false;
   for (auto idx = uint32_t{0}; idx < dst.size(); ++idx) {
-    if (merge_into(dst[idx], src[idx])) changed = true;
+    changed |= merge_into(dst[idx], src[idx]);
   }
   return changed;
 }
@@ -290,12 +280,13 @@ bool check_invariants(const FrameState& state) {
     }
   }
 
-  // We require the memory stack is always at least as big as the spOffset,
-  // unless spOffset went negative (because we're returning and have freed the
+  // We require the memory stack is always at least as big as the irSPOff,
+  // unless irSPOff went negative (because we're returning and have freed the
   // ActRec).  Note that there are some "wasted" slots where locals/iterators
   // would be in the vector right now.
   always_assert_flog(
-    state.spOffset < 0 || state.stack.size() >= state.spOffset,
+    state.irSPOff < FPInvOffset{0} ||
+    state.stack.size() >= state.irSPOff.offset,
     "stack was smaller than possible"
   );
 
@@ -305,20 +296,24 @@ bool check_invariants(const FrameState& state) {
 ///////////////////////////////////////////////////////////////////////////////
 
 /*
- * When we're computing an update for a new predicted type, we sometimes need
- * to fall back to the proven type, e.g. if the new predicted type no longer
- * satisfies the invariant that predictedType <= provenType. predictedType must
- * not be Bottom.
+ * Recompute a predicted type for when the proven type changes (or when a new
+ * prediction is made and we want to discard the old one).
+ *
+ * This maintains the invariant `predicted <= proven'.
  */
-Type updatePredictedType(Type predictedType, Type provenType) {
-  if (predictedType == TBottom) return provenType;
-  return predictedType < provenType ? predictedType : provenType;
+Type updatePrediction(Type predicted, Type proven) {
+  always_assert(predicted != TBottom);
+  return predicted < proven ? predicted : proven;
 }
 
-Type refinePredictedType(Type oldPrediction, Type newPrediction, Type proven) {
-  auto refinedPrediction = oldPrediction & newPrediction;
-  if (refinedPrediction == TBottom) refinedPrediction = newPrediction;
-  return updatePredictedType(refinedPrediction, proven);
+/*
+ * Compute the refinement of `oldPredicted' with `newPredicted', maintaining
+ * the invariant that `refined <= proven'.
+ */
+Type refinePrediction(Type oldPredicted, Type newPredicted, Type proven) {
+  auto refined = oldPredicted & newPredicted;
+  if (refined == TBottom) refined = newPredicted;
+  return updatePrediction(refined, proven);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -327,18 +322,16 @@ Type refinePredictedType(Type oldPrediction, Type newPrediction, Type proven) {
 
 FrameStateMgr::FrameStateMgr(BCMarker marker) {
   m_stack.push_back(FrameState{});
-  cur().curFunc       = marker.func();
-  cur().spOffset      = marker.spOff();
-  cur().syncedSpLevel = marker.spOff();
+  cur().curFunc = marker.func();
+  cur().irSPOff = marker.spOff();
+  cur().bcSPOff = marker.spOff();
   cur().locals.resize(marker.func()->numLocals());
   cur().stack.resize(marker.spOff().offset);
 }
 
-bool FrameStateMgr::update(const IRInstruction* inst) {
+void FrameStateMgr::update(const IRInstruction* inst) {
   ITRACE(3, "FrameStateMgr::update processing {}\n", *inst);
   Indent _i;
-
-  auto changed = false;
 
   if (auto const taken = inst->taken()) {
     /*
@@ -365,12 +358,12 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
     // update the target block state at this point, so don't.  The
     // state doesn't have this problem during optimization passes,
     // because we'll always process the jump before the target block.
-    if (taken->empty()) changed |= save(taken);
+    if (taken->empty()) save(taken);
   }
 
   auto killIterLocals = [&](const std::initializer_list<uint32_t>& ids) {
     for (auto id : ids) {
-      setLocalValue(id, nullptr);
+      setValue(loc(id), nullptr);
     }
   };
 
@@ -387,18 +380,17 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
       for (auto& st : m_stack) st.frameMaySpanCall = true;
       // Remove tracked state for the slots for args and the actrec.
       for (auto i = uint32_t{0}; i < kNumActRecCells + extra->numParams; ++i) {
-        setStackValue(extra->spOffset + i, nullptr);
+        setValue(stk(extra->spOffset + i), nullptr);
       }
       clearStackForCall();
       // The return value is known to be at least a Gen.
-      setStackType(
-        extra->spOffset + kNumActRecCells + extra->numParams - 1,
-        TGen);
-      // What we're considering sync'd to memory is popping an actrec, popping
-      // args, and pushing a return value.
-      assertx(cur().syncedSpLevel == inst->marker().spOff());
-      cur().syncedSpLevel -= extra->numParams + kNumActRecCells;
-      cur().syncedSpLevel += 1;
+      setType(
+        stk(extra->spOffset + kNumActRecCells + extra->numParams - 1),
+        TGen
+      );
+      // We consider popping an ActRec and args to be synced to memory.
+      assertx(cur().bcSPOff == inst->marker().spOff());
+      cur().bcSPOff -= extra->numParams + kNumActRecCells;
 
       if (!cur().fpiStack.empty()) {
         cur().fpiStack.pop_front();
@@ -418,14 +410,13 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
       uint32_t numCells = kNumActRecCells +
         (extra->numParams ? extra->numParams : 1);
       for (auto i = uint32_t{0}; i < numCells; ++i) {
-        setStackValue(extra->spOffset + i, nullptr);
+        setValue(stk(extra->spOffset + i), nullptr);
       }
       clearStackForCall();
-      setStackType(extra->spOffset + numCells - 1, TGen);
-      // A CallArray pops the ActRec, actual args, an array arg, and
-      // pushes a return value.
-      assertx(cur().syncedSpLevel == inst->marker().spOff());
-      cur().syncedSpLevel -= numCells - 1;
+      setType(stk(extra->spOffset + numCells - 1), TGen);
+      // A CallArray pops the ActRec, actual args, and an array arg.
+      assertx(cur().bcSPOff == inst->marker().spOff());
+      cur().bcSPOff -= numCells;
 
       if (!cur().fpiStack.empty()) {
         cur().fpiStack.pop_front();
@@ -446,9 +437,9 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
       killLocalsForCall(false);
       for (auto& st : m_stack) st.frameMaySpanCall = true;
       clearStackForCall();
-      setStackType(extra->spOffset, TGen);
+      setType(stk(extra->spOffset), TGen);
       // ContEnter pops a cell and pushes a yielded value.
-      assertx(cur().syncedSpLevel == inst->marker().spOff());
+      assertx(cur().bcSPOff == inst->marker().spOff());
     }
     break;
 
@@ -464,7 +455,7 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
 
   case DefSP:
     cur().spValue = inst->dst();
-    cur().spOffset = inst->extra<DefSP>()->offset;
+    cur().irSPOff = inst->extra<DefSP>()->offset;
     break;
 
   case StMem:
@@ -477,72 +468,70 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
   case LdStk:
     {
       auto const offset = inst->extra<LdStk>()->offset;
-      auto& state = stackState(offset);
+      auto const& state = stack(offset);
       refinePredictedTmpType(inst->dst(), state.predictedType);
-      // Nearly all callers of setStackValue() represent a modification of the
-      // stack, so it sets stackModified. LdStk is the one exception, so we
-      // compensate for that here.
+
+      // Nearly all callers of setValue() for stack slots represent a
+      // modification of the stack, so it sets stackModified. LdStk is the one
+      // exception, so we compensate for that here.
       auto oldModified = cur().stackModified;
-      setStackValue(offset, inst->dst());
+      setValue(stk(offset), inst->dst());
       cur().stackModified = oldModified;
     }
     break;
 
   case StStk:
-    setStackValue(inst->extra<StStk>()->offset, inst->src(1));
+    setValue(stk(inst->extra<StStk>()->offset), inst->src(1));
     break;
 
   case CheckType:
   case AssertType:
-    refineStackValues(inst->src(0), inst->dst());
-    refineLocalValues(inst->src(0), inst->dst());
-    break;
-
-  case CheckStk:
-    refineStackType(inst->extra<RelOffsetData>()->irSpOffset,
-                    inst->typeParam(),
-                    TypeSource::makeGuard(inst));
-    break;
-
-  case AssertStk:
-    refineStackType(inst->extra<IRSPOffsetData>()->offset,
-                    inst->typeParam(),
-                    TypeSource::makeGuard(inst));
-    break;
-
-  case HintStkInner:
-    setBoxedStkPrediction(inst->extra<HintStkInner>()->irSpOffset,
-                          inst->typeParam());
-    break;
-
-  case AssertLoc:
-  case CheckLoc:
-    {
-      auto id = inst->extra<LocalId>()->locId;
-      if (inst->marker().func()->isPseudoMain()) {
-        setLocalPredictedType(id, inst->typeParam());
-      } else {
-        refineLocalType(id,
-                        inst->typeParam(),
-                        TypeSource::makeGuard(inst));
+    for (auto& frame : m_stack) {
+      for (auto& state : frame.locals) {
+        refineValue(state, inst->src(0), inst->dst());
+      }
+      for (auto& state : frame.stack) {
+        refineValue(state, inst->src(0), inst->dst());
       }
     }
     break;
 
+  case CheckStk:
+  case AssertStk:
+    refineType(stk(inst->extra<IRSPRelOffsetData>()->offset),
+               inst->typeParam(),
+               TypeSource::makeGuard(inst));
+    break;
+
+  case AssertLoc:
+  case CheckLoc: {
+    auto const id = inst->extra<LocalId>()->locId;
+    if (inst->marker().func()->isPseudoMain()) {
+      setLocalPredictedType(id, inst->typeParam());
+    } else {
+      refineType(loc(id), inst->typeParam(), TypeSource::makeGuard(inst));
+    }
+  } break;
+
+  case HintStkInner:
+    setBoxedPrediction(stk(inst->extra<HintStkInner>()->offset),
+                       inst->typeParam());
+    break;
+
   case HintLocInner:
-    setBoxedLocalPrediction(inst->extra<HintLocInner>()->locId,
-                            inst->typeParam());
+    setBoxedPrediction(loc(inst->extra<HintLocInner>()->locId),
+                       inst->typeParam());
     break;
 
   case StLoc:
-    setLocalValue(inst->extra<LocalId>()->locId, inst->src(1));
+    setValue(loc(inst->extra<LocalId>()->locId), inst->src(1));
     break;
 
   case LdLoc:
     {
       auto const id = inst->extra<LdLoc>()->locId;
       refinePredictedTmpType(inst->dst(), cur().locals[id].predictedType);
-      setLocalValue(id, inst->dst());
+      setValue(loc(id), inst->dst());
     }
     break;
 
@@ -552,11 +541,11 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
     break;
 
   case CastStk:
-    setStackType(inst->extra<CastStk>()->offset, inst->typeParam());
+    setType(stk(inst->extra<CastStk>()->offset), inst->typeParam());
     break;
 
   case CoerceStk:
-    setStackType(inst->extra<CoerceStk>()->offset, inst->typeParam());
+    setType(stk(inst->extra<CoerceStk>()->offset), inst->typeParam());
     break;
 
   case StRef:
@@ -568,25 +557,25 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
     auto addr = inst->src(0);
     if (!addr->inst()->is(LdLocAddr)) break;
     auto locId = addr->inst()->extra<LdLocAddr>()->locId;
-    setLocalValue(locId, nullptr);
-    setLocalType(locId, inst->typeParam());
+    setValue(loc(locId), nullptr);
+    setType(loc(locId), inst->typeParam());
     break;
   }
 
   case EndCatch:
     /*
      * Hitting this means we've messed up with syncing the stack in a catch
-     * trace.  If the stack isn't clean or doesn't match the marker's spOffset,
+     * trace.  If the stack isn't clean or doesn't match the marker's irSPOff,
      * the unwinder won't see what we expect.
      */
     always_assert_flog(
-      cur().spOffset + -inst->extra<EndCatch>()->offset.offset ==
+      inst->extra<EndCatch>()->offset.to<FPInvOffset>(cur().irSPOff) ==
         inst->marker().spOff(),
       "EndCatch stack didn't seem right:\n"
       "                 spOff: {}\n"
       "       EndCatch offset: {}\n"
       "        marker's spOff: {}\n",
-      cur().spOffset.offset,
+      cur().irSPOff.offset,
       inst->extra<EndCatch>()->offset.offset,
       inst->marker().spOff().offset
     );
@@ -594,11 +583,11 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
 
   case CufIterSpillFrame:
     spillFrameStack(inst->extra<CufIterSpillFrame>()->spOffset,
-                    cur().spOffset, inst);
+                    cur().irSPOff, inst);
     break;
   case SpillFrame:
     spillFrameStack(inst->extra<SpillFrame>()->spOffset,
-                    cur().syncedSpLevel, inst);
+                    cur().bcSPOff, inst);
     break;
 
   case InterpOne:
@@ -606,7 +595,7 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
     auto const& extra = *inst->extra<InterpOneData>();
     if (isFPush(extra.opcode)) {
       cur().fpiStack.push_front(FPIInfo { cur().spValue,
-                                          cur().spOffset,
+                                          cur().irSPOff,
                                           nullptr,
                                           extra.opcode,
                                           nullptr,
@@ -623,41 +612,47 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
       auto it = extra.changedLocals;
       auto const end = it + extra.nChangedLocals;
       for (; it != end; ++it) {
-        auto& loc = *it;
+        auto& local = *it;
         // If changing the inner type of a boxed local, also drop the
         // information about inner types for any other boxed locals.
-        if (loc.type <= TBoxedCell) dropLocalRefsInnerTypes();
-        setLocalType(loc.id, loc.type);
+        if (local.type <= TBoxedCell) dropLocalRefsInnerTypes();
+        setType(loc(local.id), local.type);
       }
     }
 
-    auto const spOffset = extra.spOffset;
+    // Offset of the bytecode stack top relative to the IR stack pointer.
+    auto const bcSPOff = extra.spOffset;
 
     // Clear tracked information for slots pushed and popped.
     for (auto i = uint32_t{0}; i < extra.cellsPopped; ++i) {
-      setStackValue(spOffset + i, nullptr);
+      setValue(stk(bcSPOff + i), nullptr);
     }
     for (auto i = uint32_t{0}; i < extra.cellsPushed; ++i) {
-      setStackValue(spOffset + extra.cellsPopped - 1 - i, nullptr);
+      setValue(stk(bcSPOff + extra.cellsPopped - 1 - i), nullptr);
     }
-    auto adjustedTop = spOffset + extra.cellsPopped - extra.cellsPushed;
+    auto adjustedTop = bcSPOff + extra.cellsPopped - extra.cellsPushed;
 
     switch (extra.opcode) {
-    case Op::CGetL2:
-      setStackType(adjustedTop + 1, inst->typeParam());
-      break;
-    case Op::CGetL3:
-      setStackType(adjustedTop + 2, inst->typeParam());
-      break;
-    default:
-      // We don't track cells pushed by interp one except the top of the stack,
-      // aside from above special cases.
-      if (inst->hasTypeParam()) setStackType(adjustedTop, inst->typeParam());
-      break;
+      case Op::CGetL2:
+        setType(stk(adjustedTop + 1), inst->typeParam());
+        break;
+      case Op::CGetL3:
+        setType(stk(adjustedTop + 2), inst->typeParam());
+        break;
+      default:
+        // We don't track cells pushed by interp one except the top of the
+        // stack, aside from the above special cases.
+        if (inst->hasTypeParam()) {
+          auto const instrInfo = getInstrInfo(extra.opcode);
+          if (instrInfo.out & InstrFlags::Stack1) {
+            setType(stk(adjustedTop), inst->typeParam());
+          }
+        }
+        break;
     }
 
-    cur().syncedSpLevel += extra.cellsPushed;
-    cur().syncedSpLevel -= extra.cellsPopped;
+    cur().bcSPOff += extra.cellsPushed;
+    cur().bcSPOff -= extra.cellsPopped;
 
     if (isMemberBaseOp(extra.opcode) || isMemberDimOp(extra.opcode) ||
         isMemberFinalOp(extra.opcode)) {
@@ -710,12 +705,10 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
     if (!func()->unit()->useStrictTypes()) {
       // In PHP 7 mode scalar types can sometimes coerce; we do this during the
       // VerifyRetFail call -- we never allow this in HH files.
-      auto const offset = toIRSPOffset(
-        BCSPOffset{0},
-        inst->marker().spOff(),
-        spOffset()
-      );
-      setStackType(offset, TGen);
+      auto const offset = BCSPRelOffset{0}
+        .to<FPInvOffset>(inst->marker().spOff())
+        .to<IRSPRelOffset>(irSPOff());
+      setType(stk(offset), TGen);
     }
     break;
 
@@ -725,7 +718,7 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
       // In PHP 7 mode scalar types can sometimes coerce; we do this during the
       // VerifyParamFail call -- we never allow this in HH files.
       auto id = inst->src(0)->intVal();
-      setLocalType(id, TGen);
+      setType(loc(id), TGen);
     }
     break;
 
@@ -735,8 +728,6 @@ bool FrameStateMgr::update(const IRInstruction* inst) {
     }
     break;
   }
-
-  return changed;
 }
 
 void FrameStateMgr::updateMInstr(const IRInstruction* inst) {
@@ -752,8 +743,8 @@ void FrameStateMgr::updateMInstr(const IRInstruction* inst) {
 
     if (effects.baseTypeChanged || effects.baseValChanged) {
       auto const ty = effects.baseType.derefIfPtr();
-      setStackType(
-        offset,
+      setType(
+        stk(offset),
         ty <= TBoxedCell ? TBoxedInitCell : ty
       );
     }
@@ -766,10 +757,10 @@ void FrameStateMgr::updateMInstr(const IRInstruction* inst) {
     if (effects.baseTypeChanged || effects.baseValChanged) {
       auto const ty = effects.baseType.derefIfPtr();
       if (ty <= TBoxedCell) {
-        setLocalType(locId, TBoxedInitCell);
-        setBoxedLocalPrediction(locId, ty);
+        setType(loc(locId), TBoxedInitCell);
+        setBoxedPrediction(loc(locId), ty);
       } else {
-        setLocalType(locId, ty);
+        setType(loc(locId), ty);
       }
     }
   } else {
@@ -782,30 +773,31 @@ void FrameStateMgr::updateMInstr(const IRInstruction* inst) {
         auto const oldType = local(i).type;
         if (TGen <= oldType) {
           // Drop the value and don't bother with precise effects.
-          setLocalType(i, oldType);
+          setType(loc(i), oldType);
           continue;
         }
         if (oldType <= TBoxedCell) continue;
         MInstrEffects e(inst->op(), oldType);
         if (!e.baseValChanged && !e.baseTypeChanged) continue;
-        widenLocalType(i, oldType | e.baseType);
+        widenType(loc(i), oldType | e.baseType);
       }
     }
     if (base->type().maybe(TPtrToStkGen)) {
-      auto begin = cur().spOffset.offset;
-      auto end = cur().spOffset.offset - int32_t(cur().stack.size());
-      for (auto i = begin; i > end; --i) {
-        auto const irSP = IRSPOffset{i};
-        auto const oldType = stack(irSP).type;
+      for (auto i = 0; i < cur().stack.size(); ++i) {
+        // The FPInvOffset of the stack slot is just its 1-indexed slot.
+        auto const spRel = FPInvOffset{i + 1}.to<IRSPRelOffset>(cur().irSPOff);
+
+        auto const oldType = stack(spRel).type;
         if (TStkElem <= oldType) {
           // Drop the value and don't bother with precise effects.
-          setStackType(irSP, oldType);
+          setType(stk(spRel), oldType);
           continue;
         }
         if (oldType <= TBoxedCell) continue;
+
         MInstrEffects e(inst->op(), oldType);
         if (!e.baseValChanged && !e.baseTypeChanged) continue;
-        widenStackType(irSP, oldType | e.baseType);
+        widenType(stk(spRel), oldType | e.baseType);
       }
     }
   }
@@ -815,26 +807,26 @@ void FrameStateMgr::updateMInstr(const IRInstruction* inst) {
 
 /*
  * syncPrediction() is called after we update the predictedType and/or value
- * for a SlotState. It looks up the predicted type for the value in
+ * for a LocationState. It looks up the predicted type for the value in
  * cur().predictedTypes and ensures both locations have the most refined
  * predicted type possible.
  */
-template<bool Stack>
-void FrameStateMgr::syncPrediction(SlotState<Stack>& slot) {
-  if (!slot.value) return;
-  ITRACE(3, "Syncing prediction for {}\n", *slot.value);
-  auto const canonValue = canonical(slot.value);
+template<LTag tag>
+void FrameStateMgr::syncPrediction(LocationState<tag>& state) {
+  if (!state.value) return;
+  ITRACE(3, "Syncing prediction for {}\n", *state.value);
+  auto const canonValue = canonical(state.value);
 
-  auto& prediction = slot.predictedType;
+  auto& prediction = state.predictedType;
   auto& map = cur().predictedTypes;
   auto it = map.find(canonValue);
   if (it == map.end()) {
-    ITRACE(4, "No prediction in map; slot has {}\n", prediction);
-    if (prediction < slot.default_type()) map.emplace(canonValue, prediction);
+    ITRACE(4, "No prediction in map; state has {}\n", prediction);
+    if (prediction < state.default_type()) map.emplace(canonValue, prediction);
     return;
   }
-  if (prediction == slot.default_type()) {
-    ITRACE(4, "No prediction in slot; map has {}\n", it->second);
+  if (prediction == state.default_type()) {
+    ITRACE(4, "No prediction in state; map has {}\n", it->second);
     prediction = it->second;
     return;
   }
@@ -847,25 +839,10 @@ void FrameStateMgr::syncPrediction(SlotState<Stack>& slot) {
   if (newPred < it->second) it->second = newPred;
 }
 
-void FrameStateMgr::refinePredictedTmpType(SSATmp* tmp, Type prediction) {
-  auto const canonTmp = canonical(tmp);
-  auto& map = cur().predictedTypes;
-  auto it = map.find(canonTmp);
-  if (it == map.end()) {
-    map.emplace(canonTmp, prediction);
-    ITRACE(3, "New prediction for {}: {}\n", *tmp->inst(), prediction);
-    return;
-  }
-
-  ITRACE(3, "Prediction for {} refined from {} to ", *tmp->inst(), it->second);
-  it->second = refinePredictedType(it->second, prediction, tmp->type());
-  FTRACE(3, "{}\n", it->second);
-}
-
 /*
- * Collects the post-conditions associated with the current state,
- * which is essentially a list of local/stack locations and their
- * known types at the end of `block'.
+ * Collects the post-conditions associated with the current state, which is
+ * essentially a list of local/stack locations and their known types at the end
+ * of `block'.
  */
 void FrameStateMgr::collectPostConds(Block* block) {
   assertx(block->isExitNoThrow());
@@ -874,23 +851,28 @@ void FrameStateMgr::collectPostConds(Block* block) {
   pConds.refined.clear();
 
   if (sp() != nullptr) {
-    const auto& lastInst = block->back();
-    const FPInvOffset bcSpOff = lastInst.marker().spOff();
-    const FPInvOffset irSpOff = spOffset();
-    const bool resumed = lastInst.marker().resumed();
-    const auto skipCells = FPInvOffset{resumed ? 0 : func()->numSlotsInFrame()};
-    const auto evalStkCells = bcSpOff - skipCells;
+    auto const& lastInst = block->back();
+    auto const bcSPOff = lastInst.marker().spOff();
+    auto const resumed = lastInst.marker().resumed();
+    auto const skipCells = FPInvOffset{resumed ? 0 : func()->numSlotsInFrame()};
+    auto const evalStkCells = bcSPOff - skipCells;
+
     for (int32_t i = 0; i < evalStkCells; i++) {
-      const auto bcSpRel = BCSPOffset{i};
-      const auto fpRel   = bcSpOff - bcSpRel;
-      const auto irSpRel = toIRSPOffset(bcSpRel, bcSpOff, irSpOff);
-      const auto type    = stack(irSpRel).type;
-      const bool changed = stack(irSpRel).maybeChanged;
+      auto const bcSPRel = BCSPRelOffset{i};
+      auto const irSPRel = bcSPRel
+        .to<FPInvOffset>(bcSPOff)
+        .to<IRSPRelOffset>(irSPOff());
+
+      auto const type    = stack(irSPRel).type;
+      auto const changed = stack(irSPRel).maybeChanged;
+
       if (changed || type < TGen) {
-        FTRACE(1, "Stack({}, {}): {} ({})\n", bcSpRel.offset, fpRel.offset,
+        auto const fpRel = bcSPRel.to<FPInvOffset>(bcSPOff);
+
+        FTRACE(1, "Stack({}, {}): {} ({})\n", bcSPRel.offset, fpRel.offset,
                type, changed ? "changed" : "refined");
         auto& vec = changed ? pConds.changed : pConds.refined;
-        vec.push_back({RegionDesc::Location::Stack{fpRel}, type});
+        vec.push_back({ Location::Stack{fpRel}, type });
       }
     }
   }
@@ -903,7 +885,7 @@ void FrameStateMgr::collectPostConds(Block* block) {
         FTRACE(1, "Local {}: {} ({})\n", i, t.toString(),
                changed ? "changed" : "refined");
         auto& vec = changed ? pConds.changed : pConds.refined;
-        vec.push_back({ RegionDesc::Location::Local{i}, t });
+        vec.push_back({ Location::Local{i}, t });
       }
     }
   }
@@ -969,6 +951,13 @@ void FrameStateMgr::unpauseBlock(Block* block) {
   m_stack = *m_states[block].paused;
 }
 
+const PostConditions& FrameStateMgr::postConds(Block* exitBlock) const {
+  assertx(exitBlock->isExitNoThrow());
+  auto it = m_exitPostConds.find(exitBlock);
+  assertx(it != m_exitPostConds.end());
+  return it->second;
+}
+
 /*
  * Save current state for block.  If this is the first time saving state for
  * block, create a new snapshot.  Otherwise merge the current state into the
@@ -994,7 +983,7 @@ bool FrameStateMgr::save(Block* block) {
 /*
  * Modify state to conservative values given an unprocessed predecessor.
  *
- * The fpValue, spOffset, and curFunc are not cleared because they must agree
+ * The fpValue, irSPOff, and curFunc are not cleared because they must agree
  * at bytecode-level control-flow merge points (which can be either merge
  * points at the bytecode or due to retranslated blocks).
  */
@@ -1037,7 +1026,7 @@ void FrameStateMgr::trackDefInlineFP(const IRInstruction* inst) {
    * Push a new state for the inlined callee; saving the state we'll need to
    * pop on return.
    */
-  cur().syncedSpLevel = savedSPOff;
+  cur().bcSPOff = savedSPOff;
   auto stateCopy = m_stack.back();
   m_stack.emplace_back(std::move(stateCopy));
 
@@ -1051,22 +1040,22 @@ void FrameStateMgr::trackDefInlineFP(const IRInstruction* inst) {
   cur().thisAvailable    = target->cls() != nullptr && !target->isStatic();
   cur().curFunc          = target;
   cur().frameMaySpanCall = false;
-  cur().syncedSpLevel    = FPInvOffset{target->numLocals()};
+  cur().bcSPOff          = FPInvOffset{target->numLocals()};
 
   /*
-   * To set up spOffset, we want the FPInvOffset for the new fpValue and
+   * To set up irSPOff, we want the FPInvOffset for the new fpValue and
    * spValue.  We're not changing spValue while we inline, but we're changing
    * fpValue, so this needs to change.  We know where the new fpValue is
    * pointing (relative to the spValue, which we aren't changing).  So we just
-   * need to do a change of coordinates, which turns out to be an indentity map
+   * need to do a change of coordinates, which turns out to be an identity map
    * here:
    *
-   *    fpValue = spValue + extra->spOffset (an IRSPOffset)
+   *    fpValue = spValue + extra->spOffset (an IRSPRelOffset)
    * So,
    *    spValue = fpValue - extra->spOffset (an FPInvOffset)
    */
-  cur().spOffset = FPInvOffset{extra->spOffset.offset};
-  FTRACE(6, "DefInlineFP setting spOffset: {}\n", cur().spOffset.offset);
+  cur().irSPOff = FPInvOffset{extra->spOffset.offset};
+  FTRACE(6, "DefInlineFP setting irSPOff: {}\n", cur().irSPOff.offset);
 
   /*
    * Initialize tracked memory state for locals and stack slots to empty
@@ -1075,8 +1064,8 @@ void FrameStateMgr::trackDefInlineFP(const IRInstruction* inst) {
   cur().locals.clear();
   cur().locals.resize(target->numLocals());
   cur().stack.clear();
-  cur().stack.resize(std::max(cur().syncedSpLevel.offset,
-                              cur().spOffset.offset));
+  cur().stack.resize(std::max(cur().bcSPOff.offset,
+                              cur().irSPOff.offset));
 }
 
 void FrameStateMgr::trackInlineReturn() {
@@ -1093,88 +1082,332 @@ bool FrameStateMgr::checkInvariants() const {
   return true;
 }
 
-StackState& FrameStateMgr::stackState(IRSPOffset offset) {
-  auto const idx = cur().spOffset.offset - offset.offset;
-  FTRACE(6, "stackState offset: {} (@ spOff {}) --> idx={}\n",
-    offset.offset, cur().spOffset.offset, idx);
+///////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Wrap a local or stack ID into a Location.
+ */
+Location FrameStateMgr::loc(uint32_t id) const {
+  return Location::Local { id };
+}
+Location FrameStateMgr::stk(IRSPRelOffset off) const {
+  auto const fpRel = off.to<FPInvOffset>(irSPOff());
+  return Location::Stack { fpRel };
+}
+
+LocalState& FrameStateMgr::localState(uint32_t id) {
+  assertx(id < cur().locals.size());
+  auto& ret = cur().locals[id];
+
+  assertx(ret.value == nullptr || ret.value->type() == ret.type);
+  return ret;
+}
+
+LocalState& FrameStateMgr::localState(Location l) {
+  assertx(l.tag() == LTag::Local);
+  return localState(l.localId());
+}
+
+StackState& FrameStateMgr::stackState(IRSPRelOffset spRel) {
+  auto const fpRel = spRel.to<FPInvOffset>(irSPOff());
+  return stackState(fpRel);
+}
+
+StackState& FrameStateMgr::stackState(FPInvOffset fpRel) {
+  auto const idx = fpRel.offset - 1;
+
   always_assert_flog(
     idx >= 0,
-    "idx went negative: curSpOffset: {}, offset: {}\n",
-    cur().spOffset.offset,
-    offset.offset
+    "stack idx went negative: irSPOff: {}, fpRel: {}\n",
+    cur().irSPOff.offset,
+    fpRel.offset
   );
   if (idx >= cur().stack.size()) {
     cur().stack.resize(idx + 1);
   }
-  return cur().stack[idx];
+  auto& ret = cur().stack[idx];
+
+  assertx(ret.value == nullptr || ret.value->type() == ret.type);
+  return ret;
 }
 
-const StackState& FrameStateMgr::stackState(IRSPOffset offset) const {
-  // We consider it logically const to extend with default-constructed stack
-  // values.
-  return const_cast<FrameStateMgr&>(*this).stackState(offset);
-}
-
-const PostConditions& FrameStateMgr::postConds(Block* exitBlock) const {
-  assertx(exitBlock->isExitNoThrow());
-  auto it = m_exitPostConds.find(exitBlock);
-  assertx(it != m_exitPostConds.end());
-  return it->second;
+StackState& FrameStateMgr::stackState(Location l) {
+  assertx(l.tag() == LTag::Stack);
+  return stackState(l.stackIdx());
 }
 
 const LocalState& FrameStateMgr::local(uint32_t id) const {
-  always_assert(id < cur().locals.size());
-  auto const& local = cur().locals[id];
-  assert(local.value == nullptr || local.value->type() == local.type);
-  return local;
+  return const_cast<FrameStateMgr&>(*this).localState(id);
 }
 
-const StackState& FrameStateMgr::stack(IRSPOffset offset) const {
-  auto const& stack = stackState(offset);
-  assert(stack.value == nullptr || stack.value->type() == stack.type);
-  return stack;
+/*
+ * We consider it logically const to extend with default-constructed stack
+ * values.
+ */
+const StackState& FrameStateMgr::stack(IRSPRelOffset offset) const {
+  return const_cast<FrameStateMgr&>(*this).stackState(offset);
+}
+const StackState& FrameStateMgr::stack(FPInvOffset offset) const {
+  return const_cast<FrameStateMgr&>(*this).stackState(offset);
 }
 
-void FrameStateMgr::setStackValue(IRSPOffset offset, SSATmp* value) {
-  auto& stk = stackState(offset);
-  FTRACE(2, "stk[{}] := {}\n", offset.offset,
-    value ? value->toString() : std::string("<>"));
-  stk.value         = value;
-  stk.type          = value ? value->type() : TStkElem;
-  stk.maybeChanged  = true;
-  stk.predictedType = stk.type;
-  syncPrediction(stk);
+#define IMPL_MEMBER_OF(type_t, name)                        \
+  type_t FrameStateMgr::name##Of(Location l) const {        \
+    return [&]() -> type_t {                                \
+      switch (l.tag()) {                                    \
+        case LTag::Local: return local(l.localId()).name;   \
+        case LTag::Stack: return stack(l.stackIdx()).name;  \
+      }                                                     \
+      not_reached();                                        \
+    }();                                                    \
+  }
 
-  stk.typeSrcs.clear();
-  if (value) stk.typeSrcs.insert(TypeSource::makeValue(value));
-  cur().stackModified = true;
+IMPL_MEMBER_OF(SSATmp*, value)
+IMPL_MEMBER_OF(Type, type)
+IMPL_MEMBER_OF(Type, predictedType)
+IMPL_MEMBER_OF(const TypeSourceSet&, typeSrcs)
+
+#undef IMPL_MEMBER_AT
+
+///////////////////////////////////////////////////////////////////////////////
+
+template<LTag tag>
+void FrameStateMgr::setValueImpl(Location l,
+                                 LocationState<tag>& state,
+                                 SSATmp* value,
+                                 folly::Optional<Type> predicted) {
+  FTRACE(2, "{} := {}\n", show(l), value ? value->toString() : "<>");
+  state.value = value;
+  state.type = value ? value->type() : LocationState<tag>::default_type();
+  state.maybeChanged = true;
+
+  state.predictedType = [&] {
+    if (predicted) {
+      return refinePrediction(state.type, *predicted, state.type);
+    } else {
+      return state.type;
+    }
+  }();
+  syncPrediction(state);
+
+  state.typeSrcs.clear();
+  if (value) {
+    state.typeSrcs.insert(TypeSource::makeValue(value));
+  }
 }
 
-void FrameStateMgr::setStackType(IRSPOffset offset, Type type) {
-  auto& stk = stackState(offset);
-  ITRACE(2, "stk[{}] :: {} -> {}\n", offset.offset, stk.type, type);
-  stk.value         = nullptr;
-  stk.type          = type;
-  stk.maybeChanged  = true;
-  stk.predictedType = type;
-  stk.typeSrcs.clear();
-  cur().stackModified = true;
+/*
+ * Update the value (and type) for `l'.
+ */
+void FrameStateMgr::setValue(Location l, SSATmp* value) {
+  /*
+   * We update the predicted type for boxed local values in some special cases
+   * to something smart.
+   */
+  auto const predicted_local = [&]() -> folly::Optional<Type> {
+    if (!value) return folly::none;
+    auto const inst = value->inst();
+
+    switch (inst->op()) {
+      case LdLoc:
+        if (value->type() <= TBoxedCell) {
+          auto const fp = inst->src(0);
+          auto const locID = inst->extra<LdLoc>()->locId;
+
+          // Keep the same prediction as the src local.  It might have been
+          // loaded in a parent frame, though, so we have to find the
+          // appropriate FrameState.
+          for (auto const& frame : boost::adaptors::reverse(m_stack)) {
+            if (fp != frame.fpValue) continue;
+
+            assertx(locID < frame.locals.size());
+            return frame.locals[locID].predictedType;
+          }
+          // It's also possible it was loaded in the frame of a previously
+          // inlined callee that we've already popped.  If that's the case,
+          // just skip this optimization.
+        }
+        break;
+
+      case Box:
+        return boxType(inst->src(0)->type());
+
+      default:
+        break;
+    }
+    return folly::none;
+  };
+
+  switch (l.tag()) {
+    case LTag::Local:
+      return setValueImpl(l, localState(l), value, predicted_local());
+    case LTag::Stack:
+      cur().stackModified = true;
+      return setValueImpl(l, stackState(l), value);
+  }
+  not_reached();
 }
 
-void FrameStateMgr::widenStackType(IRSPOffset offset, Type type) {
-  auto& stk = stackState(offset);
-  ITRACE(2, "stk[{}] :: {} -> {}\n", offset.offset, stk.type, type);
-  stk.value         = nullptr;
-  stk.type          = type;
-  stk.maybeChanged  = true;
-  stk.predictedType = type;
-  cur().stackModified = true;
+template<LTag tag>
+static void setTypeImpl(Location l, LocationState<tag>& state, Type type) {
+  FTRACE(2, "{} :: {} -> {}\n", show(l), state.type, type);
+  state.value = nullptr;
+  state.type = type;
+  state.predictedType = type;
+  state.maybeChanged = true;
+  state.typeSrcs.clear();
 }
 
-void FrameStateMgr::setBoxedStkPrediction(IRSPOffset offset, Type type) {
-  auto& state = stackState(offset);
-  state.predictedType = state.type & type;
+/*
+ * Update the type for `l' to reflect a possible change in the value---but when
+ * we don't have that value.
+ *
+ * Setting the type clears the typeSrcs, so the new type may not be derived
+ * from the old type in any way.
+ */
+void FrameStateMgr::setType(Location l, Type type) {
+  switch (l.tag()) {
+    case LTag::Local:
+      return setTypeImpl(l, localState(l), type);
+    case LTag::Stack:
+      cur().stackModified = true;
+      return setTypeImpl(l, stackState(l), type);
+  }
+  not_reached();
 }
+
+template<LTag tag>
+static void widenTypeImpl(Location l, LocationState<tag>& state, Type type) {
+  FTRACE(2, "{} :: {} -> {}\n", show(l), state.type, type);
+  state.value = nullptr;
+  state.type = type;
+  state.predictedType = type;
+  state.maybeChanged = true;
+}
+
+/*
+ * Update the type for `l' as a result of an operation that might change the
+ * value.
+ *
+ * This is just like setType() except that typeSrcs are preserved, so the new
+ * type may be derived from the old type.
+ */
+void FrameStateMgr::widenType(Location l, Type type) {
+  switch (l.tag()) {
+    case LTag::Local:
+      return widenTypeImpl(l, localState(l), type);
+    case LTag::Stack:
+      cur().stackModified = true;
+      return widenTypeImpl(l, stackState(l), type);
+  }
+  not_reached();
+}
+
+template<LTag tag>
+static void refineTypeImpl(Location l, LocationState<tag>& state,
+                           Type type, TypeSource typeSrc) {
+  auto const refined = state.type & type;
+  FTRACE(2, "{} :: {} -> {} (via {})\n", show(l), state.type, refined, type);
+
+  // If the type gets more refined, we need to forget the old value, or else we
+  // may end up using a value with a more general type than is known about the
+  // stack slot.
+  if (refined != state.type) state.value = nullptr;
+  state.type = refined;
+  state.predictedType = updatePrediction(state.predictedType, refined);
+  state.typeSrcs.clear();
+  state.typeSrcs.insert(typeSrc);
+}
+
+/*
+ * Update the type for `l' to reflect new information that we've obtained from
+ * guards, assertions, or the like.
+ *
+ * A type refinement does /not/ indicate a change in value, so the various
+ * changed flags are not touched.
+ */
+void FrameStateMgr::refineType(Location l, Type type, TypeSource typeSrc) {
+  switch (l.tag()) {
+    case LTag::Local: return refineTypeImpl(l, localState(l), type, typeSrc);
+    case LTag::Stack: return refineTypeImpl(l, stackState(l), type, typeSrc);
+  }
+  not_reached();
+}
+
+template<LTag tag>
+void FrameStateMgr::refinePredictedTypeImpl(LocationState<tag>& state,
+                                            Type type) {
+  state.predictedType = refinePrediction(
+    state.predictedType,
+    type,
+    state.type
+  );
+  syncPrediction(state);
+}
+
+/*
+ * Update the predicted type for `l'.
+ */
+void FrameStateMgr::refinePredictedType(Location l, Type type) {
+  switch (l.tag()) {
+    case LTag::Local: return refinePredictedTypeImpl(localState(l), type);
+    case LTag::Stack: return refinePredictedTypeImpl(stackState(l), type);
+  }
+  not_reached();
+}
+
+template<LTag tag>
+static void setBoxedPredictionImpl(LocationState<tag>& state, Type type) {
+  state.predictedType = refinePrediction(state.type, type, state.type);
+}
+
+/*
+ * Set the predicted type for `l', discarding any previous prediction.
+ */
+void FrameStateMgr::setBoxedPrediction(Location l, Type type) {
+  switch (l.tag()) {
+    case LTag::Local: return setBoxedPredictionImpl(localState(l), type);
+    case LTag::Stack: return setBoxedPredictionImpl(stackState(l), type);
+  }
+  not_reached();
+}
+
+/*
+ * Refine the value for `state' to `newVal' if it was set to `oldVal'.
+ *
+ * This function refines, rather than invalidates, the old prediction.
+ */
+template<LTag tag>
+void FrameStateMgr::refineValue(LocationState<tag>& state,
+                                SSATmp* oldVal, SSATmp* newVal) {
+  if (!state.value || canonical(state.value) != canonical(oldVal)) {
+    return;
+  }
+  FTRACE(2, "refining value: {} -> {}\n", *state.value, *newVal);
+
+  state.value = newVal;
+  state.type = newVal->type();
+  state.predictedType = updatePrediction(state.predictedType, state.type);
+  state.typeSrcs.clear();
+  state.typeSrcs.insert(TypeSource::makeValue(newVal));
+}
+
+void FrameStateMgr::refinePredictedTmpType(SSATmp* tmp, Type predicted) {
+  auto const canon = canonical(tmp);
+  auto& map = cur().predictedTypes;
+  auto it = map.find(canon);
+  if (it == map.end()) {
+    map.emplace(canon, predicted);
+    FTRACE(3, "New prediction for {}: {}\n", *tmp->inst(), predicted);
+    return;
+  }
+
+  FTRACE(3, "Prediction for {} refined from {} to ", *tmp->inst(), it->second);
+  it->second = refinePrediction(it->second, predicted, tmp->type());
+  FTRACE(3, "{}\n", it->second);
+}
+
+///////////////////////////////////////////////////////////////////////////////
 
 static const Func* getSpillFrameKnownCallee(const IRInstruction* inst) {
   if (!inst->is(SpillFrame)) return nullptr;
@@ -1192,36 +1425,22 @@ static const Func* getSpillFrameKnownCallee(const IRInstruction* inst) {
   return nullptr;
 }
 
-void FrameStateMgr::spillFrameStack(IRSPOffset offset, FPInvOffset retOffset,
+void FrameStateMgr::spillFrameStack(IRSPRelOffset offset,
+                                    FPInvOffset retOffset,
                                     const IRInstruction* inst) {
   for (auto i = uint32_t{0}; i < kNumActRecCells; ++i) {
-    setStackValue(offset + i, nullptr);
+    setValue(stk(offset + i), nullptr);
   }
-  auto const opc = inst->marker().sk().op();
   auto const ctx = inst->op() == SpillFrame ? inst->src(2) : nullptr;
 
   const Func* func = getSpillFrameKnownCallee(inst);
+  auto const opc = m_fpushOverride ?
+    *m_fpushOverride : inst->marker().sk().op();
+  m_fpushOverride.clear();
 
-  cur().syncedSpLevel += kNumActRecCells;
+  cur().bcSPOff += kNumActRecCells;
   cur().fpiStack.push_front(FPIInfo { cur().spValue, retOffset, ctx, opc, func,
                                       false /* interp */, false /* spans */ });
-}
-
-void FrameStateMgr::refineStackType(IRSPOffset offset,
-                                    Type ty,
-                                    TypeSource typeSrc) {
-  auto& state = stackState(offset);
-  auto const newType = state.type & ty;
-  ITRACE(2, "stk[{}] updating type {} as {} -> {}\n", offset.offset,
-    state.type, ty, newType);
-  // If the type gets more refined, we need to forget the old value.
-  // Otherwise, we may end up using a value with a more general type
-  // than is known about the stack slot.
-  if (newType != state.type) state.value = nullptr;
-  state.type          = newType;
-  state.predictedType = updatePredictedType(state.predictedType, state.type);
-  state.typeSrcs.clear();
-  state.typeSrcs.insert(typeSrc);
 }
 
 void FrameStateMgr::clearStackForCall() {
@@ -1233,125 +1452,14 @@ void FrameStateMgr::clearStackForCall() {
   }
 }
 
-void FrameStateMgr::clearLocals() {
-  ITRACE(2, "clearLocals\n");
-  for (auto i = uint32_t{0}; i < cur().locals.size(); ++i) {
-    setLocalValue(i, nullptr);
-  }
-}
-
-void FrameStateMgr::setLocalValue(uint32_t id, SSATmp* value) {
-  always_assert(id < cur().locals.size());
-  auto& loc = cur().locals[id];
-  loc.value          = value;
-  auto const newType = value ? value->type() : TGen;
-  loc.type           = newType;
-  loc.maybeChanged   = true;
-  /*
-   * Update the predicted type for boxed values in some special cases to
-   * something smart.  The rest of the time, throw it away.
-   */
-  auto const newInnerPred = [&]() -> Type {
-    if (value) {
-      auto const inst = value->inst();
-      switch (inst->op()) {
-      case LdLoc:
-        if (value->type() <= TBoxedCell) {
-          // Keep the same prediction as this local.
-          return cur().locals[inst->extra<LdLoc>()->locId].predictedType;
-        }
-        break;
-      case Box:
-        return boxType(inst->src(0)->type());
-      default:
-        break;
-      }
-    }
-    return loc.type;  // just predict what we know
-  }();
-
-  // We need to make sure not to violate the invariant that predictedType is
-  // always <= type.  Note that operator& can be conservative (it could just
-  // return one of the two types in situations relating to specialized types we
-  // can't represent), so it's necessary to double check.
-  auto const rawIsect = newType & newInnerPred;
-  auto const useTy = rawIsect <= newType ? rawIsect : newType;
-
-  FTRACE(3, "setLocalValue setting prediction {} based on {}, using = {}\n",
-    id, newInnerPred, useTy);
-  loc.predictedType = useTy;
-  syncPrediction(loc);
-
-  loc.typeSrcs.clear();
-  if (value) {
-    loc.typeSrcs.insert(TypeSource::makeValue(value));
-  }
-}
-
-void FrameStateMgr::refineLocalType(uint32_t id,
-                                    Type type,
-                                    TypeSource typeSrc) {
-  always_assert(id < cur().locals.size());
-  auto& local = cur().locals[id];
-  auto const newType = local.type & type;
-  ITRACE(2, "updating local {}'s type: {} -> {}\n", id, local.type, newType);
-  // If the type gets more refined, we need to forget the old value.
-  // Otherwise, we may end up using a value with a more general type
-  // than is known about the local.
-  if (newType != local.type) local.value = nullptr;
-  local.type          = newType;
-  local.predictedType = updatePredictedType(local.predictedType, newType);
-  local.typeSrcs.clear();
-  local.typeSrcs.insert(typeSrc);
-}
+///////////////////////////////////////////////////////////////////////////////
 
 void FrameStateMgr::setLocalPredictedType(uint32_t id, Type type) {
   always_assert(id < cur().locals.size());
   auto& local = cur().locals[id];
   ITRACE(2, "updating local {}'s type prediction: {} -> {}\n",
     id, local.predictedType, type & local.type);
-  local.predictedType = updatePredictedType(type, local.type);
-}
-
-void FrameStateMgr::refineLocalPredictedType(uint32_t id, Type type) {
-  always_assert(id < cur().locals.size());
-  auto& local = cur().locals[id];
-  local.predictedType = refinePredictedType(
-    local.predictedType, type, local.type);
-  syncPrediction(local);
-}
-
-void FrameStateMgr::refineStackPredictedType(IRSPOffset offset, Type type) {
-  auto& state = stackState(offset);
-  state.predictedType = refinePredictedType(
-    state.predictedType, type, state.type);
-  syncPrediction(state);
-}
-
-void FrameStateMgr::setLocalType(uint32_t id, Type type) {
-  always_assert(id < cur().locals.size());
-  ITRACE(2, "loc[{}] :: {} -> {}\n", id, cur().locals[id].type, type);
-  cur().locals[id].value         = nullptr;
-  cur().locals[id].type          = type;
-  cur().locals[id].maybeChanged  = true;
-  cur().locals[id].predictedType = type;
-  cur().locals[id].typeSrcs.clear();
-}
-
-void FrameStateMgr::widenLocalType(uint32_t id, Type type) {
-  always_assert(id < cur().locals.size());
-  ITRACE(2, "loc[{}] :: {} -> {}\n", id, cur().locals[id].type, type);
-  cur().locals[id].value         = nullptr;
-  cur().locals[id].type          = type;
-  cur().locals[id].maybeChanged  = true;
-  cur().locals[id].predictedType = type;
-}
-
-void FrameStateMgr::setBoxedLocalPrediction(uint32_t id, Type type) {
-  always_assert(id < cur().locals.size());
-  always_assert(type <= TBoxedCell);
-
-  cur().locals[id].predictedType = cur().locals[id].type & type;
+  local.predictedType = updatePrediction(type, local.type);
 }
 
 /*
@@ -1362,57 +1470,7 @@ void FrameStateMgr::updateLocalRefPredictions(SSATmp* boxedCell, SSATmp* val) {
   assertx(boxedCell->type() <= TBoxedCell);
   for (auto id = uint32_t{0}; id < cur().locals.size(); ++id) {
     if (canonical(cur().locals[id].value) == canonical(boxedCell)) {
-      setBoxedLocalPrediction(id, boxType(val->type()));
-    }
-  }
-}
-
-void FrameStateMgr::setLocalTypeSource(uint32_t id, TypeSource typeSrc) {
-  always_assert(id < cur().locals.size());
-  cur().locals[id].typeSrcs.clear();
-  cur().locals[id].typeSrcs.insert(typeSrc);
-}
-
-/*
- * Get a reference to the locals from an inline index, which is the index in
- * m_stack.
- */
-jit::vector<LocalState>& FrameStateMgr::locals(unsigned inlineIdx) {
-  assertx(inlineIdx < m_stack.size());
-  return m_stack[inlineIdx].locals;
-}
-
-void FrameStateMgr::refineLocalValues(SSATmp* oldVal, SSATmp* newVal) {
-  for (auto& frame : m_stack) {
-    for (auto id = uint32_t{0}; id < frame.locals.size(); ++id) {
-      auto& local = frame.locals[id];
-      if (!local.value || canonical(local.value) != canonical(oldVal)) {
-        continue;
-      }
-      ITRACE(2, "refining local {}'s value: {} -> {}\n",
-             id, *local.value, *newVal);
-      local.value         = newVal;
-      local.type          = newVal->type();
-      local.predictedType = updatePredictedType(local.predictedType,
-                                                local.type);
-      local.typeSrcs.clear();
-      local.typeSrcs.insert(TypeSource::makeValue(newVal));
-    }
-  }
-}
-
-void FrameStateMgr::refineStackValues(SSATmp* oldVal, SSATmp* newVal) {
-  for (auto& frame : m_stack) {
-    for (auto& slot : frame.stack) {
-      if (!slot.value || canonical(slot.value) != canonical(oldVal)) {
-        continue;
-      }
-      ITRACE(2, "refining on stack {} -> {}\n", *oldVal, *newVal);
-      slot.value         = newVal;
-      slot.type          = newVal->type();
-      slot.predictedType = updatePredictedType(slot.predictedType, slot.type);
-      slot.typeSrcs.clear();
-      slot.typeSrcs.insert(TypeSource::makeValue(newVal));
+      setBoxedPrediction(loc(id), boxType(val->type()));
     }
   }
 }
@@ -1447,7 +1505,14 @@ void FrameStateMgr::dropLocalRefsInnerTypes() {
   }
 }
 
-//////////////////////////////////////////////////////////////////////
+void FrameStateMgr::clearLocals() {
+  ITRACE(2, "clearLocals\n");
+  for (auto i = uint32_t{0}; i < cur().locals.size(); ++i) {
+    setValue(loc(i), nullptr);
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////////
 
 std::string show(const FrameStateMgr& state) {
   auto func = state.func();
@@ -1456,7 +1521,7 @@ std::string show(const FrameStateMgr& state) {
   return folly::format(
     "func: {}, spOff: {}{}{}",
     funcName,
-    state.spOffset().offset,
+    state.irSPOff().offset,
     state.thisAvailable() ? ", thisAvailable" : "",
     state.frameMaySpanCall() ? ", frameMaySpanCall" : ""
   ).str();
@@ -1464,4 +1529,4 @@ std::string show(const FrameStateMgr& state) {
 
 //////////////////////////////////////////////////////////////////////
 
-}}
+}}}

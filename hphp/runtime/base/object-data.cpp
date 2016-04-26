@@ -17,7 +17,6 @@
 #include "hphp/runtime/base/object-data.h"
 
 #include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/collections.h"
 #include "hphp/runtime/base/container-functions.h"
 #include "hphp/runtime/base/execution-context.h"
@@ -28,7 +27,6 @@
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/mixed-array-defs.h"
 
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
 #include "hphp/runtime/ext/generator/ext_generator.h"
 #include "hphp/runtime/ext/simplexml/ext_simplexml.h"
 #include "hphp/runtime/ext/datetime/ext_datetime.h"

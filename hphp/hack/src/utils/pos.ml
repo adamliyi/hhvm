@@ -50,6 +50,12 @@ let string t =
   Printf.sprintf "File %S, line %d, characters %d-%d:"
     (String.trim t.pos_file) line start end_
 
+(* Some positions, like those in buffers sent by IDE/created by unit tests might
+ * not have a file specified *)
+let string_no_file t =
+  let line, start, end_ = info_pos t in
+  Printf.sprintf "line %d, characters %d-%d" line start end_
+
 let json pos =
   let line, start, end_ = info_pos pos in
   let fn = filename pos in
@@ -129,6 +135,9 @@ let destruct_range (p : 'a pos) : (int * int * int * int) =
 
 let make_from_file_pos ~pos_file ~pos_start ~pos_end =
   { pos_file; pos_start; pos_end }
+
+let set_file pos_file pos =
+  { pos with pos_file }
 
 module Map = MyMap.Make (struct
   type path = t

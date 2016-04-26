@@ -138,8 +138,11 @@ struct ProxygenServer : Server,
 
   virtual void onRequestError(Transport* transport);
 
+  void addPendingTransport(ProxygenTransport& transport) {
+    m_pendingTransports.push_back(transport);
+  }
+
  protected:
-  // TODO: Share with LibEventServer?
   enum RequestPriority {
     PRIORITY_NORMAL = 0,
     PRIORITY_HIGH,
@@ -147,6 +150,9 @@ struct ProxygenServer : Server,
   };
   RequestPriority getRequestPriority(const char *uri);
 
+  // Ordering of shutdown states corresponds to the phases in time,
+  // and we rely on the ordering.  State transition graph is linear
+  // here.
   enum class ShutdownState {
     SHUTDOWN_NONE,
     DRAINING_READS,
@@ -163,6 +169,8 @@ struct ProxygenServer : Server,
   // These functions can only be called from the m_worker thread
   void stopListening(bool hard = false);
 
+  void abortPendingTransports();
+
   void doShutdown();
 
   void stopVM();
@@ -170,6 +178,8 @@ struct ProxygenServer : Server,
   void vmStopped();
 
   void forceStop();
+
+  void reportShutdownStatus();
 
   bool initialCertHandler(const std::string& server_name,
                           const std::string& key_file,
@@ -205,6 +215,7 @@ struct ProxygenServer : Server,
   JobQueueDispatcher<ProxygenWorker> m_dispatcher;
   ResponseMessageQueue m_responseQueue;
   std::unique_ptr<TakeoverAgent> m_takeover_agent;
+  ProxygenTransportList m_pendingTransports;
 };
 
 struct ProxygenTransportTraits {

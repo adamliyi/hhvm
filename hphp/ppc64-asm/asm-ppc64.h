@@ -40,11 +40,25 @@ namespace ppc64_asm {
 /* using override */ using HPHP::CodeAddress;
 /* using override */ using HPHP::jit::ConditionCode;
 
-/* Used to  define a minimal callstack on call/ret vasm */
+//////////////////////////////////////////////////////////////////////
+
+/*
+ * Constants definition for PPC64
+ */
+
 // Must be the same value of AROFF(_dummyB).
-constexpr int min_callstack_size        = 32;
+constexpr uint8_t min_callstack_size        = 4 * 8;
 // Must be the same value of AROFF(m_savedRip).
-constexpr int lr_position_on_callstack  = 16;
+constexpr uint8_t lr_position_on_callstack  = 2 * 8;
+// Must be the same value of AROFF(m_savedToc).
+constexpr uint8_t toc_position_on_callstack = 3 * 8;
+// How many bytes a PPC64 instruction length is.
+constexpr uint8_t instr_size_in_bytes       = sizeof(PPC64Instr);
+// Amount of bytes to skip after an Assembler::call to grab the return address.
+// Currently it skips a "nop" or a "ld 2,24(1)"
+constexpr uint8_t call_skip_bytes_for_ret   = 1 * instr_size_in_bytes;
+
+//////////////////////////////////////////////////////////////////////
 
 #define BRANCHES(cr) \
   CR##cr##_LessThan,         \
@@ -533,7 +547,7 @@ struct Assembler {
   static const uint8_t kBytesPerInstr = sizeof(PPC64Instr);
 
   // Total ammount of bytes that a li64 function emits
-  static const uint8_t kLi64InstrLen = 5 * kBytesPerInstr;
+  static const uint8_t kLi64InstrLen = 5 * instr_size_in_bytes;
 
   // TODO(rcardoso): Must create a macro for these similar instructions.
   // This will make code more clean.
@@ -1979,43 +1993,29 @@ struct Assembler {
   // Auxiliary for loading a complete 64bits immediate into a register
   void li64(const Reg64& rt, int64_t imm64, bool fixedSize = true);
 
-  // Destroy a new frame on call stack
-  void popFrame(const Reg64& rsp);
-
-  // Create prologue when calling.
-  void prologue(const Reg64& rsp,
-                const Reg64& rtoc,
-                const Reg64& rfuncln,
-                const Reg64& rvmfp);
-
-  // Create epilogue when calling.
-  void epilogue(const Reg64& rsp,
-                const Reg64& rtoc,
-                const Reg64& rfuncln);
-
   // generic template, for CodeAddress and Label
   template <typename T>
-  void call(const Reg64& rsp,
-            const Reg64& rtoc,
-            const Reg64& rfuncln,
-            const Reg64& rvmfp,
-            T& target) {
-    prologue(rsp, rtoc, rfuncln, rvmfp);
+  void call(T& target, bool save_toc = false) {
     branchAuto(target, BranchConditions::Always, LinkReg::Save);
-    epilogue(rsp, rtoc, rfuncln);
+
+    // Several vasms like nothrow, unwind and syncpoint will skip one
+    // instruction after call and use it as expected return address. Use a nop
+    // to guarantee this consistency even if toc doesn't need to be saved
+    if (save_toc) ld(reg::r2, reg::r1[toc_position_on_callstack]);
+    else          nop();
   }
 
   // specialization of call for Reg64
-  void call(const Reg64& rsp,
-            const Reg64& rtoc,
-            const Reg64& rfuncln,
-            const Reg64& rvmfp,
-            Reg64 target) {
-    prologue(rsp, rtoc, rfuncln, rvmfp);
+  void call(Reg64 target, bool save_toc = false) {
     mr(reg::r12, target);
     mtctr(reg::r12);
     bctrl();
-    epilogue(rsp, rtoc, rfuncln);
+
+    // Several vasms like nothrow, unwind and syncpoint will skip one
+    // instruction after call and use it as expected return address. Use a nop
+    // to guarantee this consistency even if toc doesn't need to be saved
+    if (save_toc) ld(reg::r2, reg::r1[toc_position_on_callstack]);
+    else          nop();
   }
 
   // checks if the @inst is pointing to a call
@@ -2650,7 +2650,7 @@ struct Label {
       a.xor(reg::r0, reg::r0, reg::r0,false);
       a.mtspr(Assembler::SpecialReg::XER, reg::r0);
     } else {
-      a.emitNop(2*Assembler::kBytesPerInstr);
+      a.emitNop(2 * instr_size_in_bytes);
     }
     if (LinkReg::Save == lr) a.bcctrl(bp.bo(), bp.bi(), 0);
     else                     a.bcctr (bp.bo(), bp.bi(), 0);

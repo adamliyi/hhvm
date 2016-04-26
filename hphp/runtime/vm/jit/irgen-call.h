@@ -18,13 +18,18 @@
 
 #include <cstdint>
 
-namespace HPHP { struct StringData; }
-namespace HPHP { namespace jit {
-struct IRGS;
-struct SSATmp;
-}}
+namespace HPHP {
 
-namespace HPHP { namespace jit { namespace irgen {
+struct StringData;
+struct Func;
+
+namespace jit {
+
+struct SSATmp;
+
+namespace irgen {
+
+struct IRGS;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -34,9 +39,13 @@ void fpushActRec(IRGS& env,
                  int32_t numArgs,
                  const StringData* invName);
 
+void emitDirectCall(IRGS& env, Func* callee, int32_t numParams,
+                    SSATmp* const* const args);
+
+SSATmp* implFCall(IRGS& env, int32_t numParams);
+
 //////////////////////////////////////////////////////////////////////
 
 }}}
-
 
 #endif

@@ -57,23 +57,15 @@ String HHVM_METHOD(WaitHandle, getName);
  *   SleepWaitHandle               - wait handle that finishes after a timeout
  *   ExternalThreadEventWaitHandle - thread-powered asynchronous execution
  *
- *   // DEPRECATED
- *   GenArrayWaitHandle            - wait handle representing an array of WHs
- *   GenMapWaitHandle              - wait handle representing an Map of WHs
- *   GenVectorWaitHandle           - wait handle representing an Vector of WHs
- *
  * A wait handle can be either synchronously joined (waited for the operation
  * to finish) or passed in various contexts as a dependency and waited for
  * asynchronously (such as using await mechanism of async function or
- * passed as an array member of GenArrayWaitHandle).
+ * passed to AwaitAllWaitHandle).
  */
 
 struct c_AsyncFunctionWaitHandle;
 struct c_AsyncGeneratorWaitHandle;
 struct c_AwaitAllWaitHandle;
-struct c_GenArrayWaitHandle;
-struct c_GenMapWaitHandle;
-struct c_GenVectorWaitHandle;
 struct c_ConditionWaitHandle;
 struct c_RescheduleWaitHandle;
 struct c_SleepWaitHandle;
@@ -112,9 +104,6 @@ struct c_WaitHandle : ObjectData {
     AsyncFunction,
     AsyncGenerator,
     AwaitAll,
-    GenArray,
-    GenMap,
-    GenVector,
     Condition,
     Reschedule,
     Sleep,
@@ -177,9 +166,6 @@ struct c_WaitHandle : ObjectData {
   c_AsyncFunctionWaitHandle* asAsyncFunction();
   c_AsyncGeneratorWaitHandle* asAsyncGenerator();
   c_AwaitAllWaitHandle* asAwaitAll();
-  c_GenArrayWaitHandle* asGenArray();
-  c_GenMapWaitHandle* asGenMap();
-  c_GenVectorWaitHandle* asGenVector();
   c_ConditionWaitHandle* asCondition();
   c_RescheduleWaitHandle* asReschedule();
   c_ResumableWaitHandle* asResumable();
@@ -188,8 +174,8 @@ struct c_WaitHandle : ObjectData {
 
   // The code in the TC will depend on the values of these constants.
   // See emitAwait().
-  static const int8_t STATE_SUCCEEDED = 0;
-  static const int8_t STATE_FAILED    = 1;
+  static const int8_t STATE_SUCCEEDED = 0; // completed with result
+  static const int8_t STATE_FAILED    = 1; // completed with exception
 
  private: // layout, ignoring ObjectData fields.
   // 0                           8             9             10 12

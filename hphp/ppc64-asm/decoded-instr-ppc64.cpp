@@ -47,8 +47,10 @@ bool DecodedInstruction::isBranch(bool allowCond /* = true */) const {
 }
 
 bool DecodedInstruction::isCall() const {
-  // skip the preparation instructions that are not actually the branch.
-  auto branch_instr = m_ip + HPHP::jit::ppc64::smashableCallSkip();
+  // The length of a smashable call also includes a nop at the end. The branch
+  // instruction should be right before that.
+  auto branch_instr = m_ip + HPHP::jit::ppc64::smashableCallLen() -
+                      1 * instr_size_in_bytes;
   return Decoder::GetDecoder().decode(branch_instr)->isBranch(false);
 }
 

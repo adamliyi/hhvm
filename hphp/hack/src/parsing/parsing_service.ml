@@ -15,7 +15,7 @@ open Core
 (*****************************************************************************)
 
 let neutral = (
-  Relative_path.Map.empty, [],
+  Relative_path.Map.empty, Errors.empty,
   Relative_path.Set.empty
   )
 
@@ -47,17 +47,17 @@ let really_parse (acc, errorl, error_files) fn =
   Parsing_hooks.dispatch_file_parsed_hook fn ast;
   if file_mode <> None then begin
     let funs, classes, typedefs, consts = Ast_utils.get_defs ast in
-    Parser_heap.ParserHeap.add fn ast;
+    Parser_heap.ParserHeap.write_through fn ast;
     let defs =
       {FileInfo.funs; classes; typedefs; consts; comments; file_mode;
        consider_names_just_for_autoload = false}
     in
-    let acc = Relative_path.Map.add fn defs acc in
-    let errorl = List.rev_append errorl' errorl in
+    let acc = Relative_path.Map.add acc ~key:fn ~data:defs in
+    let errorl = Errors.merge errorl' errorl in
     let error_files =
-      if errorl' = []
+      if Errors.is_empty errorl'
       then error_files
-      else Relative_path.Set.add fn error_files
+      else Relative_path.Set.add error_files fn
     in
     acc, errorl, error_files
   end
@@ -66,7 +66,7 @@ let really_parse (acc, errorl, error_files) fn =
     (* we also now keep in the file_info regular php files
      * as we need at least their names in hack build
      *)
-    let acc = Relative_path.Map.add fn info acc in
+    let acc = Relative_path.Map.add acc ~key:fn ~data:info in
     acc, errorl, error_files
   end
 
@@ -79,15 +79,15 @@ let parse (acc, errorl, error_files) fn =
     really_parse (acc, errorl, error_files) fn
   else
     let info = empty_file_info in
-    let acc = Relative_path.Map.add fn info acc in
+    let acc = Relative_path.Map.add acc ~key:fn ~data:info in
     acc, errorl, error_files
 
 (* Merging the results when the operation is done in parallel *)
 let merge_parse
     (acc1, status1, files1)
     (acc2, status2, files2) =
-  Relative_path.Map.fold Relative_path.Map.add acc1 acc2,
-  List.rev_append status1 status2,
+  Relative_path.Map.union acc1 acc2,
+  Errors.merge status1 status2,
   Relative_path.Set.union files1 files2
 
 let parse_files acc fnl =

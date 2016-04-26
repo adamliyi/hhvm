@@ -14,87 +14,46 @@ import tempfile
 import time
 
 from hh_paths import hh_server, hh_client
-from utils import write_files
 
-class CommonSaveStateTests(object):
+class CommonTestDriver(object):
+
+    # This needs to be overridden in child classes. The files in this
+    # directory will be used to set up the initial environment for each
+    # test.
+    template_repo = None
 
     @classmethod
     def setUpClass(cls):
         cls.maxDiff = 2000
-        # we create the state in a different dir from the one we run our tests
-        # on, to verify that the saved state does not depend on any absolute
-        # paths
-        init_dir = tempfile.mkdtemp()
-        cls.repo_dir = tempfile.mkdtemp()
-        cls.config_path = os.path.join(cls.repo_dir, '.hhconfig')
-        cls.tmp_dir = tempfile.mkdtemp()
+        cls.base_tmp_dir = tempfile.mkdtemp()
+        # we don't create repo_dir using mkdtemp() because we want to create
+        # it with copytree(). copytree() will fail if the directory already
+        # exists.
+        cls.repo_dir = os.path.join(cls.base_tmp_dir, 'repo')
+        # Where the hhi files, socket, etc get extracted
         cls.hh_tmp_dir = tempfile.mkdtemp()
-        cls.saved_state_name = 'foo'
+        cls.bin_dir = tempfile.mkdtemp()
         hh_server_dir = os.path.dirname(hh_server)
         cls.test_env = dict(os.environ, **{
             'HH_TEST_MODE': '1',
             'HH_TMPDIR': cls.hh_tmp_dir,
             'PATH': '%s:%s:/bin:/usr/bin:/usr/local/bin' %
-                (hh_server_dir, cls.tmp_dir),
+                (hh_server_dir, cls.bin_dir),
             'OCAMLRUNPARAM': 'b',
             'HH_LOCALCONF_PATH': cls.repo_dir,
             })
 
-        with open(os.path.join(init_dir, '.hhconfig'), 'w') as f:
-            f.write(r"""
-# some comment
-assume_php = false""")
-
-        cls.files = {}
-
-        cls.files['foo_1.php'] = """
-        <?hh
-        function f() {
-            return g() + 1;
-        }
-        """
-
-        cls.files['foo_2.php'] = """
-        <?hh
-        function g(): int {
-            return 0;
-        }
-        """
-
-        cls.files['foo_3.php'] = """
-        <?hh
-        function h(): string {
-            return "a";
-        }
-
-        class Foo {}
-
-        function some_long_function_name() {
-            new Foo();
-            h();
-        }
-        """
-
-        write_files(cls.files, init_dir)
-
-        cls.save_command(init_dir)
-
-        shutil.rmtree(init_dir)
-
-    @classmethod
-    def save_command(cls):
-        raise NotImplementedError()
-
     @classmethod
     def tearDownClass(cls):
-        shutil.rmtree(cls.tmp_dir)
+        shutil.rmtree(cls.base_tmp_dir)
+        shutil.rmtree(cls.bin_dir)
         shutil.rmtree(cls.hh_tmp_dir)
 
-    @classmethod
-    def saved_state_path(cls):
-        return os.path.join(cls.tmp_dir, cls.saved_state_name)
-
     def write_load_config(self, *changed_files):
+        """
+        Writes out a script that will print the list of changed files,
+        and adds the path to that script to .hhconfig
+        """
         raise NotImplementedError()
 
     def start_hh_server(self):
@@ -113,9 +72,7 @@ assume_php = false""")
             return f.read()
 
     def setUp(self):
-        if os.path.isdir(self.repo_dir) is False:
-            os.mkdir(self.repo_dir)
-        write_files(self.files, self.repo_dir)
+        shutil.copytree(self.template_repo, self.repo_dir)
 
     def tearDown(self):
         (_, _, exit_code) = self.proc_call([
@@ -128,6 +85,16 @@ assume_php = false""")
         shutil.rmtree(self.repo_dir)
 
     @classmethod
+    def proc_create(cls, args, env):
+        return subprocess.Popen(
+                args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=dict(cls.test_env, **env),
+                universal_newlines=True)
+
+    @classmethod
     def proc_call(cls, args, env=None, stdin=None):
         """
         Invoke a subprocess, return stdout, send stderr to our stderr (for
@@ -135,13 +102,7 @@ assume_php = false""")
         """
         env = {} if env is None else env
         print(" ".join(args), file=sys.stderr)
-        proc = subprocess.Popen(
-                args,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=dict(cls.test_env, **env),
-                universal_newlines=True)
+        proc = cls.proc_create(args, env)
         (stdout_data, stderr_data) = proc.communicate(stdin)
         sys.stderr.write(stderr_data)
         sys.stderr.flush()
@@ -160,9 +121,46 @@ assume_php = false""")
         stdin=None,
         options=None
     ):
+        # we run the --json version first because --json --refactor doesn't
+        # change any files, but plain --refactor does (i.e. the latter isn't
+        # idempotent)
+        self.check_cmd(expected_json, stdin, options + ['--json'])
         self.check_cmd(expected_output, stdin, options)
-        options.append("--json")
-        self.check_cmd(expected_json, stdin, options)
+
+    def subscribe_debug(self):
+        proc = self.proc_create([
+            hh_client,
+            'debug',
+            self.repo_dir
+            ], env={})
+        return DebugSubscription(proc)
+
+class DebugSubscription(object):
+    """
+    Wraps `hh_client debug`.
+    """
+
+    def __init__(self, proc):
+        self.proc = proc
+        hello = self.read_msg()
+        assert(hello['data'] == 'hello')
+
+    def read_msg(self):
+        line = self.proc.stdout.readline()
+        return json.loads(line)
+
+    def get_incremental_logs(self):
+        msgs = {}
+        while True:
+            msg = self.read_msg()
+            if msg['type'] == 'info' and msg['data'] == 'incremental_done':
+                break
+            msgs[msg['name']] = msg
+        return msgs
+
+class CommonTests(object):
+
+    template_repo = 'hphp/hack/test/integration/data/simple_repo'
 
     # hh should should work with 0 retries.
     def test_responsiveness(self):
@@ -228,13 +226,33 @@ assume_php = false""")
 
     def test_deleted_file(self):
         """
-        Delete a file that still has dangling references after restoring from
+        Delete a file that still has dangling references before restoring from
         a saved state.
         """
         os.remove(os.path.join(self.repo_dir, 'foo_2.php'))
 
         self.write_load_config('foo_2.php')
 
+        self.check_cmd([
+            '{root}foo_1.php:4:20,20: Unbound name: g (a global function) (Naming[2049])',
+            '{root}foo_1.php:4:20,20: Unbound name: g (a global constant) (Naming[2049])',
+            ])
+
+    def test_file_delete_after_load(self):
+        """
+        Delete a file that still has dangling references after restoring from
+        a saved state.
+        """
+        self.write_load_config()
+        self.check_cmd(['No errors!'])
+        debug_sub = self.subscribe_debug()
+
+        os.remove(os.path.join(self.repo_dir, 'foo_2.php'))
+        msgs = debug_sub.get_incremental_logs()
+        self.assertEqual(msgs['to_redecl_phase1']['files'], ['foo_2.php'])
+        self.assertEqual(msgs['to_redecl_phase2']['files'], ['foo_2.php'])
+        self.assertEqual(set(msgs['to_recheck']['files']),
+                set(['foo_1.php', 'foo_2.php']))
         self.check_cmd([
             '{root}foo_1.php:4:20,20: Unbound name: g (a global function) (Naming[2049])',
             '{root}foo_1.php:4:20,20: Unbound name: g (a global constant) (Naming[2049])',
@@ -285,22 +303,11 @@ assume_php = false""")
 
             ])
 
-    def test_ide_tools(self):
+    def test_find_refs(self):
         """
-        Test hh_client --search, --find-refs, --find-class-refs, --type-at-pos,
-        and --list-files
-
-        We *could* break this up into multiple tests, but starting the server
-        takes time and this test is slow enough already
+        Test hh_client --find-refs, --find-class-refs
         """
-
         self.write_load_config()
-
-        self.check_cmd_and_json_cmd([
-            'File "{root}foo_3.php", line 9, characters 18-40: some_long_function_name, function'
-            ], [
-            '[{{"name":"some_long_function_name","filename":"{root}foo_3.php","desc":"function","line":9,"char_start":18,"char_end":40,"scope":""}}]'
-            ], options=['--search', 'some_lo'])
 
         self.check_cmd_and_json_cmd([
             'File "{root}foo_3.php", line 11, characters 13-13: h',
@@ -323,11 +330,52 @@ assume_php = false""")
             '[{{"name":"Foo::__construct","filename":"{root}foo_3.php","line":10,"char_start":17,"char_end":19}}]'
             ], options=['--find-class-refs', 'Foo'])
 
+    def test_search(self):
+        """
+        Test hh_client --search
+        """
+
+        self.write_load_config()
+
         self.check_cmd_and_json_cmd([
-            'string'
+            'File "{root}foo_3.php", line 9, characters 18-40: some_long_function_name, function'
             ], [
-            '{{"type":"string","pos":{{"filename":"{root}foo_3.php","line":3,"char_start":23,"char_end":28}}}}'
-            ], options=['--type-at-pos', '{root}foo_3.php:11:13'])
+            '[{{"name":"some_long_function_name","filename":"{root}foo_3.php","desc":"function","line":9,"char_start":18,"char_end":40,"scope":""}}]'
+            ], options=['--search', 'some_lo'])
+
+    def test_search_case_insensitive1(self):
+        """
+        Test that global search is not case sensitive
+        """
+        self.maxDiff = None
+        self.write_load_config()
+
+        self.check_cmd([
+            'File "{root}foo_4.php", line 4, characters 10-24: '
+            'aaaaaaaaaaa_fun, function',
+            'File "{root}foo_4.php", line 3, characters 7-23: '
+            'Aaaaaaaaaaa_class, class',
+        ], options=['--search', 'Aaaaaaaaaaa'])
+
+    def test_search_case_insensitive2(self):
+        """
+        Test that global search is not case sensitive
+        """
+        self.write_load_config()
+
+        self.check_cmd([
+            'File "{root}foo_4.php", line 4, characters 10-24: '
+            'aaaaaaaaaaa_fun, function',
+            'File "{root}foo_4.php", line 3, characters 7-23: '
+            'Aaaaaaaaaaa_class, class',
+        ], options=['--search', 'aaaaaaaaaaa'])
+
+    def test_auto_complete(self):
+        """
+        Test hh_client --auto-complete
+        """
+
+        self.write_load_config()
 
         self.check_cmd_and_json_cmd([
             'some_long_function_name (function(): _)'
@@ -347,6 +395,30 @@ assume_php = false""")
             options=['--auto-complete'],
             stdin='<?hh function f() { some_AUTO332\n')
 
+    def test_list_files(self):
+        """
+        Test hh_client --list-files
+        """
+        os.remove(os.path.join(self.repo_dir, 'foo_2.php'))
+        self.write_load_config('foo_2.php')
+        self.check_cmd_and_json_cmd([
+            '{root}foo_1.php',
+            ], [
+            '{root}foo_1.php',  # see comment for identify-function
+            ], options=['--list-files'])
+
+    def test_misc_ide_tools(self):
+        """
+        Test hh_client --type-at-pos and --identify-function
+        """
+        self.write_load_config()
+
+        self.check_cmd_and_json_cmd([
+            'string'
+            ], [
+            '{{"type":"string","pos":{{"filename":"{root}foo_3.php","line":3,"char_start":23,"char_end":28}}}}'
+            ], options=['--type-at-pos', '{root}foo_3.php:11:13'])
+
         self.check_cmd_and_json_cmd([
             'Foo::bar'
             ], [
@@ -359,12 +431,151 @@ assume_php = false""")
             options=['--identify-function', '1:51'],
             stdin='<?hh class Foo { private function bar() { $this->bar() }}')
 
-        os.remove(os.path.join(self.repo_dir, 'foo_2.php'))
+    def test_nuclide_get_definition(self):
+        """
+        Test hh_client --ide-get-definition
+        """
+        self.write_load_config()
+
         self.check_cmd_and_json_cmd([
-            '{root}foo_1.php',
+            'Name: \\bar, type: function, position: line 1, '
+            'characters 42-44, defined: line 1, characters 15-17'
             ], [
-            '{root}foo_1.php',  # see comment for identify-function
-            ], options=['--list-files'])
+            '{{"name":"\\\\bar","result_type":"function","pos":{{"filename":"",'
+            '"line":1,"char_start":42,"char_end":44}},'
+            '"definition_pos":{{"filename":"","line":1,"char_start":15,'
+            '"char_end":17}}}}'
+            ],
+            options=['--ide-get-definition', '1:43'],
+            stdin='<?hh function bar() {} function test() { bar() }')
+
+    def test_find_lvar_refs(self):
+        """
+        Test --find-lvar-refs
+        """
+        os.remove(os.path.join(self.repo_dir, 'foo_2.php'))
+        self.write_load_config('foo_2.php')
+
+        self.check_cmd_and_json_cmd([
+            'line 3, characters 15-16',
+            'line 4, characters 3-4',
+            'line 5, characters 5-6',
+            'line 5, characters 11-12',
+            'line 5, characters 25-26',
+            'line 7, characters 21-22',
+            'line 10, characters 31-32',
+            'line 11, characters 12-13',
+            'line 12, characters 16-17',
+            '9 total results',
+            ], [
+            '{{"positions":[{{"filename":"","line":3,"char_start":15,'
+            '"char_end":16}},{{"filename":"","line":4,"char_start":3,'
+            '"char_end":4}},{{"filename":"","line":5,"char_start":5,'
+            '"char_end":6}},{{"filename":"","line":5,"char_start":11,'
+            '"char_end":12}},{{"filename":"","line":5,"char_start":25,'
+            '"char_end":26}},{{"filename":"","line":7,"char_start":21,'
+            '"char_end":22}},{{"filename":"","line":10,"char_start":31,'
+            '"char_end":32}},{{"filename":"","line":11,"char_start":12,'
+            '"char_end":13}},{{"filename":"","line":12,"char_start":16,'
+            '"char_end":17}}],"internal_error":false}}'
+            ],
+            options=['--find-lvar-refs', '4:4'],
+            stdin='''<?hh
+
+function test($x) {                 // Should match
+  $x = 3; // Looking for this $x.      Should match
+  g($x) + $x + h("\$x = $x");       // First three should match
+  $lambda1 = $x ==> $x + 1;         // Should not match
+  $lambda2 = $a ==> $x + $a;        // Should match
+  $lambda3 = function($x) {         // Should not match
+    return $x + 1; };               // Should not match
+  $lambda4 = function($b) use($x) { // Should match
+    return $x + $b; };              // Should match
+  return <div>{$x}</div>;           // Should match
+}
+''')
+
+    def test_find_lvar_refs_static_local(self):
+        """
+        Test --find-lvar-refs
+        """
+        os.remove(os.path.join(self.repo_dir, 'foo_2.php'))
+        self.write_load_config('foo_2.php')
+
+        """
+        This tests a broken feature; when the bug is fixed then the
+        test should be updated to match the correct behaviour.
+        """
+
+        self.check_cmd_and_json_cmd([
+            'line 3, characters 15-16',
+            'line 4, characters 8-9',
+            'line 5, characters 10-11',  # This is wrong
+            'line 6, characters 8-9',    # This is wrong
+            '4 total results',           # Should be 2
+            ], [
+            '{{"positions":[{{"filename":"","line":3,"char_start":15,'
+            '"char_end":16}},{{"filename":"","line":4,"char_start":8,'
+            '"char_end":9}},{{"filename":"","line":5,"char_start":10,'
+            '"char_end":11}},{{"filename":"","line":6,"char_start":8,'
+            '"char_end":9}}],"internal_error":false}}'
+            ],
+            options=['--find-lvar-refs', '4:8'],
+            stdin='''<?hh
+
+function test($x) {  // Should match
+  $y = $x;           // Should match
+  static $x = 123;   // Should not match, currently does!
+  $z = $x;           // Should not match, currently does!
+}
+''')
+
+    def test_get_method_name(self):
+        """
+        Test --get-method-name
+        """
+        os.remove(os.path.join(self.repo_dir, 'foo_2.php'))
+        self.write_load_config('foo_2.php')
+
+        self.check_cmd_and_json_cmd([
+            'Name: \\C::foo, type: method, position: line 8, characters 7-9'
+            ], [
+            '{{"name":"\\\\C::foo","result_type":"method",'
+            '"pos":{{"filename":"","line":8,"char_start":7,"char_end":9}},'
+            '"internal_error":false}}'
+            ],
+            options=['--get-method-name', '8:7'],
+            stdin='''<?hh
+
+class C {
+  public function foo() {}
+}
+
+function test(C $c) {
+  $c->foo();
+}
+''')
+
+    def test_format(self):
+        """
+        Test --format
+        """
+        self.write_load_config()
+        self.check_cmd_and_json_cmd([
+            'function test1(int $x) {{',
+            '  $x = $x * x + 3;',
+            '  return f($x);',
+            '}}'
+            ], [
+            '{{"error_message":"","result":"function test1(int $x) {{\\n''  $x'
+            ' = $x * x + 3;\\n  return f($x);\\n}}\\n","internal_error":false}}'
+            ],
+            options=['--format', '7', '63'],
+            stdin='''<?hh
+
+function test1(int $x) { $x = $x*x + 3; return f($x); }
+function test2(int $x) { $x = $x*x + 3; return f($x); }
+''')
 
     def test_abnormal_typechecker_exit_message(self):
         """
@@ -444,3 +655,131 @@ assume_php = false""")
             """)
         os.remove(os.path.join(self.repo_dir, 'foo_3.php'))
         self.check_cmd(['No errors!'])
+
+    def test_refactor_methods(self):
+        with open(os.path.join(self.repo_dir, 'foo_4.php'), 'w') as f:
+            f.write("""
+            <?hh
+            class Bar extends Foo {
+                public function f() {}
+                public function g() {}
+            }
+
+            class Baz extends Bar {
+                public function g() {
+                    $this->f();
+                }
+            }
+            """)
+        self.write_load_config('foo_4.php')
+
+        self.check_cmd_and_json_cmd(['Rewrote 1 files.'],
+                ['[{{"filename":"{root}foo_4.php","patches":[{{'
+                '"char_start":86,"char_end":87,"line":4,"col_start":33,'
+                '"col_end":33,"patch_type":"replace","replacement":"wat"}},'
+                '{{"char_start":248,"char_end":249,"line":10,"col_start":28,'
+                '"col_end":28,"patch_type":"replace","replacement":"wat"}}]}}]'],
+                options=['--refactor', 'Method', 'Bar::f', 'Bar::wat'])
+        self.check_cmd_and_json_cmd(['Rewrote 1 files.'],
+                ['[{{"filename":"{root}foo_4.php","patches":[{{'
+                '"char_start":127,"char_end":128,"line":5,"col_start":33,'
+                '"col_end":33,"patch_type":"replace",'
+                '"replacement":"overrideMe"}},{{"char_start":217,'
+                '"char_end":218,"line":9,"col_start":33,"col_end":33,'
+                '"patch_type":"replace","replacement":"overrideMe"}}]}}]'],
+                options=['--refactor', 'Method', 'Bar::g', 'Bar::overrideMe'])
+        self.check_cmd_and_json_cmd(['Rewrote 2 files.'],
+                ['[{{"filename":"{root}foo_4.php","patches":[{{'
+                '"char_start":48,"char_end":51,"line":3,"col_start":31,'
+                '"col_end":33,"patch_type":"replace","replacement":"Qux"}}]}},'
+                '{{"filename":"{root}foo_3.php","patches":[{{'
+                '"char_start":94,"char_end":97,"line":7,"col_start":15,'
+                '"col_end":17,"patch_type":"replace","replacement":"Qux"}},'
+                '{{"char_start":163,"char_end":166,"line":10,"col_start":17,'
+                '"col_end":19,"patch_type":"replace","replacement":"Qux"}}]'
+                '}}]'],
+                options=['--refactor', 'Class', 'Foo', 'Qux'])
+
+        with open(os.path.join(self.repo_dir, 'foo_4.php')) as f:
+            out = f.read()
+            self.assertEqual(out, """
+            <?hh
+            class Bar extends Qux {
+                public function wat() {}
+                public function overrideMe() {}
+            }
+
+            class Baz extends Bar {
+                public function overrideMe() {
+                    $this->wat();
+                }
+            }
+            """)
+
+        with open(os.path.join(self.repo_dir, 'foo_3.php')) as f:
+            out = f.read()
+            self.assertEqual(out, """
+        <?hh
+        function h(): string {
+            return "a";
+        }
+
+        class Qux {}
+
+        function some_long_function_name() {
+            new Qux();
+            h();
+        }
+""")
+
+    def test_refactor_functions(self):
+        with open(os.path.join(self.repo_dir, 'foo_4.php'), 'w') as f:
+            f.write("""
+            <?hh
+            function wow() {
+                wat();
+                return f();
+            }
+
+            function wat() {}
+            """)
+        self.write_load_config('foo_4.php')
+
+        self.check_cmd_and_json_cmd(['Rewrote 1 files.'],
+                ['[{{"filename":"{root}foo_4.php","patches":[{{'
+                '"char_start":134,"char_end":137,"line":8,"col_start":22,'
+                '"col_end":24,"patch_type":"replace","replacement":"woah"}},'
+                '{{"char_start":63,"char_end":66,"line":4,"col_start":17,'
+                '"col_end":19,"patch_type":"replace","replacement":"woah"}}]'
+                '}}]'],
+                options=['--refactor', 'Function', 'wat', 'woah'])
+        self.check_cmd_and_json_cmd(['Rewrote 2 files.'],
+                ['[{{"filename":"{root}foo_4.php","patches":[{{'
+                '"char_start":94,"char_end":95,"line":5,"col_start":24,'
+                '"col_end":24,"patch_type":"replace","replacement":"fff"}}]}},'
+                '{{"filename":"{root}foo_1.php","patches":[{{'
+                '"char_start":31,"char_end":32,"line":3,"col_start":18,'
+                '"col_end":18,"patch_type":"replace","replacement":"fff"}}]'
+                '}}]'],
+                options=['--refactor', 'Function', 'f', 'fff'])
+
+        with open(os.path.join(self.repo_dir, 'foo_4.php')) as f:
+            out = f.read()
+            self.assertEqual(out, """
+            <?hh
+            function wow() {
+                woah();
+                return fff();
+            }
+
+            function woah() {}
+            """)
+
+        with open(os.path.join(self.repo_dir, 'foo_1.php')) as f:
+            out = f.read()
+            self.assertEqual(out, """
+        <?hh
+        function fff() {
+            return g() + 1;
+        }
+""")

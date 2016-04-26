@@ -126,31 +126,6 @@ enum InstrFlags {
   CF_FF = (CF | FF)
 };
 
-enum MInstrAttr {
-  MIA_none         = 0x00,
-  MIA_warn         = 0x01,
-  MIA_define       = 0x02,
-  MIA_reffy        = 0x04,
-  MIA_unset        = 0x08,
-  MIA_new          = 0x10,
-  MIA_final_get    = 0x20,
-  MIA_base         = MIA_warn | MIA_define,
-  MIA_intermediate = MIA_warn | MIA_define | MIA_reffy | MIA_unset,
-  MIA_intermediate_prop = MIA_warn | MIA_define | MIA_unset,
-  MIA_final        = MIA_new | MIA_final_get,
-
-  // Some warnings may conditionally be built for Zend compatibility,
-  // but are off by default.
-  MIA_more_warn =
-#ifdef HHVM_MORE_WARNINGS
-    MIA_warn
-#else
-    MIA_none
-#endif
-};
-
-std::string show(MInstrAttr);
-
 #define INCDEC_OPS    \
   INCDEC_OP(PreInc)   \
   INCDEC_OP(PostInc)  \
@@ -312,8 +287,7 @@ enum class SwitchKind : uint8_t {
   FLAG(Warn,       (1 << 0))                       \
   FLAG(Define,     (1 << 1))                       \
   FLAG(Unset,      (1 << 2))                       \
-  FLAG(DefineReffy,(Define | (1 << 3)))            \
-  FLAG(WarnDefine, (Warn | Define))
+  FLAG(DefineReffy,(Define | (1 << 3)))
 
 enum class MOpFlags : uint8_t {
 #define FLAG(name, val) name = val,
@@ -325,14 +299,28 @@ inline constexpr bool operator&(MOpFlags a, MOpFlags b) {
   return uint8_t(a) & uint8_t(b);
 }
 
-inline MInstrAttr mOpFlagsToAttr(MOpFlags f) {
+inline MOpFlags dropReffy(MOpFlags f) {
   switch (f) {
-    case MOpFlags::None:        return MIA_none;
-    case MOpFlags::Warn:        return MIA_warn;
-    case MOpFlags::Define:      return MIA_define;
-    case MOpFlags::Unset:       return MIA_unset;
-    case MOpFlags::DefineReffy: return MInstrAttr(MIA_reffy | MIA_define);
-    case MOpFlags::WarnDefine:  return MInstrAttr(MIA_warn | MIA_define);
+    case MOpFlags::None:
+    case MOpFlags::Warn:
+    case MOpFlags::Define:
+    case MOpFlags::Unset:
+      return f;
+    case MOpFlags::DefineReffy:
+      return MOpFlags::Define;
+  }
+  always_assert(false);
+}
+
+inline MOpFlags dropUnset(MOpFlags f) {
+  switch (f) {
+    case MOpFlags::None:
+    case MOpFlags::Warn:
+    case MOpFlags::Define:
+    case MOpFlags::DefineReffy:
+      return f;
+    case MOpFlags::Unset:
+      return MOpFlags::None;
   }
   always_assert(false);
 }
@@ -442,7 +430,7 @@ constexpr int32_t kMaxConcatN = 4;
   O(JmpNS,           ONE(BA),          NOV,             NOV,        CF_TF) \
   O(JmpZ,            ONE(BA),          ONE(CV),         NOV,        CF) \
   O(JmpNZ,           ONE(BA),          ONE(CV),         NOV,        CF) \
-  O(Switch,          THREE(BLA,I64A,OA(SwitchKind)),                    \
+  O(Switch,          THREE(OA(SwitchKind),I64A,BLA),                    \
                                        ONE(CV),         NOV,        CF_TF) \
   O(SSwitch,         ONE(SLA),         ONE(CV),         NOV,        CF_TF) \
   O(RetC,            NA,               ONE(CV),         NOV,        CF_TF) \
@@ -553,7 +541,7 @@ constexpr int32_t kMaxConcatN = 4;
   O(IterFree,        ONE(IA),          NOV,             NOV,        NF) \
   O(MIterFree,       ONE(IA),          NOV,             NOV,        NF) \
   O(CIterFree,       ONE(IA),          NOV,             NOV,        NF) \
-  O(IterBreak,       TWO(ILA,BA),      NOV,             NOV,        CF_TF) \
+  O(IterBreak,       TWO(BA,ILA),      NOV,             NOV,        CF_TF) \
   O(Incl,            NA,               ONE(CV),         ONE(CV),    CF) \
   O(InclOnce,        NA,               ONE(CV),         ONE(CV),    CF) \
   O(Req,             NA,               ONE(CV),         ONE(CV),    CF) \

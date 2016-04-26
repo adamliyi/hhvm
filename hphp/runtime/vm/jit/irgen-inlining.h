@@ -16,20 +16,25 @@
 #ifndef incl_HPHP_JIT_IRGEN_INLINING_H_
 #define incl_HPHP_JIT_IRGEN_INLINING_H_
 
-namespace HPHP { namespace jit {
-struct IRGS;
-struct Type;
-}}
-
 namespace HPHP { namespace jit { namespace irgen {
 
-//////////////////////////////////////////////////////////////////////
+struct IRGS;
 
-void endInlining(IRGS&);
-void endInlinedCommon(IRGS&);
+///////////////////////////////////////////////////////////////////////////////
+
+/*
+ * Return control from an inlined callee to the caller.
+ *
+ * This also does bookkeeping for `env' to pop the current inlined frame.
+ */
+void implInlineReturn(IRGS& env);
+
+/*
+ * Emit a return from an inlined function.
+ */
 void retFromInlined(IRGS&);
 
-//////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 
 }}}
 

@@ -23,6 +23,7 @@
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/hhbc.h"
 #include "hphp/runtime/vm/jit/irgen.h"
+#include "hphp/runtime/vm/jit/location.h"
 #include "hphp/runtime/vm/jit/normalized-instruction.h"
 #include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/region-selection.h"
@@ -233,17 +234,6 @@ bool isInlinableCPPBuiltin(const Func* f) {
   if (f->returnType() == KindOfDouble &&
       !Native::allowFCallBuiltinDoubles()) {
     return false;
-  }
-
-  if (auto const info = f->methInfo()) {
-    if (info->attribute & (ClassInfo::NoFCallBuiltin |
-                           ClassInfo::VariableArguments |
-                           ClassInfo::RefVariableArguments)) {
-      return false;
-    }
-    // Note: there is no need for a similar-to-the-above check for HNI
-    // builtins---they'll just have a nullptr nativeFuncPtr (if they were
-    // declared as needing an ActRec).
   }
 
   // For now, don't inline when we'd need to adjust ObjectData pointers.
@@ -479,13 +469,13 @@ RegionDescPtr selectCalleeTracelet(const Func* callee,
   for (uint32_t i = 0; i < numArgs; ++i) {
     auto type = argTypes[i];
     assertx((type <= TGen) || (type <= TCls));
-    ctx.liveTypes.push_back({RegionDesc::Location::Local{i}, type});
+    ctx.liveTypes.push_back({Location::Local{i}, type});
   }
 
   for (unsigned i = numArgs; i < numParams; ++i) {
     // These locals will be populated by DV init funclets but they'll start out
     // as Uninit.
-    ctx.liveTypes.push_back({RegionDesc::Location::Local{i}, TUninit});
+    ctx.liveTypes.push_back({Location::Local{i}, TUninit});
   }
 
   // Produce a tracelet for the callee.
@@ -494,8 +484,6 @@ RegionDescPtr selectCalleeTracelet(const Func* callee,
 
 TransID findTransIDForCallee(const Func* callee, const int numArgs,
                              std::vector<Type>& argTypes) {
-  using LTag = RegionDesc::Location::Tag;
-
   auto const profData = mcg->tx().profData();
   auto const idvec = profData->funcProfTransIDs(callee->getFuncId());
 
@@ -550,7 +538,7 @@ RegionDescPtr selectCalleeCFG(const Func* callee, const int numArgs,
 
 RegionDescPtr selectCalleeRegion(const SrcKey& sk,
                                  const Func* callee,
-                                 const IRGS& irgs,
+                                 const irgen::IRGS& irgs,
                                  InliningDecider& inl,
                                  int32_t maxBCInstrs) {
   auto const op = sk.pc();
@@ -560,11 +548,13 @@ RegionDescPtr selectCalleeRegion(const SrcKey& sk,
   for (int i = numArgs - 1; i >= 0; --i) {
     // DataTypeGeneric is used because we're just passing the locals into the
     // callee.  It's up to the callee to constrain further if needed.
-    auto type = irgen::publicTopType(irgs, BCSPOffset{i});
+    auto type = irgen::publicTopType(irgs, BCSPRelOffset{i});
 
-    // If we don't have sufficient type information to inline the region
-    // return early
-    if (!(type <= TGen) && !(type <= TCls)) return nullptr;
+    // If we don't have sufficient type information to inline the region return
+    // early
+    if (!(type <= TCell) && !(type <= TBoxedCell) && !(type <= TCls)) {
+      return nullptr;
+    }
     argTypes.push_back(type);
   }
 

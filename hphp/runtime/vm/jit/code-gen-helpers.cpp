@@ -104,6 +104,64 @@ Vreg zeroExtendIfBool(Vout& v, const SSATmp* src, Vreg reg) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+void storeTV(Vout& v, Vptr dst, Vloc loc, const SSATmp* src) {
+  auto const type = src->type();
+
+  if (loc.isFullSIMD()) {
+    // The whole TV is stored in a single SIMD reg.
+    assertx(RuntimeOption::EvalHHIRAllocSIMDRegs);
+    v << storeups{loc.reg(), dst};
+    return;
+  }
+
+  if (type.needsReg()) {
+    assertx(loc.hasReg(1));
+    v << storeb{loc.reg(1), dst + TVOFF(m_type)};
+  } else {
+    v << storeb{v.cns(type.toDataType()), dst + TVOFF(m_type)};
+  }
+
+  // We ignore the values of statically nullish types.
+  if (src->isA(TNull) || src->isA(TNullptr)) return;
+
+  // Store the value.
+  if (src->hasConstVal()) {
+    // Skip potential zero-extend if we know the value.
+    v << store{v.cns(src->rawVal()), dst + TVOFF(m_data)};
+  } else {
+    assertx(loc.hasReg(0));
+    auto const extended = zeroExtendIfBool(v, src, loc.reg(0));
+    v << store{extended, dst + TVOFF(m_data)};
+  }
+}
+
+void loadTV(Vout& v, const SSATmp* dst, Vloc loc, Vptr src,
+            bool aux /* = false */) {
+  auto const type = dst->type();
+
+  if (loc.isFullSIMD()) {
+    // The whole TV is loaded into a single SIMD reg.
+    assertx(RuntimeOption::EvalHHIRAllocSIMDRegs);
+    v << loadups{src, loc.reg()};
+    return;
+  }
+
+  if (type.needsReg()) {
+    assertx(loc.hasReg(1));
+    if (aux) {
+      v << load{src + TVOFF(m_type), loc.reg(1)};
+    } else {
+      v << loadb{src + TVOFF(m_type), loc.reg(1)};
+    }
+  }
+
+  if (type <= TBool) {
+    v << loadtqb{src + TVOFF(m_data), loc.reg(0)};
+  } else {
+    v << load{src + TVOFF(m_data), loc.reg(0)};
+  }
+}
+
 void copyTV(Vout& v, Vloc src, Vloc dst, Type destType) {
   auto src_arity = src.numAllocated();
   auto dst_arity = dst.numAllocated();
@@ -217,7 +275,7 @@ void emitCall(Vout& v, CallSpec target, RegSet args) {
       // this movzbq is only needed because callers aren't required to
       // zero-extend the type.
       auto zextType = v.makeReg();
-      v << movzbq{target.reg(), zextType};
+      v << movzbl{target.reg(), zextType};
       auto dtor_ptr = lookupDestructor(v, zextType);
       v << callm{dtor_ptr, args};
     } return;
@@ -236,7 +294,9 @@ Vptr lookupDestructor(Vout& v, Vreg type) {
     "segment, with addresses less than 2^31"
   );
   auto index = v.makeReg();
-  v << shrli{kShiftDataTypeToDestrIndex, type, index, v.makeReg()};
+  auto indexl = v.makeReg();
+  v << shrli{kShiftDataTypeToDestrIndex, type, indexl, v.makeReg()};
+  v << movzlq{indexl, index};
   return baseless(index * 8 + safe_cast<int>(table));
 }
 
@@ -283,7 +343,11 @@ void emitCmpClass(Vout& v, Vreg sf, Vreg reg1, Vreg reg2) {
   if (size == 8) {
     v << cmpq{reg1, reg2, sf};
   } else if (size == 4) {
-    v << cmpl{reg1, reg2, sf};
+    auto const l1 = v.makeReg();
+    auto const l2 = v.makeReg();
+    v << movtql{reg1, l1};
+    v << movtql{reg2, l2};
+    v << cmpl{l1, l2, sf};
   } else {
     not_implemented();
   }

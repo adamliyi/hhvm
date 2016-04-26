@@ -20,12 +20,14 @@
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/base/mixed-array.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
 #include "hphp/runtime/ext/asio/ext_waitable-wait-handle.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // class AwaitAllWaitHandle
+
+struct BaseMap;
+struct BaseVector;
 
 /**
  * A wait handle that waits for a list of wait handles. The wait handle succeeds
@@ -50,7 +52,11 @@ struct c_AwaitAllWaitHandle final : c_WaitableWaitHandle {
     , m_cap(cap)
     , m_unfinished(cap - 1)
   {}
-  ~c_AwaitAllWaitHandle() {}
+  ~c_AwaitAllWaitHandle() {
+    for (int32_t i = 0; i < m_cap; i++) {
+      decRefObj(m_children[i].m_child);
+    }
+  }
 
  public:
   class Node final {
@@ -60,7 +66,7 @@ struct c_AwaitAllWaitHandle final : c_WaitableWaitHandle {
     }
 
     uint32_t getChildIdx() {
-      return m_blockable.getExtraData();
+      return m_index;
     }
 
     inline c_AwaitAllWaitHandle* getWaitHandle() {
@@ -79,6 +85,7 @@ struct c_AwaitAllWaitHandle final : c_WaitableWaitHandle {
 
     AsioBlockable m_blockable;
     c_WaitableWaitHandle* m_child;
+    uint32_t m_index;
   };
 
   static constexpr ptrdiff_t childrenOff() {
@@ -117,7 +124,6 @@ struct c_AwaitAllWaitHandle final : c_WaitableWaitHandle {
   friend Object HHVM_STATIC_METHOD(AwaitAllWaitHandle, fromVector,
                           const Variant& dependencies);
  private:
-  static constexpr uint32_t kMaxNodes = AsioBlockable::kExtraInfoMax + 1;
   uint32_t const m_cap; // how many children we have room for.
   uint32_t m_unfinished; // index of the first unfinished child
   Node m_children[0]; // allocated off the end

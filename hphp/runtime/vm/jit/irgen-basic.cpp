@@ -19,7 +19,6 @@
 
 #include "hphp/runtime/vm/jit/irgen-interpone.h"
 #include "hphp/runtime/vm/jit/irgen-exit.h"
-#include "hphp/runtime/vm/jit/irgen-guards.h"
 #include "hphp/runtime/vm/jit/irgen-internal.h"
 
 namespace HPHP { namespace jit { namespace irgen {
@@ -418,10 +417,10 @@ void emitNullUninit(IRGS& env) { push(env, cns(env, TUninit)); }
 
 void emitNop(IRGS&)                {}
 void emitBoxRNop(IRGS& env) {
-  assertTypeStack(env, BCSPOffset{0}, TBoxedCell);
+  assertTypeStack(env, BCSPRelOffset{0}, TBoxedCell);
 }
 void emitUnboxRNop(IRGS& env) {
-  assertTypeStack(env, BCSPOffset{0}, TCell);
+  assertTypeStack(env, BCSPRelOffset{0}, TCell);
 }
 void emitRGetCNop(IRGS&)           {}
 void emitFPassC(IRGS&, int32_t)    {}

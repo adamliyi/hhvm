@@ -32,7 +32,10 @@
 #include "hphp/runtime/base/zend-collator.h"
 #include "hphp/runtime/base/zend-sort.h"
 #include "hphp/runtime/ext/generator/ext_generator.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
+#include "hphp/runtime/ext/collections/ext_collections-map.h"
+#include "hphp/runtime/ext/collections/ext_collections-pair.h"
+#include "hphp/runtime/ext/collections/ext_collections-set.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
 #include "hphp/runtime/ext/std/ext_std_function.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
@@ -195,31 +198,36 @@ TypedValue HHVM_FUNCTION(array_count_values,
 Variant HHVM_FUNCTION(array_fill_keys,
                       const Variant& keys,
                       const Variant& value) {
-  const auto& cell_keys = *keys.asCell();
-  if (UNLIKELY(!isContainer(cell_keys))) {
+
+  folly::Optional<ArrayInit> ai;
+  auto ok = IterateV(*keys.asCell(),
+                     [&](ArrayData* adata) {
+                       ai.emplace(adata->size(), ArrayInit::Mixed{});
+                     },
+                     [&](const TypedValue* tv) {
+                       auto& key = tvAsCVarRef(tv);
+                       if (key.isInteger() || key.isString()) {
+                         ai->setUnknownKey(key, value);
+                       } else {
+                         raise_hack_strict(RuntimeOption::StrictArrayFillKeys,
+                                           "strict_array_fill_keys",
+                                           "keys must be ints or strings");
+                         ai->setUnknownKey(key.toString(), value);
+                       }
+                     },
+                     [&](ObjectData* coll) {
+                       if (coll->collectionType() == CollectionType::Pair) {
+                         ai.emplace(2, ArrayInit::Mixed{});
+                       }
+                     });
+
+  if (!ok) {
     raise_warning("Invalid operand type was used: array_fill_keys expects "
                   "an array or collection");
     return init_null();
   }
-
-  auto size = getContainerSize(cell_keys);
-  if (!size) return empty_array();
-
-  ArrayInit ai(size, ArrayInit::Mixed{});
-  for (ArrayIter iter(cell_keys); iter; ++iter) {
-    auto& key = iter.secondRefPlus();
-    // This is intentionally different to the $foo[$invalid_key] coercion.
-    // See tests/slow/ext_array/array_fill_keys_tostring.php for examples.
-    if (LIKELY(key.isInteger() || key.isString())) {
-      ai.setUnknownKey(key, value);
-    } else {
-      raise_hack_strict(RuntimeOption::StrictArrayFillKeys,
-                        "strict_array_fill_keys",
-                        "keys must be ints or strings");
-      ai.setUnknownKey(key.toString(), value);
-    }
-  }
-  return ai.toVariant();
+  assert(ai.hasValue());
+  return ai->toVariant();
 }
 
 Variant HHVM_FUNCTION(array_fill,
@@ -778,18 +786,18 @@ Variant HHVM_FUNCTION(array_push,
         case CollectionType::Vector: {
           c_Vector* vec = static_cast<c_Vector*>(obj);
           vec->reserve(vec->size() + args.size() + 1);
-          vec->t_add(var);
+          vec->add(var);
           for (ArrayIter iter(args); iter; ++iter) {
-            vec->t_add(iter.second());
+            vec->add(iter.second());
           }
           return vec->size();
         }
         case CollectionType::Set: {
           c_Set* set = static_cast<c_Set*>(obj);
           set->reserve(set->size() + args.size() + 1);
-          set->t_add(var);
+          set->add(var);
           for (ArrayIter iter(args); iter; ++iter) {
-            set->t_add(iter.second());
+            set->add(iter.second());
           }
           return set->size();
         }
@@ -1103,17 +1111,28 @@ Variant HHVM_FUNCTION(array_unshift,
 
 Variant HHVM_FUNCTION(array_values,
                       const Variant& input) {
-  const auto& cell_input = *input.asCell();
-  if (!isContainer(cell_input)) {
+
+  folly::Optional<PackedArrayInit> ai;
+  auto ok = IterateV(*input.asCell(),
+                     [&](ArrayData* adata) {
+                       ai.emplace(adata->size());
+                     },
+                     [&](const TypedValue* tv) {
+                       ai->appendWithRef(tvAsCVarRef(tv));
+                     },
+                     [&](ObjectData* coll) {
+                       if (coll->collectionType() == CollectionType::Pair) {
+                         ai.emplace(2);
+                       }
+                     });
+
+  if (!ok) {
     raise_warning("array_values() expects parameter 1 to be an array "
                   "or collection");
     return init_null();
   }
-  PackedArrayInit ai(getContainerSize(cell_input));
-  for (ArrayIter iter(cell_input); iter; ++iter) {
-    ai.appendWithRef(iter.secondRefPlus());
-  }
-  return ai.toVariant();
+  assert(ai.hasValue());
+  return ai->toVariant();
 }
 
 static void walk_func(Variant& value,
@@ -1409,56 +1428,70 @@ bool HHVM_FUNCTION(in_array,
                    const Variant& needle,
                    const Variant& haystack,
                    bool strict /* = false */) {
-  const auto& cell_haystack = *haystack.asCell();
-  if (UNLIKELY(!isContainer(cell_haystack))) {
+  bool ret = false;
+  auto ok = strict ?
+    IterateV(*haystack.asCell(),
+             [](ArrayData*) { return false; },
+             [&](const TypedValue* tv) -> bool {
+               if (HPHP::same(tvAsCVarRef(tv), needle)) {
+                 ret = true;
+                 return true;
+               }
+               return false;
+             },
+             [](ObjectData*) { return false; }) :
+    IterateV(*haystack.asCell(),
+             [](ArrayData*) { return false; },
+             [&](const TypedValue* tv) -> bool {
+               if (HPHP::equal(tvAsCVarRef(tv), needle)) {
+                 ret = true;
+                 return true;
+               }
+               return false;
+             },
+             [](ObjectData*) { return false; });
+
+  if (UNLIKELY(!ok)) {
     raise_warning("in_array() expects parameter 2 to be an array "
                   "or collection");
-    return false;
   }
-
-  ArrayIter iter(cell_haystack);
-  if (strict) {
-    for (; iter; ++iter) {
-      if (HPHP::same(iter.secondRefPlus(), needle)) {
-        return true;
-      }
-    }
-  } else {
-    for (; iter; ++iter) {
-      if (HPHP::equal(iter.secondRefPlus(), needle)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return ret;
 }
 
 Variant HHVM_FUNCTION(array_search,
                       const Variant& needle,
                       const Variant& haystack,
                       bool strict /* = false */) {
-  const auto& cell_haystack = *haystack.asCell();
-  if (UNLIKELY(!isContainer(cell_haystack))) {
+  Variant ret = false;
+  auto ok = strict ?
+    IterateKV(*haystack.asCell(),
+              [](ArrayData*) { return false; },
+              [&](const TypedValue* key, const TypedValue* tv) -> bool {
+                if (HPHP::same(tvAsCVarRef(tv), needle)) {
+                  ret = tvAsCVarRef(key);
+                  return true;
+                }
+                return false;
+              },
+              [](ObjectData*) { return false; }) :
+    IterateKV(*haystack.asCell(),
+              [](ArrayData*) { return false; },
+              [&](const TypedValue* key, const TypedValue* tv) -> bool {
+                if (HPHP::equal(tvAsCVarRef(tv), needle)) {
+                  ret = tvAsCVarRef(key);
+                  return true;
+                }
+                return false;
+              },
+              [](ObjectData*) { return false; });
+
+  if (UNLIKELY(!ok)) {
     raise_warning("array_search() expects parameter 2 to be an array "
                   "or collection");
     return init_null();
   }
 
-  ArrayIter iter(cell_haystack);
-  if (strict) {
-    for (; iter; ++iter) {
-      if (HPHP::same(iter.secondRefPlus(), needle)) {
-        return iter.first();
-      }
-    }
-  } else {
-    for (; iter; ++iter) {
-      if (HPHP::equal(iter.secondRefPlus(), needle)) {
-        return iter.first();
-      }
-    }
-  }
-  return false;
+  return ret;
 }
 
 Variant HHVM_FUNCTION(range,

@@ -44,11 +44,10 @@
 #include "hphp/runtime/base/apc-stats.h"
 #include "hphp/runtime/base/apc-typed-value.h"
 #include "hphp/runtime/base/array-init.h"
-#include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/code-coverage.h"
+#include "hphp/runtime/base/collections.h"
 #include "hphp/runtime/base/container-functions.h"
 #include "hphp/runtime/base/execution-context.h"
-#include "hphp/runtime/base/extended-logger.h"
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/hhprof.h"
 #include "hphp/runtime/base/memory-manager.h"
@@ -68,7 +67,6 @@
 #include "hphp/runtime/base/tv-conversions.h"
 #include "hphp/runtime/base/unit-cache.h"
 
-#include "hphp/runtime/ext/apc/ext_apc.h"
 #include "hphp/runtime/ext/array/ext_array.h"
 #include "hphp/runtime/ext/asio/ext_async-function-wait-handle.h"
 #include "hphp/runtime/ext/asio/ext_async-generator-wait-handle.h"
@@ -76,7 +74,6 @@
 #include "hphp/runtime/ext/asio/ext_static-wait-handle.h"
 #include "hphp/runtime/ext/asio/ext_wait-handle.h"
 #include "hphp/runtime/ext/asio/ext_waitable-wait-handle.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
 #include "hphp/runtime/ext/std/ext_std_closure.h"
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/ext/generator/ext_generator.h"
@@ -101,6 +98,7 @@
 #include "hphp/runtime/vm/hh-utils.h"
 #include "hphp/runtime/vm/hhbc-codec.h"
 #include "hphp/runtime/vm/hhbc.h"
+#include "hphp/runtime/vm/interp-helpers.h"
 #include "hphp/runtime/vm/member-operations.h"
 #include "hphp/runtime/vm/native.h"
 #include "hphp/runtime/vm/php-debug.h"
@@ -109,7 +107,6 @@
 #include "hphp/runtime/vm/resumable.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/srckey.h"
-#include "hphp/runtime/vm/treadmill.h"
 #include "hphp/runtime/vm/type-constraint.h"
 #include "hphp/runtime/vm/type-profile.h"
 #include "hphp/runtime/vm/unwind.h"
@@ -123,6 +120,8 @@
 
 
 namespace HPHP {
+
+TRACE_SET_MOD(bcinterp);
 
 // TODO: #1746957, #1756122
 // we should skip the call in call_user_func_array, if
@@ -139,14 +138,15 @@ using jit::mcg;
 using jit::TCA;
 
 #define IOP_ARGS        PC& pc
-#if DEBUG
+// GCC 4.8 has some real problems with all the inlining in this file, so don't
+// go overboard with that version.
+#if DEBUG || ((__GNUC__ == 4) && (__GNUC_MINOR__ == 8))
 #define OPTBLD_INLINE
 #define OPTBLD_FLT_INLINE
 #else
 #define OPTBLD_INLINE       ALWAYS_INLINE
 #define OPTBLD_FLT_INLINE   INLINE_FLATTEN
 #endif
-TRACE_SET_MOD(bcinterp);
 
 bool isVMFrame(const ActRec* ar) {
   assert(ar);
@@ -192,7 +192,6 @@ void frame_free_locals_no_hook(ActRec* fp) {
 
 const StaticString s_call_user_func("call_user_func");
 const StaticString s_call_user_func_array("call_user_func_array");
-const StaticString s_stdclass("stdclass");
 const StaticString s___call("__call");
 const StaticString s___callStatic("__callStatic");
 const StaticString s_file("file");
@@ -290,15 +289,10 @@ static inline Class* frameStaticClass(ActRec* fp) {
   }
 }
 
-static Offset pcOff() {
-  return vmfp()->m_func->unit()->offsetOf(vmpc());
-}
-
 //=============================================================================
 // VarEnv.
 
 const StaticString s_GLOBALS("GLOBALS");
-
 
 void VarEnv::createGlobal() {
   assert(!g_context->m_globalVarEnv);
@@ -498,7 +492,13 @@ ExtraArgs::~ExtraArgs() {}
 
 void* ExtraArgs::allocMem(unsigned nargs) {
   assert(nargs > 0);
-  return req::malloc(sizeof(TypedValue) * nargs + sizeof(ExtraArgs));
+  return req::malloc(
+    sizeof(TypedValue) * nargs + sizeof(ExtraArgs),
+    type_scan::getIndexForMalloc<
+      ExtraArgs,
+      type_scan::Action::WithSuffix<TypedValue>
+    >()
+  );
 }
 
 ExtraArgs* ExtraArgs::allocateCopy(TypedValue* args, unsigned nargs) {
@@ -858,7 +858,7 @@ static void toStringFrame(std::ostream& os, const ActRec* fp,
     }
   }
 
-  assert(!func->methInfo() || func->numIterators() == 0);
+  assert(func->numIterators() == 0);
   if (func->numIterators() > 0) {
     os << "|";
     Iter* it = &((Iter*)&tv[1])[-1];
@@ -971,477 +971,6 @@ TypedValue* Stack::resumableStackBase(const ActRec* fp) {
   }
 }
 
-// In PHP7 the caller specifies if parameter type-checking is strict in the
-// callee. NB: HH files ignore this preference and always use strict checking,
-// except in systemlib. Calls originating in systemlib are always strict.
-namespace {
-bool callUsesStrictTypes() {
-  if (RuntimeOption::EnableHipHopSyntax || !RuntimeOption::PHP7_ScalarTypes) {
-    return true;
-  }
-  if (!vmfp()) {
-    return true;
-  }
-  auto func = vmfp()->func();
-  auto unit = func->unit();
-  return func->isBuiltin() || unit->useStrictTypes();
-}
-
-bool builtinCallUsesStrictTypes(const Unit* caller) {
-  if (!RuntimeOption::PHP7_ScalarTypes || RuntimeOption::EnableHipHopSyntax) {
-    return false;
-  }
-  return caller->useStrictTypes() && !caller->isHHFile();
-}
-
-void setTypesFlag(ActRec* ar) {
-  if (!callUsesStrictTypes()) ar->setUseWeakTypes();
-}
-}
-
-//=============================================================================
-// ExecutionContext.
-
-ActRec* ExecutionContext::getOuterVMFrame(const ActRec* ar) {
-  ActRec* sfp = ar->sfp();
-  if (LIKELY(sfp != nullptr)) return sfp;
-  return LIKELY(!m_nestedVMs.empty()) ? m_nestedVMs.back().fp : nullptr;
-}
-
-Cell ExecutionContext::lookupClsCns(const NamedEntity* ne,
-                                      const StringData* cls,
-                                      const StringData* cns) {
-  Class* class_ = nullptr;
-  try {
-    class_ = Unit::loadClass(ne, cls);
-  } catch (Object& ex) {
-    // For compatibility with php, throwing through a constant lookup has
-    // different behavior inside a property initializer (86pinit/86sinit).
-    auto ar = getStackFrame();
-    if (ar && ar->func() && Func::isSpecial(ar->func()->name())) {
-      raise_warning("Uncaught %s", ex.toString().data());
-      raise_error("Couldn't find constant %s::%s", cls->data(), cns->data());
-    }
-    throw;
-  }
-  if (class_ == nullptr) {
-    raise_error(Strings::UNKNOWN_CLASS, cls->data());
-  }
-  Cell clsCns = class_->clsCnsGet(cns);
-  if (clsCns.m_type == KindOfUninit) {
-    raise_error("Couldn't find constant %s::%s", cls->data(), cns->data());
-  }
-  return clsCns;
-}
-
-Cell ExecutionContext::lookupClsCns(const StringData* cls,
-                                      const StringData* cns) {
-  return lookupClsCns(NamedEntity::get(cls), cls, cns);
-}
-
-// Look up the method specified by methodName from the class specified by cls
-// and enforce accessibility. Accessibility checks depend on the relationship
-// between the class that first declared the method (baseClass) and the context
-// class (ctx).
-//
-// If there are multiple accessible methods with the specified name declared in
-// cls and ancestors of cls, the method from the most derived class will be
-// returned, except if we are doing an ObjMethod call ("$obj->foo()") and there
-// is an accessible private method, in which case the accessible private method
-// will be returned.
-//
-// Accessibility rules:
-//
-//   | baseClass/ctx relationship | public | protected | private |
-//   +----------------------------+--------+-----------+---------+
-//   | anon/unrelated             | yes    | no        | no      |
-//   | baseClass == ctx           | yes    | yes       | yes     |
-//   | baseClass derived from ctx | yes    | yes       | no      |
-//   | ctx derived from baseClass | yes    | yes       | no      |
-//   +----------------------------+--------+-----------+---------+
-
-const StaticString s_construct("__construct");
-
-const Func* ExecutionContext::lookupMethodCtx(const Class* cls,
-                                              const StringData* methodName,
-                                              const Class* ctx,
-                                              CallType callType,
-                                              bool raise /* = false */) {
-  const Func* method;
-  if (callType == CallType::CtorMethod) {
-    assert(methodName == nullptr);
-    method = cls->getCtor();
-  } else {
-    assert(callType == CallType::ObjMethod || callType == CallType::ClsMethod);
-    assert(methodName != nullptr);
-    method = cls->lookupMethod(methodName);
-    while (!method) {
-      if (UNLIKELY(methodName->isame(s_construct.get()))) {
-        // We were looking up __construct and failed to find it. Fall back
-        // to old-style constructor: same as class name.
-        method = cls->getCtor();
-        if (!Func::isSpecial(method->name())) break;
-      }
-      // We didn't find any methods with the specified name in cls's method
-      // table, handle the failure as appropriate.
-      if (raise) {
-        raise_error("Call to undefined method %s::%s()",
-                    cls->name()->data(),
-                    methodName->data());
-      }
-      return nullptr;
-    }
-  }
-  assert(method);
-  bool accessible = true;
-  // If we found a protected or private method, we need to do some
-  // accessibility checks.
-  if ((method->attrs() & (AttrProtected|AttrPrivate)) &&
-      !g_context->debuggerSettings.bypassCheck) {
-    Class* baseClass = method->baseCls();
-    assert(baseClass);
-    // If ctx is the class that first declared this method, then we know we
-    // have the right method and we can stop here.
-    if (ctx == baseClass) {
-      return method;
-    }
-    // The invalid context cannot access protected or private methods,
-    // so we can fail fast here.
-    if (ctx == nullptr) {
-      if (raise) {
-        raise_error("Call to %s %s::%s() from invalid context",
-                    (method->attrs() & AttrPrivate) ? "private" : "protected",
-                    cls->name()->data(),
-                    method->name()->data());
-      }
-      return nullptr;
-    }
-    assert(ctx);
-    if (method->attrs() & AttrPrivate) {
-      // ctx is not the class that declared this private method, so this
-      // private method is not accessible. We need to keep going because
-      // ctx might define a private method with this name.
-      accessible = false;
-    } else {
-      // If ctx is derived from the class that first declared this protected
-      // method, then we know this method is accessible and thus (due to
-      // semantic checks) we know ctx cannot have a private method with the
-      // same name, so we're done.
-      if (ctx->classof(baseClass)) {
-        return method;
-      }
-      if (!baseClass->classof(ctx)) {
-        // ctx is not related to the class that first declared this protected
-        // method, so this method is not accessible. Because ctx is not the
-        // same or an ancestor of the class which first declared the method,
-        // we know that ctx not the same or an ancestor of cls, and therefore
-        // we don't need to check if ctx declares a private method with this
-        // name, so we can fail fast here.
-        if (raise) {
-          raise_error("Call to protected method %s::%s() from context '%s'",
-                      cls->name()->data(),
-                      method->name()->data(),
-                      ctx->name()->data());
-        }
-        return nullptr;
-      }
-      // We now know this protected method is accessible, but we need to
-      // keep going because ctx may define a private method with this name.
-      assert(accessible && baseClass->classof(ctx));
-    }
-  }
-  // If this is an ObjMethod call ("$obj->foo()") AND there is an ancestor
-  // of cls that declares a private method with this name AND ctx is an
-  // ancestor of cls, we need to check if ctx declares a private method with
-  // this name.
-  if (method->hasPrivateAncestor() && callType == CallType::ObjMethod &&
-      ctx && cls->classof(ctx)) {
-    const Func* ctxMethod = ctx->lookupMethod(methodName);
-    if (ctxMethod && ctxMethod->cls() == ctx &&
-        (ctxMethod->attrs() & AttrPrivate)) {
-      // For ObjMethod calls, a private method declared by ctx trumps
-      // any other method we may have found.
-      return ctxMethod;
-    }
-  }
-  // If we found an accessible method in cls's method table, return it.
-  if (accessible) {
-    return method;
-  }
-  // If we reach here it means we've found an inaccessible private method
-  // in cls's method table, handle the failure as appropriate.
-  if (raise) {
-    raise_error("Call to private method %s::%s() from %s'%s'",
-                method->baseCls()->name()->data(),
-                method->name()->data(),
-                ctx ? "context " : "invalid context",
-                ctx ? ctx->name()->data() : "");
-  }
-  return nullptr;
-}
-
-LookupResult ExecutionContext::lookupObjMethod(const Func*& f,
-                                                 const Class* cls,
-                                                 const StringData* methodName,
-                                                 const Class* ctx,
-                                                 bool raise /* = false */) {
-  f = lookupMethodCtx(cls, methodName, ctx, CallType::ObjMethod, false);
-  if (!f) {
-    f = cls->lookupMethod(s___call.get());
-    if (!f) {
-      if (raise) {
-        // Throw a fatal error
-        lookupMethodCtx(cls, methodName, ctx, CallType::ObjMethod, true);
-      }
-      return LookupResult::MethodNotFound;
-    }
-    return LookupResult::MagicCallFound;
-  }
-  if (f->attrs() & AttrStatic && !f->isClosureBody()) {
-    return LookupResult::MethodFoundNoThis;
-  }
-  return LookupResult::MethodFoundWithThis;
-}
-
-LookupResult
-ExecutionContext::lookupClsMethod(const Func*& f,
-                                    const Class* cls,
-                                    const StringData* methodName,
-                                    ObjectData* obj,
-                                    const Class* ctx,
-                                    bool raise /* = false */) {
-  f = lookupMethodCtx(cls, methodName, ctx, CallType::ClsMethod, false);
-  if (!f) {
-    if (obj && obj->instanceof(cls)) {
-      f = obj->getVMClass()->lookupMethod(s___call.get());
-    }
-    if (!f) {
-      f = cls->lookupMethod(s___callStatic.get());
-      if (!f) {
-        if (raise) {
-          // Throw a fatal error
-          lookupMethodCtx(cls, methodName, ctx, CallType::ClsMethod, true);
-        }
-        return LookupResult::MethodNotFound;
-      }
-      f->validate();
-      assert(f);
-      assert(f->attrs() & AttrStatic);
-      return LookupResult::MagicCallStaticFound;
-    }
-    assert(f);
-    assert(obj);
-    // __call cannot be static, this should be enforced by semantic
-    // checks defClass time or earlier
-    assert(!(f->attrs() & AttrStatic));
-    return LookupResult::MagicCallFound;
-  }
-  if (obj && !(f->attrs() & AttrStatic) && obj->instanceof(cls)) {
-    return LookupResult::MethodFoundWithThis;
-  }
-  return LookupResult::MethodFoundNoThis;
-}
-
-LookupResult ExecutionContext::lookupCtorMethod(const Func*& f,
-                                                const Class* cls,
-                                                bool raise /* = false */) {
-  f = cls->getCtor();
-  if (!(f->attrs() & AttrPublic)) {
-    Class* ctx = arGetContextClass(vmfp());
-    f = lookupMethodCtx(cls, nullptr, ctx, CallType::CtorMethod, raise);
-    if (!f) {
-      // If raise was true than lookupMethodCtx should have thrown,
-      // so we should only be able to get here if raise was false
-      assert(!raise);
-      return LookupResult::MethodNotFound;
-    }
-  }
-  return LookupResult::MethodFoundWithThis;
-}
-
-static Class* loadClass(StringData* clsName) {
-  Class* class_ = Unit::loadClass(clsName);
-  if (class_ == nullptr) {
-    raise_error(Strings::UNKNOWN_CLASS, clsName->data());
-  }
-  return class_;
-}
-
-ObjectData* ExecutionContext::createObject(StringData* clsName,
-                                           const Variant& params,
-                                           bool init /* = true */) {
-  return createObject(loadClass(clsName), params, init);
-}
-
-ObjectData* ExecutionContext::createObject(const Class* class_,
-                                           const Variant& params,
-                                           bool init) {
-  auto o = Object::attach(newInstance(const_cast<Class*>(class_)));
-  if (init) {
-    initObject(class_, params, o.get());
-  }
-
-  return o.detach();
-}
-
-ObjectData* ExecutionContext::createObjectOnly(StringData* clsName) {
-  return createObject(clsName, init_null_variant, false);
-}
-
-ObjectData* ExecutionContext::initObject(StringData* clsName,
-                                         const Variant& params,
-                                         ObjectData* o) {
-  return initObject(loadClass(clsName), params, o);
-}
-
-ObjectData* ExecutionContext::initObject(const Class* class_,
-                                         const Variant& params,
-                                         ObjectData* o) {
-  auto ctor = class_->getCtor();
-  if (!(ctor->attrs() & AttrPublic)) {
-    std::string msg = "Access to non-public constructor of class ";
-    msg += class_->name()->data();
-    Reflection::ThrowReflectionExceptionObject(msg);
-  }
-  // call constructor
-  if (!isContainerOrNull(params)) {
-    throw_param_is_not_container();
-  }
-  TypedValue ret;
-  invokeFunc(&ret, ctor, params, o);
-  tvRefcountedDecRef(&ret);
-  return o;
-}
-
-ActRec* ExecutionContext::getStackFrame() {
-  VMRegAnchor _;
-  return vmfp();
-}
-
-ObjectData* ExecutionContext::getThis() {
-  VMRegAnchor _;
-  ActRec* fp = vmfp();
-  if (fp->skipFrame()) {
-    fp = getPrevVMState(fp);
-    if (!fp) return nullptr;
-  }
-  if (fp->hasThis()) {
-    return fp->getThis();
-  }
-  return nullptr;
-}
-
-Class* ExecutionContext::getContextClass() {
-  VMRegAnchor _;
-  ActRec* ar = vmfp();
-  assert(ar != nullptr);
-  if (ar->skipFrame()) {
-    ar = getPrevVMState(ar);
-    if (!ar) return nullptr;
-  }
-  return ar->m_func->cls();
-}
-
-Class* ExecutionContext::getParentContextClass() {
-  if (Class* ctx = getContextClass()) {
-    return ctx->parent();
-  }
-  return nullptr;
-}
-
-StringData* ExecutionContext::getContainingFileName() {
-  VMRegAnchor _;
-  ActRec* ar = vmfp();
-  if (ar == nullptr) return staticEmptyString();
-  if (ar->skipFrame()) {
-    ar = getPrevVMState(ar);
-    if (ar == nullptr) return staticEmptyString();
-  }
-  Unit* unit = ar->m_func->unit();
-  assert(unit->filepath()->isStatic());
-  // XXX: const StringData* -> Variant(bool) conversion problem makes this ugly
-  return const_cast<StringData*>(unit->filepath());
-}
-
-int ExecutionContext::getLine() {
-  VMRegAnchor _;
-  ActRec* ar = vmfp();
-  Unit* unit = ar ? ar->m_func->unit() : nullptr;
-  Offset pc = unit ? pcOff() : 0;
-  if (ar == nullptr) return -1;
-  if (ar->skipFrame()) {
-    ar = getPrevVMState(ar, &pc);
-  }
-  if (ar == nullptr || (unit = ar->m_func->unit()) == nullptr) return -1;
-  return unit->getLineNumber(pc);
-}
-
-Array ExecutionContext::getCallerInfo() {
-  VMRegAnchor _;
-  Array result = Array::Create();
-  ActRec* ar = vmfp();
-  if (ar->skipFrame()) {
-    ar = getPrevVMState(ar);
-  }
-  while (ar->m_func->name()->isame(s_call_user_func.get())
-         || ar->m_func->name()->isame(s_call_user_func_array.get())) {
-    ar = getPrevVMState(ar);
-    if (ar == nullptr) {
-      return result;
-    }
-  }
-
-  Offset pc = 0;
-  ar = getPrevVMState(ar, &pc);
-  while (ar != nullptr) {
-    if (!ar->m_func->name()->isame(s_call_user_func.get())
-        && !ar->m_func->name()->isame(s_call_user_func_array.get())) {
-      Unit* unit = ar->m_func->unit();
-      int lineNumber;
-      if ((lineNumber = unit->getLineNumber(pc)) != -1) {
-        result.set(s_file, unit->filepath()->data(), true);
-        result.set(s_line, lineNumber);
-        return result;
-      }
-    }
-    ar = getPrevVMState(ar, &pc);
-  }
-  return result;
-}
-
-int64_t ExecutionContext::getDebugBacktraceHash() {
-  VMRegAnchor _;
-  ActRec* ar = vmfp();
-  int64_t hash = 0x9e3779b9;
-  Unit* prev_unit = nullptr;
-
-  while (ar != nullptr) {
-    if (!ar->skipFrame()) {
-      Unit* unit = ar->m_func->unit();
-
-      // Only do a filehash if the file changed. It is very common
-      // to see sequences of calls within the same file
-      // File paths are already hashed, and the hash bits are random enough
-      // That allows us to do a faster combination of hashes using a known
-      // implementation (boost::hash_combine)
-      if (prev_unit != unit) {
-        prev_unit = unit;
-        auto filehash = unit->filepath()->hash();
-        hash ^= filehash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-      }
-
-      // Function names are already hashed, and the hash bits are random enough
-      // That allows us to do a faster combination of hashes using a known
-      // implementation (boost::hash_combine)
-      auto funchash = ar->m_func->fullName()->hash();
-      hash ^= funchash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-    }
-    ar = getPrevVMState(ar);
-  }
-
-  return hash;
-}
-
 Array getDefinedVariables(const ActRec* fp) {
   if ((fp->func()->attrs() & AttrMayUseVV) && fp->hasVarEnv()) {
     return fp->m_varEnv->getDefinedVariables();
@@ -1458,76 +987,6 @@ Array getDefinedVariables(const ActRec* fp) {
     ret.add(name, tvAsVariant(ptv));
   }
   return ret.toArray();
-}
-
-ActRec* ExecutionContext::getFrameAtDepth(int frame) {
-  VMRegAnchor _;
-  auto fp = vmfp();
-  if (UNLIKELY(!fp)) return nullptr;
-  auto pc = fp->func()->unit()->offsetOf(vmpc());
-  for (; frame > 0; --frame) {
-    fp = getPrevVMState(fp, &pc);
-    if (UNLIKELY(!fp)) return nullptr;
-  }
-  if (fp->skipFrame()) {
-    fp = getPrevVMState(fp, &pc);
-  }
-  if (UNLIKELY(!fp || fp->localsDecRefd())) return nullptr;
-  auto const curOp = fp->func()->unit()->getOp(pc);
-  if (UNLIKELY(curOp == Op::RetC || curOp == Op::RetV ||
-               curOp == Op::CreateCont || curOp == Op::Await)) {
-    return nullptr;
-  }
-  assert(!fp->magicDispatch());
-  return fp;
-}
-
-VarEnv* ExecutionContext::getOrCreateVarEnv(int frame) {
-  auto const fp = getFrameAtDepth(frame);
-  if (!fp || !(fp->func()->attrs() & AttrMayUseVV)) {
-    raise_error("Could not create variable environment");
-  }
-  if (!fp->hasVarEnv()) {
-    fp->setVarEnv(VarEnv::createLocal(fp));
-  }
-  return fp->getVarEnv();
-}
-
-VarEnv* ExecutionContext::hasVarEnv(int frame) {
-  auto const fp = getFrameAtDepth(frame);
-  if (fp && (fp->func()->attrs() & AttrMayUseVV)) {
-    if (fp->hasVarEnv()) return fp->getVarEnv();
-  }
-  return nullptr;
-}
-
-void ExecutionContext::setVar(StringData* name, const TypedValue* v) {
-  VMRegAnchor _;
-  ActRec *fp = vmfp();
-  if (!fp) return;
-  if (fp->skipFrame()) fp = getPrevVMState(fp);
-  fp->getVarEnv()->set(name, v);
-}
-
-void ExecutionContext::bindVar(StringData* name, TypedValue* v) {
-  VMRegAnchor _;
-  ActRec *fp = vmfp();
-  if (!fp) return;
-  if (fp->skipFrame()) fp = getPrevVMState(fp);
-  fp->getVarEnv()->bind(name, v);
-}
-
-Array ExecutionContext::getLocalDefinedVariables(int frame) {
-  VMRegAnchor _;
-  ActRec *fp = vmfp();
-  for (; frame > 0; --frame) {
-    if (!fp) break;
-    fp = getPrevVMState(fp);
-  }
-  if (!fp) {
-    return empty_array();
-  }
-  return getDefinedVariables(fp);
 }
 
 NEVER_INLINE
@@ -1613,47 +1072,6 @@ static void shuffleMagicArgs(ActRec* ar) {
 
   ar->setNumArgs(2);
   ar->setVarEnv(nullptr);
-}
-
-/*
- * This helper only does a stack overflow check for the native stack.
- *
- * Both native and VM stack overflows are independently possible.
- */
-static inline void checkNativeStack() {
-  // Check whether we're going out of bounds of our native stack.
-  if (LIKELY(stack_in_bounds())) return;
-
-  TRACE(1, "Maximum stack depth exceeded.\n");
-  raise_error("Stack overflow");
-}
-
-/*
- * This helper does a stack overflow check on *both* the native stack
- * and the VM stack.
- *
- * In some cases for re-entry, we're checking for space other than
- * just the callee, and `extraCells' may need to be passed with a
- * non-zero value.  (We over-check in these situations, but it's fine.)
- */
-ALWAYS_INLINE
-static void checkStack(Stack& stk, const Func* f, int32_t extraCells) {
-  assert(f);
-
-  /*
-   * Check whether func's maximum stack usage would overflow the stack.
-   * Both native and VM stack overflows are independently possible.
-   *
-   * All stack checks are inflated by kStackCheckPadding to ensure
-   * there is space both for calling leaf functions /and/ for
-   * re-entry.  (See kStackCheckReenterPadding and
-   * kStackCheckLeafPadding.)
-   */
-  auto limit = f->maxStackCells() + kStackCheckPadding + extraCells;
-  if (LIKELY(stack_in_bounds() && !stk.wouldOverflow(limit))) return;
-
-  TRACE(1, "Maximum stack depth exceeded.\n");
-  raise_error("Stack overflow");
 }
 
 // This helper is meant to be called if an exception or invalidation takes
@@ -1749,11 +1167,9 @@ static NEVER_INLINE void shuffleMagicArrayArgs(ActRec* ar, const Cell args,
 // contents of args are to be added; for call_user_func_array, this is
 // always 0; for unpacked arguments, it may be greater if normally passed
 // params precede the unpack.
-static bool prepareArrayArgs(ActRec* ar, const Cell args,
-                             Stack& stack,
-                             int nregular,
-                             bool doCufRefParamChecks,
-                             TypedValue* retval) {
+bool prepareArrayArgs(ActRec* ar, const Cell args, Stack& stack,
+                      int nregular, bool doCufRefParamChecks,
+                      TypedValue* retval) {
   assert(!cellIsNull(&args));
   assert(nregular >= 0);
   assert((stack.top() + nregular) == (void*) ar);
@@ -1914,14 +1330,6 @@ static bool prepareArrayArgs(ActRec* ar, const Cell args,
   return true;
 }
 
-enum class StackArgsState { // tells prepareFuncEntry how much work to do
-  // the stack may contain more arguments than the function expects
-  Untrimmed,
-  // the stack has already been trimmed of any extra arguments, which
-  // have been teleported away into ExtraArgs and/or a variadic param
-  Trimmed
-};
-
 static void prepareFuncEntry(ActRec *ar, PC& pc, StackArgsState stk) {
   assert(!ar->resumed());
   const Func* func = ar->m_func;
@@ -2011,30 +1419,9 @@ static void prepareFuncEntry(ActRec *ar, PC& pc, StackArgsState stk) {
   }
 }
 
-void ExecutionContext::syncGdbState() {
-  if (RuntimeOption::EvalJit && !RuntimeOption::EvalJitNoGdb) {
-    mcg->debugInfo()->debugSync();
-  }
-}
-
 static void dispatch();
-static void enterVMAtCurPC();
 
-static void prepareAsyncFuncEntry(ActRec* enterFnAr, Resumable* resumable) {
-  assert(enterFnAr);
-  assert(enterFnAr->func()->isAsync());
-  assert(enterFnAr->resumed());
-  assert(resumable);
-
-  vmfp() = enterFnAr;
-  vmpc() = vmfp()->func()->unit()->at(resumable->resumeOffset());
-  assert(vmfp()->func()->contains(vmpc()));
-  EventHook::FunctionResumeAwait(enterFnAr);
-}
-
-static void enterVMAtFunc(ActRec* enterFnAr,
-                          StackArgsState stk,
-                          VarEnv* varEnv) {
+void enterVMAtFunc(ActRec* enterFnAr, StackArgsState stk, VarEnv* varEnv) {
   assert(enterFnAr);
   assert(!enterFnAr->resumed());
   Stats::inc(Stats::VMEnter);
@@ -2081,7 +1468,7 @@ static void enterVMAtFunc(ActRec* enterFnAr,
   }
 }
 
-static void enterVMAtCurPC() {
+void enterVMAtCurPC() {
   assert(vmfp());
   assert(vmpc());
   assert(vmfp()->func()->contains(vmpc()));
@@ -2091,468 +1478,6 @@ static void enterVMAtCurPC() {
   } else {
     dispatch();
   }
-}
-
-/**
- * Enter VM by calling action(), which invokes a function or resumes
- * an async function. The 'ar' argument points to an ActRec of the
- * invoked/resumed function.
- */
-template<class Action>
-static inline void enterVMCustomHandler(ActRec* ar, Action action) {
-  assert(ar);
-  assert(!ar->sfp());
-  assert(isReturnHelper(reinterpret_cast<void*>(ar->m_savedRip)));
-  assert(ar->m_soff == 0);
-
-  auto ec = &*g_context;
-  DEBUG_ONLY int faultDepth = ec->m_faults.size();
-  SCOPE_EXIT { assert(ec->m_faults.size() == faultDepth); };
-
-  vmFirstAR() = ar;
-  vmJitCalledFrame() = nullptr;
-
-  action();
-
-  while (vmpc()) {
-    exception_handler(enterVMAtCurPC);
-  }
-}
-
-template<class Action>
-static inline void enterVM(ActRec* ar, Action action) {
-  enterVMCustomHandler(ar, [&] { exception_handler(action); });
-}
-
-/*
- * Shared implementation for invokeFunc{,Few}().
- *
- * The `doCheckStack' and `doInitArgs' callbacks should return truthy in order
- * to short-circuit the rest of invokeFuncImpl() and return early, else they
- * should return falsey.
- *
- * The `doInitArgs' and `doEnterVM' callbacks take an ActRec* argument
- * corresponding to the reentry frame.
- */
-template<class FStackCheck, class FInitArgs, class FEnterVM>
-ALWAYS_INLINE
-void ExecutionContext::invokeFuncImpl(TypedValue* retptr, const Func* f,
-                                      ObjectData* thiz, Class* cls,
-                                      uint32_t argc, StringData* invName,
-                                      bool useWeakTypes,
-                                      FStackCheck doStackCheck,
-                                      FInitArgs doInitArgs,
-                                      FEnterVM doEnterVM) {
-  assert(retptr);
-  assert(f);
-  // If `f' is a regular function, `thiz' and `cls' must be null.
-  assert(IMPLIES(!f->preClass(), f->isPseudoMain() || (!thiz && !cls)));
-  // If `f' is a method, either `thiz' or `cls' must be non-null.
-  assert(IMPLIES(f->preClass(), thiz || cls));
-  // If `f' is a static method, thiz must be null.
-  assert(IMPLIES(f->isStatic(), f->isClosureBody() || !thiz));
-  // invName should only be non-null if we are calling __call or __callStatic.
-  assert(IMPLIES(invName, f->name()->isame(s___call.get()) ||
-                          f->name()->isame(s___callStatic.get())));
-
-  VMRegAnchor _;
-  auto const reentrySP = vmStack().top();
-
-  if (thiz != nullptr) thiz->incRefCount();
-
-  if (doStackCheck()) return;
-
-  ActRec* ar = vmStack().allocA();
-  ar->setReturnVMExit();
-  ar->m_func = f;
-  if (thiz) {
-    ar->setThis(thiz);
-  } else if (cls) {
-    ar->setClass(cls);
-  } else {
-    ar->setThis(nullptr);
-  }
-  ar->initNumArgs(argc);
-
-  if (UNLIKELY(invName != nullptr)) {
-    ar->setMagicDispatch(invName);
-  } else {
-    ar->trashVarEnv();
-  }
-
-#ifdef HPHP_TRACE
-  if (vmfp() == nullptr) {
-    TRACE(1, "Reentry: enter %s(%p) from top-level\n",
-          f->name()->data(), ar);
-  } else {
-    TRACE(1, "Reentry: enter %s(pc %p ar %p) from %s(%p)\n",
-          f->name()->data(), vmpc(), ar,
-          vmfp()->m_func ? vmfp()->m_func->name()->data()
-                         : "unknownBuiltin",
-          vmfp());
-  }
-#endif
-
-  if (doInitArgs(ar)) return;
-
-  if (useWeakTypes) {
-    ar->setUseWeakTypes();
-  } else {
-    setTypesFlag(ar);
-  }
-
-  TypedValue retval;
-  {
-    pushVMState(reentrySP);
-    SCOPE_EXIT {
-      assert_flog(
-        vmStack().top() == reentrySP,
-        "vmsp() mismatch around reentry: before @ {}, after @ {}",
-        reentrySP, vmStack().top()
-      );
-      popVMState();
-    };
-
-    doEnterVM(ar);
-
-    // `retptr' might point somewhere that is affected by {push,pop}VMState(),
-    // so don't write to it until after we pop the nested VM state.
-    tvCopy(*vmStack().topTV(), retval);
-    vmStack().discard();
-  }
-
-  tvCopy(retval, *retptr);
-}
-
-void ExecutionContext::invokeFunc(TypedValue* retptr,
-                                  const Func* f,
-                                  const Variant& args_,
-                                  ObjectData* thiz /* = NULL */,
-                                  Class* cls /* = NULL */,
-                                  VarEnv* varEnv /* = NULL */,
-                                  StringData* invName /* = NULL */,
-                                  InvokeFlags flags /* = InvokeNormal */,
-                                  bool useWeakTypes /* = false */) {
-  const auto& args = *args_.asCell();
-  assert(isContainerOrNull(args));
-
-  auto const argc = cellIsNull(&args) ? 0 : getContainerSize(args);
-  // If we are inheriting a variable environment, then `args' must be empty.
-  assert(IMPLIES(varEnv, argc == 0));
-
-  auto const doCheckStack = [&] {
-    // We must do a stack overflow check for leaf functions on re-entry,
-    // because we won't have checked that the stack is deep enough for a
-    // leaf function /after/ re-entry, and the prologue for the leaf
-    // function will not make a check.
-    if (f->attrs() & AttrPhpLeafFn ||
-        !(f->numParams() + kNumActRecCells <= kStackCheckReenterPadding)) {
-      // Check both the native stack and VM stack for overflow.
-      checkStack(vmStack(), f,
-        kNumActRecCells /* numParams is included in f->maxStackCells */);
-    } else {
-      // invokeFunc() must always check the native stack for overflow no
-      // matter what.
-      checkNativeStack();
-    }
-
-    // Handle includes of pseudomains.
-    if (flags & InvokePseudoMain) {
-      assert(f->isPseudoMain());
-      assert(cellIsNull(&args) || !getContainerSize(args));
-
-      auto toMerge = f->unit();
-      toMerge->merge();
-      if (toMerge->isMergeOnly()) {
-        *retptr = *toMerge->getMainReturn();
-        return true;
-      }
-    }
-    return false;
-  };
-
-  auto const doInitArgs = [&] (ActRec* ar) {
-    if (!varEnv) {
-      auto const& prepArgs = cellIsNull(&args)
-        ? make_tv<KindOfArray>(staticEmptyArray())
-        : args;
-      auto prepResult = prepareArrayArgs(ar, prepArgs, vmStack(), 0,
-                                         flags & InvokeCuf, retptr);
-      if (UNLIKELY(!prepResult)) {
-        assert(KindOfNull == retptr->m_type);
-        return true;
-      }
-    }
-    return false;
-  };
-
-  auto const doEnterVM = [&] (ActRec* ar) {
-    enterVM(ar, [&] {
-      enterVMAtFunc(
-        ar,
-        varEnv ? StackArgsState::Untrimmed : StackArgsState::Trimmed,
-        varEnv
-      );
-    });
-  };
-
-  invokeFuncImpl(retptr, f, thiz, cls, argc, invName, useWeakTypes,
-                 doCheckStack, doInitArgs, doEnterVM);
-}
-
-void ExecutionContext::invokeFuncFew(TypedValue* retptr,
-                                     const Func* f,
-                                     void* thisOrCls,
-                                     StringData* invName,
-                                     int argc,
-                                     const TypedValue* argv,
-                                     bool useWeakTypes /* = false */) {
-  auto const doCheckStack = [&] {
-    // See comments in invokeFunc().
-    if (f->attrs() & AttrPhpLeafFn ||
-        !(argc + kNumActRecCells <= kStackCheckReenterPadding)) {
-      checkStack(vmStack(), f, argc + kNumActRecCells);
-    } else {
-      checkNativeStack();
-    }
-    return false;
-  };
-
-  auto const doInitArgs = [&] (ActRec* ar) {
-    for (ssize_t i = 0; i < argc; ++i) {
-      const TypedValue *from = &argv[i];
-      TypedValue *to = vmStack().allocTV();
-      if (LIKELY(from->m_type != KindOfRef || !f->byRef(i))) {
-        cellDup(*tvToCell(from), *to);
-      } else {
-        refDup(*from, *to);
-      }
-    }
-    return false;
-  };
-
-  auto const doEnterVM = [&] (ActRec* ar) {
-    enterVM(ar, [&] { enterVMAtFunc(ar, StackArgsState::Untrimmed, nullptr); });
-  };
-
-  invokeFuncImpl(retptr, f,
-                 ActRec::decodeThis(thisOrCls),
-                 ActRec::decodeClass(thisOrCls),
-                 argc, invName, useWeakTypes,
-                 doCheckStack, doInitArgs, doEnterVM);
-}
-
-void ExecutionContext::resumeAsyncFunc(Resumable* resumable,
-                                       ObjectData* freeObj,
-                                       const Cell awaitResult) {
-  assert(tl_regState == VMRegState::CLEAN);
-  SCOPE_EXIT { assert(tl_regState == VMRegState::CLEAN); };
-
-  auto fp = resumable->actRec();
-  // We don't need to check for space for the ActRec (unlike generally
-  // in normal re-entry), because the ActRec isn't on the stack.
-  checkStack(vmStack(), fp->func(), 0);
-
-  Cell* savedSP = vmStack().top();
-  cellDup(awaitResult, *vmStack().allocC());
-
-  // decref after awaitResult is on the stack
-  decRefObj(freeObj);
-
-  pushVMState(savedSP);
-  SCOPE_EXIT { popVMState(); };
-
-  enterVM(fp, [&] {
-    prepareAsyncFuncEntry(fp, resumable);
-
-    const bool useJit = RID().getJit();
-    if (LIKELY(useJit && resumable->resumeAddr())) {
-      Stats::inc(Stats::VMEnter);
-      mcg->enterTCAfterPrologue(resumable->resumeAddr());
-    } else {
-      enterVMAtCurPC();
-    }
-  });
-}
-
-void ExecutionContext::resumeAsyncFuncThrow(Resumable* resumable,
-                                            ObjectData* freeObj,
-                                            ObjectData* exception) {
-  assert(exception);
-  assert(exception->instanceof(SystemLib::s_ThrowableClass));
-  assert(tl_regState == VMRegState::CLEAN);
-  SCOPE_EXIT { assert(tl_regState == VMRegState::CLEAN); };
-
-  auto fp = resumable->actRec();
-  checkStack(vmStack(), fp->func(), 0);
-
-  // decref after we hold reference to the exception
-  Object e(exception);
-  decRefObj(freeObj);
-
-  pushVMState(vmStack().top());
-  SCOPE_EXIT { popVMState(); };
-
-  enterVMCustomHandler(fp, [&] {
-    prepareAsyncFuncEntry(fp, resumable);
-
-    unwindPhp(exception);
-  });
-}
-
-void ExecutionContext::invokeUnit(TypedValue* retval, const Unit* unit) {
-  checkHHConfig(unit);
-
-  auto const func = unit->getMain();
-  invokeFunc(retval, func, init_null_variant, nullptr, nullptr,
-             m_globalVarEnv, nullptr, InvokePseudoMain);
-}
-
-ActRec* ExecutionContext::getPrevVMState(const ActRec* fp,
-                                         Offset* prevPc /* = NULL */,
-                                         TypedValue** prevSp /* = NULL */,
-                                         bool* fromVMEntry /* = NULL */) {
-  if (fp == nullptr) {
-    return nullptr;
-  }
-  ActRec* prevFp = fp->sfp();
-  if (LIKELY(prevFp != nullptr)) {
-    if (prevSp) {
-      if (UNLIKELY(fp->resumed())) {
-        assert(fp->func()->isGenerator());
-        *prevSp = (TypedValue*)prevFp - prevFp->func()->numSlotsInFrame();
-      } else {
-        *prevSp = (TypedValue*)(fp + 1);
-      }
-    }
-    if (prevPc) *prevPc = prevFp->func()->base() + fp->m_soff;
-    if (fromVMEntry) *fromVMEntry = false;
-    return prevFp;
-  }
-  // Linear search from end of m_nestedVMs. In practice, we're probably
-  // looking for something recently pushed.
-  int i = m_nestedVMs.size() - 1;
-  ActRec* firstAR = vmFirstAR();
-  while (i >= 0 && firstAR != fp) {
-    firstAR = m_nestedVMs[i--].firstAR;
-  }
-  if (i == -1) return nullptr;
-  const VMState& vmstate = m_nestedVMs[i];
-  prevFp = vmstate.fp;
-  assert(prevFp);
-  assert(prevFp->func()->unit());
-  if (prevSp) *prevSp = vmstate.sp;
-  if (prevPc) {
-    *prevPc = prevFp->func()->unit()->offsetOf(vmstate.pc);
-  }
-  if (fromVMEntry) *fromVMEntry = true;
-  return prevFp;
-}
-
-/*
-  Instantiate hoistable classes and functions.
-  If there is any more work left to do, setup a
-  new frame ready to execute the pseudomain.
-
-  return true iff the pseudomain needs to be executed.
-*/
-bool ExecutionContext::evalUnit(Unit* unit, PC& pc, int funcType) {
-  vmpc() = pc;
-  unit->merge();
-  if (unit->isMergeOnly()) {
-    Stats::inc(Stats::PseudoMain_Skipped);
-    *vmStack().allocTV() = *unit->getMainReturn();
-    return false;
-  }
-  Stats::inc(Stats::PseudoMain_Executed);
-
-  ActRec* ar = vmStack().allocA();
-  assert((uintptr_t)&ar->m_func < (uintptr_t)&ar->m_r);
-  Class* cls = liveClass();
-  if (vmfp()->hasThis()) {
-    ObjectData *this_ = vmfp()->getThis();
-    this_->incRefCount();
-    ar->setThis(this_);
-  } else if (vmfp()->hasClass()) {
-    ar->setClass(vmfp()->getClass());
-  } else {
-    ar->setThis(nullptr);
-  }
-  Func* func = unit->getMain(cls);
-  assert(!func->isCPPBuiltin());
-  ar->m_func = func;
-  ar->initNumArgs(0);
-  assert(vmfp());
-  ar->setReturn(vmfp(), pc, mcg->ustubs().retHelper);
-  pushLocalsAndIterators(func);
-  assert(vmfp()->func()->attrs() & AttrMayUseVV);
-  if (!vmfp()->hasVarEnv()) {
-    vmfp()->setVarEnv(VarEnv::createLocal(vmfp()));
-  }
-  ar->m_varEnv = vmfp()->m_varEnv;
-  ar->m_varEnv->enterFP(vmfp(), ar);
-
-  vmfp() = ar;
-  pc = func->getEntry();
-  vmpc() = pc;
-  bool ret = EventHook::FunctionCall(vmfp(), funcType);
-  pc = vmpc();
-  checkStack(vmStack(), func, 0);
-  return ret;
-}
-
-StaticString
-  s_php_namespace("<?php namespace "),
-  s_curly_return(" { return "),
-  s_semicolon_curly("; }"),
-  s_php_return("<?php return "),
-  s_semicolon(";");
-
-const Variant& ExecutionContext::getEvaledArg(const StringData* val,
-                                         const String& namespacedName) {
-  auto key = StrNR(val);
-
-  if (m_evaledArgs.get()) {
-    const Variant& arg = m_evaledArgs.get()->get(key);
-    if (&arg != &null_variant) return arg;
-  }
-
-  String code;
-  int pos = namespacedName.rfind('\\');
-  if (pos != -1) {
-    auto ns = namespacedName.substr(0, pos);
-    code = s_php_namespace + ns + s_curly_return + key + s_semicolon_curly;
-  } else {
-    code = s_php_return + key + s_semicolon;
-  }
-  Unit* unit = compileEvalString(code.get());
-  assert(unit != nullptr);
-  Variant v;
-  // Default arg values are not currently allowed to depend on class context.
-  g_context->invokeFunc((TypedValue*)&v, unit->getMain(),
-                          init_null_variant, nullptr, nullptr, nullptr, nullptr,
-                          InvokePseudoMain);
-  Variant &lv = m_evaledArgs.lvalAt(key, AccessFlags::Key);
-  lv = v;
-  return lv;
-}
-
-void ExecutionContext::recordLastError(const Exception &e, int errnum) {
-  m_lastError = String(e.getMessage());
-  m_lastErrorNum = errnum;
-  m_lastErrorPath = String::attach(getContainingFileName());
-  m_lastErrorLine = getLine();
-  if (auto const ee = dynamic_cast<const ExtendedException *>(&e)) {
-    m_lastErrorPath = ee->getFileAndLine().first;
-    m_lastErrorLine = ee->getFileAndLine().second;
-  }
-}
-
-void ExecutionContext::clearLastError() {
-  m_lastError = String();
-  m_lastErrorNum = 0;
-  m_lastErrorPath = staticEmptyString();
-  m_lastErrorLine = 0;
 }
 
 /*
@@ -2567,292 +1492,6 @@ void pushLocalsAndIterators(const Func* func, int nparams /*= 0*/) {
   for (int i = 0; i < func->numIterators(); i++) {
     vmStack().allocI();
   }
-}
-
-void ExecutionContext::enqueueAPCHandle(APCHandle* handle, size_t size) {
-  assert(handle->kind() == APCKind::UncountedString ||
-         handle->kind() == APCKind::UncountedArray);
-  m_apcHandles.push_back(handle);
-  m_apcMemSize += size;
-}
-
-// Treadmill solution for the SharedVariant memory management
-namespace {
-struct FreedAPCHandle {
-  explicit FreedAPCHandle(std::vector<APCHandle*>&& shandles, size_t size)
-    : m_memSize(size), m_apcHandles(std::move(shandles))
-  {}
-  void operator()() {
-    for (auto handle : m_apcHandles) {
-      APCTypedValue::fromHandle(handle)->deleteUncounted();
-    }
-    APCStats::getAPCStats().removePendingDelete(m_memSize);
-  }
-private:
-  size_t m_memSize;
-  std::vector<APCHandle*> m_apcHandles;
-};
-}
-
-void ExecutionContext::manageAPCHandle() {
-  assert(apcExtension::UseUncounted || m_apcHandles.size() == 0);
-  if (m_apcHandles.size() > 0) {
-    std::vector<APCHandle*> handles;
-    handles.swap(m_apcHandles);
-    Treadmill::enqueue(
-      FreedAPCHandle(std::move(handles), m_apcMemSize)
-    );
-    APCStats::getAPCStats().addPendingDelete(m_apcMemSize);
-  }
-}
-
-void ExecutionContext::destructObjects() {
-  if (UNLIKELY(RuntimeOption::EnableObjDestructCall)) {
-    while (!m_liveBCObjs.empty()) {
-      ObjectData* obj = *m_liveBCObjs.begin();
-      obj->destructForExit(); // Let the instance remove the node.
-    }
-    m_liveBCObjs.clear();
-  }
-}
-
-// Evaled units have a footprint in the TC and translation metadata. The
-// applications we care about tend to have few, short, stereotyped evals,
-// where the same code keeps getting eval'ed over and over again; so we
-// keep around units for each eval'ed string, so that the TC space isn't
-// wasted on each eval.
-typedef RankedCHM<StringData*, HPHP::Unit*,
-        StringDataHashCompare,
-        RankEvaledUnits> EvaledUnitsMap;
-static EvaledUnitsMap s_evaledUnits;
-Unit* ExecutionContext::compileEvalString(
-    StringData* code,
-    const char* evalFilename /* = nullptr */) {
-  EvaledUnitsMap::accessor acc;
-  // Promote this to a static string; otherwise it may get swept
-  // across requests.
-  code = makeStaticString(code);
-  if (s_evaledUnits.insert(acc, code)) {
-    acc->second = compile_string(
-      code->data(),
-      code->size(),
-      evalFilename
-    );
-  }
-  return acc->second;
-}
-
-StrNR ExecutionContext::createFunction(const String& args,
-                                       const String& code) {
-  if (UNLIKELY(RuntimeOption::EvalAuthoritativeMode)) {
-    // Whole program optimizations need to assume they can see all the
-    // code.
-    raise_error("You can't use create_function in RepoAuthoritative mode; "
-                "use a closure instead");
-  }
-
-  VMRegAnchor _;
-  // It doesn't matter if there's a user function named __lambda_func; we only
-  // use this name during parsing, and then change it to an impossible name
-  // with a NUL byte before we merge it into the request's func map.  This also
-  // has the bonus feature that the value of __FUNCTION__ inside the created
-  // function will match Zend. (Note: Zend will actually fatal if there's a
-  // user function named __lambda_func when you call create_function. Huzzah!)
-  static StringData* oldName = makeStaticString("__lambda_func");
-  std::ostringstream codeStr;
-  codeStr << "<?php function " << oldName->data()
-          << "(" << args.data() << ") {"
-          << code.data() << "}\n";
-  std::string evalCode = codeStr.str();
-  Unit* unit = compile_string(evalCode.data(), evalCode.size());
-  // Move the function to a different name.
-  std::ostringstream newNameStr;
-  newNameStr << '\0' << "lambda_" << ++m_lambdaCounter;
-  StringData* newName = makeStaticString(newNameStr.str());
-  unit->renameFunc(oldName, newName);
-  m_createdFuncs.push_back(unit);
-  unit->merge();
-
-  // At the end of the request we clear the m_createdFunc map, JIT'ing the unit
-  // would be a waste of time and TC space.
-  unit->setInterpretOnly();
-
-  // Technically we shouldn't have to eval the unit right now (it'll execute
-  // the pseudo-main, which should be empty) and could get away with just
-  // mergeFuncs. However, Zend does it this way, as proven by the fact that you
-  // can inject code into the evaled unit's pseudo-main:
-  //
-  //   create_function('', '} echo "hi"; if (0) {');
-  //
-  // We have to eval now to emulate this behavior.
-  TypedValue retval;
-  invokeFunc(&retval, unit->getMain(), init_null_variant,
-             nullptr, nullptr, nullptr, nullptr,
-             InvokePseudoMain);
-
-  // __lambda_func will be the only hoistable function.
-  // Any functions or closures defined in it will not be hoistable.
-  Func* lambda = unit->firstHoistable();
-  return lambda->nameStr();
-}
-
-bool ExecutionContext::evalPHPDebugger(TypedValue* retval,
-                                       StringData* code,
-                                       int frame) {
-  assert(retval);
-  // The code has "<?php" prepended already
-  auto unit = compile_string(code->data(), code->size());
-  if (unit == nullptr) {
-    raise_error("Syntax error");
-    tvWriteNull(retval);
-    return true;
-  }
-
-  // Do not JIT this unit, we are using it exactly once.
-  unit->setInterpretOnly();
-  return evalPHPDebugger(retval, unit, frame);
-}
-
-bool ExecutionContext::evalPHPDebugger(TypedValue* retval,
-                                       Unit* unit,
-                                       int frame) {
-  assert(retval);
-  always_assert(!RuntimeOption::RepoAuthoritative);
-
-  VMRegAnchor _;
-
-  auto failed = true;
-  auto fp = vmfp();
-  if (fp) {
-    for (; frame > 0; --frame) {
-      auto prevFp = getPrevVMState(fp);
-      if (!prevFp) {
-        // To be safe in case we failed to get prevFp. This would mean we've
-        // been asked to eval in a frame which is beyond the top of the stack.
-        // This suggests the debugger client has made an error.
-        break;
-      }
-      fp = prevFp;
-    }
-    if (!fp->hasVarEnv()) {
-      fp->setVarEnv(VarEnv::createLocal(fp));
-    }
-  }
-  ObjectData *this_ = nullptr;
-  // NB: the ActRec and function within the AR may have different classes. The
-  // class in the ActRec is the type used when invoking the function (i.e.,
-  // Derived in Derived::Foo()) while the class obtained from the function is
-  // the type that declared the function Foo, which may be Base. We need both
-  // the class to match any object that this function may have been invoked on,
-  // and we need the class from the function execution is stopped in.
-  Class *frameClass = nullptr;
-  Class *functionClass = nullptr;
-  if (fp) {
-    if (fp->hasThis()) {
-      this_ = fp->getThis();
-    } else if (fp->hasClass()) {
-      frameClass = fp->getClass();
-    }
-    functionClass = fp->m_func->cls();
-    phpDebuggerEvalHook(fp->m_func);
-  }
-
-  const static StaticString s_cppException("Hit an exception");
-  const static StaticString s_phpException("Hit a php exception");
-  const static StaticString s_exit("Hit exit");
-  const static StaticString s_fatal("Hit fatal");
-  try {
-    // Start with the correct parent FP so that VarEnv can properly exitFP().
-    // Note that if the same VarEnv is used across multiple frames, the most
-    // recent FP must be used. This can happen if we are trying to debug
-    // an eval() call or a call issued by debugger itself.
-    auto savedFP = vmfp();
-    if (fp) {
-      vmfp() = fp->m_varEnv->getFP();
-    }
-    SCOPE_EXIT { vmfp() = savedFP; };
-
-    // Invoke the given PHP, possibly specialized to match the type of the
-    // current function on the stack, optionally passing a this pointer or
-    // class used to execute the current function.
-    invokeFunc(retval, unit->getMain(functionClass), init_null_variant,
-               this_, frameClass, fp ? fp->m_varEnv : nullptr, nullptr,
-               InvokePseudoMain);
-    failed = false;
-  } catch (FatalErrorException &e) {
-    g_context->write(s_fatal);
-    g_context->write(" : ");
-    g_context->write(e.getMessage().c_str());
-    g_context->write("\n");
-    g_context->write(ExtendedLogger::StringOfStackTrace(e.getBacktrace()));
-  } catch (ExitException &e) {
-    g_context->write(s_exit.data());
-    g_context->write(" : ");
-    std::ostringstream os;
-    os << ExitException::ExitCode;
-    g_context->write(os.str());
-  } catch (Eval::DebuggerException &e) {
-  } catch (Exception &e) {
-    g_context->write(s_cppException.data());
-    g_context->write(" : ");
-    g_context->write(e.getMessage().c_str());
-    ExtendedException* ee = dynamic_cast<ExtendedException*>(&e);
-    if (ee) {
-      g_context->write("\n");
-      g_context->write(
-        ExtendedLogger::StringOfStackTrace(ee->getBacktrace()));
-    }
-  } catch (Object &e) {
-    g_context->write(s_phpException.data());
-    g_context->write(" : ");
-    g_context->write(e->invokeToString().data());
-  } catch (...) {
-    g_context->write(s_cppException.data());
-  }
-  return failed;
-}
-
-void ExecutionContext::enterDebuggerDummyEnv() {
-  static Unit* s_debuggerDummy = compile_string("<?php?>", 7);
-  // Ensure that the VM stack is completely empty (vmfp() should be null)
-  // and that we're not in a nested VM (reentrancy)
-  assert(vmfp() == nullptr);
-  assert(m_nestedVMs.size() == 0);
-  assert(m_nesting == 0);
-  assert(vmStack().count() == 0);
-  ActRec* ar = vmStack().allocA();
-  ar->m_func = s_debuggerDummy->getMain();
-  ar->initNumArgs(0);
-  ar->setThis(nullptr);
-  ar->setReturnVMExit();
-  vmfp() = ar;
-  vmpc() = s_debuggerDummy->entry();
-  vmFirstAR() = ar;
-  vmfp()->setVarEnv(m_globalVarEnv);
-  m_globalVarEnv->enterFP(nullptr, vmfp());
-}
-
-void ExecutionContext::exitDebuggerDummyEnv() {
-  assert(m_globalVarEnv);
-  // Ensure that vmfp() is valid
-  assert(vmfp() != nullptr);
-  // Ensure that vmfp() points to the only frame on the call stack.
-  // In other words, make sure there are no VM frames directly below
-  // this one and that we are not in a nested VM (reentrancy)
-  assert(!vmfp()->sfp());
-  assert(m_nestedVMs.size() == 0);
-  assert(m_nesting == 0);
-  // Teardown the frame we erected by enterDebuggerDummyEnv()
-  const Func* func = vmfp()->m_func;
-  try {
-    frame_free_locals_inl_no_hook<true>(vmfp(), func->numLocals());
-  } catch (...) {}
-  vmStack().ndiscard(func->numSlotsInFrame());
-  vmStack().discardAR();
-  // After tearing down this frame, the VM stack should be completely empty
-  assert(vmStack().count() == 0);
-  vmfp() = nullptr;
-  vmpc() = nullptr;
 }
 
 void unwindPreventReturnToTC(ActRec* ar) {
@@ -3489,7 +2128,7 @@ OPTBLD_INLINE void iopNot(IOP_ARGS) {
 }
 
 template<class Fn>
-OPTBLD_INLINE void implCellBinOp(PC& pc, Fn fn) {
+OPTBLD_INLINE void implCellBinOp(Fn fn) {
   auto const c1 = vmStack().topC();
   auto const c2 = vmStack().indC(1);
   auto const result = fn(*c2, *c1);
@@ -3499,7 +2138,7 @@ OPTBLD_INLINE void implCellBinOp(PC& pc, Fn fn) {
 }
 
 template<class Fn>
-OPTBLD_INLINE void implCellBinOpBool(PC& pc, Fn fn) {
+OPTBLD_INLINE void implCellBinOpBool(Fn fn) {
   auto const c1 = vmStack().topC();
   auto const c2 = vmStack().indC(1);
   bool const result = fn(*c2, *c1);
@@ -3509,7 +2148,7 @@ OPTBLD_INLINE void implCellBinOpBool(PC& pc, Fn fn) {
 }
 
 template<class Fn>
-OPTBLD_INLINE void implCellBinOpInt64(PC& pc, Fn fn) {
+OPTBLD_INLINE void implCellBinOpInt64(Fn fn) {
   auto const c1 = vmStack().topC();
   auto const c2 = vmStack().indC(1);
   auto const result = fn(*c2, *c1);
@@ -3519,113 +2158,113 @@ OPTBLD_INLINE void implCellBinOpInt64(PC& pc, Fn fn) {
 }
 
 OPTBLD_INLINE void iopAdd(IOP_ARGS) {
-  implCellBinOp(pc, cellAdd);
+  implCellBinOp(cellAdd);
 }
 
 OPTBLD_INLINE void iopSub(IOP_ARGS) {
-  implCellBinOp(pc, cellSub);
+  implCellBinOp(cellSub);
 }
 
 OPTBLD_INLINE void iopMul(IOP_ARGS) {
-  implCellBinOp(pc, cellMul);
+  implCellBinOp(cellMul);
 }
 
 OPTBLD_INLINE void iopAddO(IOP_ARGS) {
-  implCellBinOp(pc, cellAddO);
+  implCellBinOp(cellAddO);
 }
 
 OPTBLD_INLINE void iopSubO(IOP_ARGS) {
-  implCellBinOp(pc, cellSubO);
+  implCellBinOp(cellSubO);
 }
 
 OPTBLD_INLINE void iopMulO(IOP_ARGS) {
-  implCellBinOp(pc, cellMulO);
+  implCellBinOp(cellMulO);
 }
 
 OPTBLD_INLINE void iopDiv(IOP_ARGS) {
-  implCellBinOp(pc, cellDiv);
+  implCellBinOp(cellDiv);
 }
 
 OPTBLD_INLINE void iopPow(IOP_ARGS) {
-  implCellBinOp(pc, cellPow);
+  implCellBinOp(cellPow);
 }
 
 OPTBLD_INLINE void iopMod(IOP_ARGS) {
-  implCellBinOp(pc, cellMod);
+  implCellBinOp(cellMod);
 }
 
 OPTBLD_INLINE void iopBitAnd(IOP_ARGS) {
-  implCellBinOp(pc, cellBitAnd);
+  implCellBinOp(cellBitAnd);
 }
 
 OPTBLD_INLINE void iopBitOr(IOP_ARGS) {
-  implCellBinOp(pc, cellBitOr);
+  implCellBinOp(cellBitOr);
 }
 
 OPTBLD_INLINE void iopBitXor(IOP_ARGS) {
-  implCellBinOp(pc, cellBitXor);
+  implCellBinOp(cellBitXor);
 }
 
 OPTBLD_INLINE void iopXor(IOP_ARGS) {
-  implCellBinOpBool(pc, [&] (Cell c1, Cell c2) -> bool {
+  implCellBinOpBool([&] (Cell c1, Cell c2) -> bool {
     return cellToBool(c1) ^ cellToBool(c2);
   });
 }
 
 OPTBLD_INLINE void iopSame(IOP_ARGS) {
-  implCellBinOpBool(pc, cellSame);
+  implCellBinOpBool(cellSame);
 }
 
 OPTBLD_INLINE void iopNSame(IOP_ARGS) {
-  implCellBinOpBool(pc, [&] (Cell c1, Cell c2) {
+  implCellBinOpBool([&] (Cell c1, Cell c2) {
     return !cellSame(c1, c2);
   });
 }
 
 OPTBLD_INLINE void iopEq(IOP_ARGS) {
-  implCellBinOpBool(pc, [&] (Cell c1, Cell c2) {
+  implCellBinOpBool([&] (Cell c1, Cell c2) {
     return cellEqual(c1, c2);
   });
 }
 
 OPTBLD_INLINE void iopNeq(IOP_ARGS) {
-  implCellBinOpBool(pc, [&] (Cell c1, Cell c2) {
+  implCellBinOpBool([&] (Cell c1, Cell c2) {
     return !cellEqual(c1, c2);
   });
 }
 
 OPTBLD_INLINE void iopLt(IOP_ARGS) {
-  implCellBinOpBool(pc, [&] (Cell c1, Cell c2) {
+  implCellBinOpBool([&] (Cell c1, Cell c2) {
     return cellLess(c1, c2);
   });
 }
 
 OPTBLD_INLINE void iopLte(IOP_ARGS) {
-  implCellBinOpBool(pc, cellLessOrEqual);
+  implCellBinOpBool(cellLessOrEqual);
 }
 
 OPTBLD_INLINE void iopGt(IOP_ARGS) {
-  implCellBinOpBool(pc, [&] (Cell c1, Cell c2) {
+  implCellBinOpBool([&] (Cell c1, Cell c2) {
     return cellGreater(c1, c2);
   });
 }
 
 OPTBLD_INLINE void iopGte(IOP_ARGS) {
-  implCellBinOpBool(pc, cellGreaterOrEqual);
+  implCellBinOpBool(cellGreaterOrEqual);
 }
 
 OPTBLD_INLINE void iopCmp(IOP_ARGS) {
-  implCellBinOpInt64(pc, [&] (Cell c1, Cell c2) {
+  implCellBinOpInt64([&] (Cell c1, Cell c2) {
     return cellCompare(c1, c2);
   });
 }
 
 OPTBLD_INLINE void iopShl(IOP_ARGS) {
-  implCellBinOp(pc, cellShl);
+  implCellBinOp(cellShl);
 }
 
 OPTBLD_INLINE void iopShr(IOP_ARGS) {
-  implCellBinOp(pc, cellShr);
+  implCellBinOp(cellShr);
 }
 
 OPTBLD_INLINE void iopBitNot(IOP_ARGS) {
@@ -3799,7 +2438,7 @@ OPTBLD_INLINE void iopFatal(IOP_ARGS) {
 
 OPTBLD_INLINE void jmpSurpriseCheck(Offset offset) {
   if (offset <= 0 && UNLIKELY(checkSurpriseFlags())) {
-    auto const flags = check_request_surprise();
+    auto const flags = handle_request_surprise();
 
     // Memory Threhsold callback should also be fired here
     if (flags & MemThresholdFlag) {
@@ -3851,12 +2490,12 @@ OPTBLD_INLINE void iopJmpNZ(IOP_ARGS) {
 
 OPTBLD_INLINE void iopIterBreak(IOP_ARGS) {
   PC savedPc = pc - encoded_op_size(Op::IterBreak);
+  auto offset = decode_ba(pc);
   auto veclen = decode<int32_t>(pc);
   assert(veclen > 0);
   Id* iterTypeList = (Id*)pc;
   Id* iterIdList   = (Id*)pc + 1;
   pc += 2 * veclen * sizeof(Id);
-  auto offset = peek_ba(pc);
   for (auto i = 0; i < 2 * veclen; i += 2) {
     Id iterType = iterTypeList[i];
     Id iterId   = iterIdList[i];
@@ -3886,12 +2525,12 @@ static SwitchMatch doubleCheck(double d, int64_t& out) {
 
 OPTBLD_INLINE void iopSwitch(IOP_ARGS) {
   auto const origPC = pc - encoded_op_size(Op::Switch);
+  auto const kind = decode_oa<SwitchKind>(pc);
+  auto base = decode<int64_t>(pc);
   auto veclen = decode<int32_t>(pc);
   assert(veclen > 0);
   Offset* jmptab = (Offset*)pc;
   pc += veclen * sizeof(*jmptab);
-  auto base = decode<int64_t>(pc);
-  auto const kind = decode_oa<SwitchKind>(pc);
 
   TypedValue* val = vmStack().topTV();
   if (kind == SwitchKind::Unbounded) {
@@ -4176,7 +2815,9 @@ OPTBLD_INLINE TCA ret(PC& pc) {
   } else if (vmfp()->func()->isAsyncFunction()) {
     // Mark the async function as succeeded and store the return value.
     assert(!sfp);
-    frame_afwh(vmfp())->ret(retval);
+    auto wh = frame_afwh(vmfp());
+    wh->ret(retval);
+    decRefObj(wh);
   } else if (vmfp()->func()->isAsyncGenerator()) {
     // Mark the async generator as finished.
     assert(isNullType(retval.m_type));
@@ -4232,7 +2873,7 @@ OPTBLD_INLINE void iopThrow(IOP_ARGS) {
   auto obj = Object::attach(c1->m_data.pobj);
   vmStack().discard();
   DEBUGGER_ATTACHED_ONLY(phpDebuggerExceptionThrownHook(obj.get()));
-  throw_object_inl(std::move(obj));
+  throw req::root<Object>(std::move(obj));
 }
 
 OPTBLD_INLINE void iopAGetC(IOP_ARGS) {
@@ -4243,7 +2884,7 @@ OPTBLD_INLINE void iopAGetC(IOP_ARGS) {
 OPTBLD_INLINE void iopAGetL(IOP_ARGS) {
   auto local = decode_la(pc);
   vmStack().pushUninit();
-  TypedValue* fr = frame_local_inner(vmfp(), local);
+  TypedValue* fr = tvToCell(frame_local(vmfp(), local));
   lookupClsRef(fr, vmStack().top());
 }
 
@@ -4394,7 +3035,7 @@ SpropState::~SpropState() {
   tvRefcountedDecRef(oldNameCell);
 }
 
-template<bool box> void getS(PC& pc) {
+template<bool box> void getS() {
   SpropState ss(vmStack());
   if (!(ss.visible && ss.accessible)) {
     raise_error("Invalid static property access: %s::%s",
@@ -4413,7 +3054,7 @@ template<bool box> void getS(PC& pc) {
 }
 
 OPTBLD_INLINE void iopCGetS(IOP_ARGS) {
-  getS<false>(pc);
+  getS<false>();
 }
 
 static inline MInstrState& initMState() {
@@ -4461,7 +3102,7 @@ OPTBLD_INLINE void iopBaseNC(IOP_ARGS) {
 OPTBLD_INLINE void iopBaseNL(IOP_ARGS) {
   auto const localId = decode_la(pc);
   auto const flags = decode_oa<MOpFlags>(pc);
-  baseNImpl(frame_local_inner(vmfp(), localId), flags);
+  baseNImpl(tvToCell(frame_local(vmfp(), localId)), flags);
 }
 
 OPTBLD_INLINE void iopFPassBaseNC(IOP_ARGS) {
@@ -4473,7 +3114,7 @@ OPTBLD_INLINE void iopFPassBaseNC(IOP_ARGS) {
 OPTBLD_INLINE void iopFPassBaseNL(IOP_ARGS) {
   auto const flags = decode_fpass_flags<Op::FPassBaseNL>(pc);
   auto const localId = decode_la(pc);
-  baseNImpl(frame_local_inner(vmfp(), localId), flags);
+  baseNImpl(tvToCell(frame_local(vmfp(), localId)), flags);
 }
 
 static inline void baseGImpl(TypedValue* key, MOpFlags flags) {
@@ -4489,7 +3130,7 @@ OPTBLD_INLINE void iopBaseGC(IOP_ARGS) {
 OPTBLD_INLINE void iopBaseGL(IOP_ARGS) {
   auto const localId = decode_la(pc);
   auto const flags = decode_oa<MOpFlags>(pc);
-  baseGImpl(frame_local_inner(vmfp(), localId), flags);
+  baseGImpl(tvToCell(frame_local(vmfp(), localId)), flags);
 }
 
 OPTBLD_INLINE void iopFPassBaseGC(IOP_ARGS) {
@@ -4501,7 +3142,7 @@ OPTBLD_INLINE void iopFPassBaseGC(IOP_ARGS) {
 OPTBLD_INLINE void iopFPassBaseGL(IOP_ARGS) {
   auto const flags = decode_fpass_flags<Op::FPassBaseGL>(pc);
   auto const localId = decode_la(pc);
-  baseGImpl(frame_local_inner(vmfp(), localId), flags);
+  baseGImpl(tvToCell(frame_local(vmfp(), localId)), flags);
 }
 
 static inline TypedValue* baseSImpl(int32_t clsIdx, TypedValue* key) {
@@ -4538,13 +3179,13 @@ OPTBLD_INLINE void iopBaseSL(IOP_ARGS) {
   auto const keyLoc = decode_la(pc);
   auto const clsIdx = decode_iva(pc);
   auto& mstate = initMState();
-  mstate.base = baseSImpl(clsIdx, frame_local_inner(vmfp(), keyLoc));
+  mstate.base = baseSImpl(clsIdx, tvToCell(frame_local(vmfp(), keyLoc)));
 }
 
 OPTBLD_INLINE void baseLImpl(int32_t localId, MOpFlags flags) {
   auto& mstate = initMState();
 
-  auto local = frame_local_inner(vmfp(), localId);
+  auto local = tvToCell(frame_local(vmfp(), localId));
   if (flags & MOpFlags::Warn && local->m_type == KindOfUninit) {
     raise_notice(Strings::UNDEFINED_VARIABLE,
                  vmfp()->m_func->localVarName(localId)->data());
@@ -4589,16 +3230,15 @@ static OPTBLD_INLINE void propDispatch(MOpFlags flags, TypedValue key) {
   auto result = [&]{
     switch (flags) {
       case MOpFlags::None:
-        return Prop<false, false, false>(mstate.tvRef, ctx, mstate.base, key);
+        return Prop<MOpFlags::None>(mstate.tvRef, ctx, mstate.base, key);
       case MOpFlags::Warn:
-        return Prop<true, false, false>(mstate.tvRef, ctx, mstate.base, key);
+        return Prop<MOpFlags::Warn>(mstate.tvRef, ctx, mstate.base, key);
       case MOpFlags::Define:
+        return Prop<MOpFlags::Define>(mstate.tvRef, ctx, mstate.base, key);
       case MOpFlags::DefineReffy:
-        return Prop<false, true, false>(mstate.tvRef, ctx, mstate.base, key);
+        return Prop<MOpFlags::DefineReffy>(mstate.tvRef, ctx, mstate.base, key);
       case MOpFlags::Unset:
-        return Prop<false, false, true>(mstate.tvRef, ctx, mstate.base, key);
-      case MOpFlags::WarnDefine:
-        return Prop<true, true, false>(mstate.tvRef, ctx, mstate.base, key);
+        return Prop<MOpFlags::Unset>(mstate.tvRef, ctx, mstate.base, key);
     }
     always_assert(false);
   }();
@@ -4623,7 +3263,6 @@ static OPTBLD_INLINE void propQDispatch(MOpFlags flags, TypedValue key) {
 
     case MOpFlags::Define:
     case MOpFlags::Unset:
-    case MOpFlags::WarnDefine:
       always_assert(false);
   }
 
@@ -4638,19 +3277,19 @@ static OPTBLD_INLINE void elemDispatch(MOpFlags flags, TypedValue key) {
       case MOpFlags::None:
         // We're not actually going to modify it, so this is "safe".
         return const_cast<TypedValue*>(
-          Elem<false>(mstate.tvRef, mstate.base, key));
+          Elem<MOpFlags::None>(mstate.tvRef, mstate.base, key)
+        );
       case MOpFlags::Warn:
         // We're not actually going to modify it, so this is "safe".
         return const_cast<TypedValue*>(
-          Elem<true>(mstate.tvRef, mstate.base, key));
+          Elem<MOpFlags::Warn>(mstate.tvRef, mstate.base, key)
+        );
       case MOpFlags::Define:
-        return ElemD<false,false>(mstate.tvRef, mstate.base, key);
+        return ElemD<MOpFlags::Define>(mstate.tvRef, mstate.base, key);
       case MOpFlags::DefineReffy:
-        return ElemD<false,true>(mstate.tvRef, mstate.base, key);
+        return ElemD<MOpFlags::DefineReffy>(mstate.tvRef, mstate.base, key);
       case MOpFlags::Unset:
         return ElemU(mstate.tvRef, mstate.base, key);
-      case MOpFlags::WarnDefine:
-        return ElemD<true,false>(mstate.tvRef, mstate.base, key);
     }
     always_assert(false);
   }();
@@ -4663,7 +3302,7 @@ static inline TypedValue key_tv(MemberKey key) {
     case MW:
       return TypedValue{};
     case MEL: case MPL: {
-      auto local = frame_local_inner(vmfp(), key.iva);
+      auto local = tvToCell(frame_local(vmfp(), key.iva));
       if (local->m_type == KindOfUninit) {
         raise_undefined_local(vmfp(), key.iva);
         return make_tv<KindOfNull>();
@@ -4692,9 +3331,9 @@ static OPTBLD_INLINE void dimDispatch(MOpFlags flags, MemberKey mk) {
     if (flags == MOpFlags::Warn) raise_error("Cannot use [] for reading");
 
     auto& mstate = vmMInstrState();
-    auto result =
-      flags & MOpFlags::DefineReffy ? NewElem<true>(mstate.tvRef, mstate.base)
-                                    : NewElem<false>(mstate.tvRef, mstate.base);
+    auto result = flags == MOpFlags::DefineReffy
+      ? NewElem<true>(mstate.tvRef, mstate.base)
+      : NewElem<false>(mstate.tvRef, mstate.base);
     mstate.base = ratchetRefs(result, mstate.tvRef, mstate.tvRef2);
   }
 }
@@ -4891,20 +3530,20 @@ OPTBLD_INLINE void iopUnsetM(IOP_ARGS) {
 
 static OPTBLD_INLINE void setWithRefImpl(TypedValue key, TypedValue* value) {
   auto& mstate = vmMInstrState();
-  mstate.base = ElemD<false,true>(mstate.tvRef, mstate.base, key);
+  mstate.base = ElemD<MOpFlags::DefineReffy>(mstate.tvRef, mstate.base, key);
   tvAsVariant(mstate.base).setWithRef(tvAsVariant(value));
 
   mFinal(mstate, 0, folly::none);
 }
 
 OPTBLD_INLINE void iopSetWithRefLML(IOP_ARGS) {
-  auto const key = *frame_local_inner(vmfp(), decode_iva(pc));
+  auto const key = *tvToCell(frame_local(vmfp(), decode_iva(pc)));
   auto const valLoc = decode_la(pc);
   setWithRefImpl(key, frame_local(vmfp(), valLoc));
 }
 
 OPTBLD_INLINE void iopSetWithRefRML(IOP_ARGS) {
-  auto const key = *frame_local_inner(vmfp(), decode_iva(pc));
+  auto const key = *tvToCell(frame_local(vmfp(), decode_iva(pc)));
   setWithRefImpl(key, vmStack().topTV());
   vmStack().popTV();
 }
@@ -4946,7 +3585,7 @@ OPTBLD_INLINE void iopVGetG(IOP_ARGS) {
 }
 
 OPTBLD_INLINE void iopVGetS(IOP_ARGS) {
-  getS<true>(pc);
+  getS<true>();
 }
 
 OPTBLD_INLINE void iopIssetN(IOP_ARGS) {
@@ -5053,7 +3692,7 @@ OPTBLD_FLT_INLINE void iopAssertRATL(IOP_ARGS) {
       vm->getContainingFileName()->data(),
       vm->getLine(),
       show(rat),
-      tv.pretty()
+      toStringElm(&tv)
     );
     return;
   }
@@ -5073,7 +3712,7 @@ OPTBLD_INLINE void iopAssertRATStk(IOP_ARGS) {
       vm->getContainingFileName()->data(),
       vm->getLine(),
       show(rat),
-      tv.pretty()
+      toStringElm(&tv)
     );
     return;
   }
@@ -5149,13 +3788,47 @@ OPTBLD_INLINE void iopGetMemoKey(IOP_ARGS) {
   vmStack().replaceTV(*res);
 }
 
+namespace {
+const StaticString s_idx("hh\\idx");
+
+TypedValue genericIdx(TypedValue obj, TypedValue key, TypedValue def) {
+  static auto func = Unit::loadFunc(s_idx.get());
+  assertx(func != nullptr);
+  TypedValue args[] = {
+    obj,
+    key,
+    def
+  };
+  TypedValue ret;
+  g_context->invokeFuncFew(&ret, func, nullptr, nullptr, 3, &args[0]);
+  return ret;
+}
+}
+
 OPTBLD_INLINE void iopIdx(IOP_ARGS) {
   TypedValue* def = vmStack().topTV();
   TypedValue* key = vmStack().indTV(1);
   TypedValue* arr = vmStack().indTV(2);
 
-  TypedValue result = jit::genericIdx(*arr, *key, *def);
-  vmStack().popTV();
+  TypedValue result;
+  if (isArrayType(arr->m_type)) {
+    new (&result) Variant(HHVM_FN(hphp_array_idx)(tvAsCVarRef(arr),
+                                                  tvAsCVarRef(key),
+                                                  tvAsCVarRef(def)));
+    vmStack().popTV();
+  } else if (isNullType(key->m_type)) {
+    tvRefcountedDecRef(arr);
+    *arr = *def;
+    vmStack().ndiscard(2);
+    return;
+  } else if (!isStringType(arr->m_type) &&
+             arr->m_type != KindOfObject) {
+    result = *def;
+    vmStack().discard();
+  } else {
+    result = genericIdx(*arr, *key, *def);
+    vmStack().popTV();
+  }
   vmStack().popTV();
   tvRefcountedDecRef(arr);
   *arr = result;
@@ -5442,7 +4115,7 @@ OPTBLD_INLINE ActRec* fPushFuncImpl(const Func* func, int numArgs) {
   ar->m_func = func;
   ar->initNumArgs(numArgs);
   ar->trashVarEnv();
-  setTypesFlag(ar);
+  setTypesFlag(vmfp(), ar);
   return ar;
 }
 
@@ -5592,7 +4265,7 @@ void fPushObjMethodImpl(Class* cls, StringData* name, ObjectData* obj,
     ar->trashVarEnv();
     decRefStr(name);
   }
-  setTypesFlag(ar);
+  setTypesFlag(vmfp(), ar);
 }
 
 void fPushNullObjMethod(int numArgs) {
@@ -5705,7 +4378,7 @@ void pushClsMethodImpl(Class* cls, StringData* name, ObjectData* obj,
     ar->trashVarEnv();
     decRefStr(const_cast<StringData*>(name));
   }
-  setTypesFlag(ar);
+  setTypesFlag(vmfp(), ar);
 }
 
 OPTBLD_INLINE void iopFPushClsMethod(IOP_ARGS) {
@@ -5779,7 +4452,7 @@ OPTBLD_INLINE void iopFPushCtor(IOP_ARGS) {
   ar->setThis(this_);
   ar->initNumArgs(numArgs);
   ar->trashVarEnv();
-  setTypesFlag(ar);
+  setTypesFlag(vmfp(), ar);
 }
 
 OPTBLD_INLINE void iopFPushCtorD(IOP_ARGS) {
@@ -5807,7 +4480,7 @@ OPTBLD_INLINE void iopFPushCtorD(IOP_ARGS) {
   ar->setThis(this_);
   ar->initNumArgs(numArgs);
   ar->trashVarEnv();
-  setTypesFlag(ar);
+  setTypesFlag(vmfp(), ar);
 }
 
 OPTBLD_INLINE void iopDecodeCufIter(IOP_ARGS) {
@@ -5868,12 +4541,10 @@ OPTBLD_INLINE void iopFPushCufIter(IOP_ARGS) {
   } else {
     ar->trashVarEnv();
   }
-  setTypesFlag(ar);
+  setTypesFlag(vmfp(), ar);
 }
 
-OPTBLD_INLINE void doFPushCuf(PC& pc, bool forward, bool safe) {
-  auto numArgs = decode_iva(pc);
-
+OPTBLD_INLINE void doFPushCuf(int32_t numArgs, bool forward, bool safe) {
   TypedValue func = vmStack().topTV()[safe];
 
   ObjectData* obj = nullptr;
@@ -5912,20 +4583,20 @@ OPTBLD_INLINE void doFPushCuf(PC& pc, bool forward, bool safe) {
   } else {
     ar->trashVarEnv();
   }
-  setTypesFlag(ar);
+  setTypesFlag(vmfp(), ar);
   tvRefcountedDecRef(&func);
 }
 
 OPTBLD_INLINE void iopFPushCuf(IOP_ARGS) {
-  doFPushCuf(pc, false, false);
+  doFPushCuf(decode_iva(pc), false, false);
 }
 
 OPTBLD_INLINE void iopFPushCufF(IOP_ARGS) {
-  doFPushCuf(pc, true, false);
+  doFPushCuf(decode_iva(pc), true, false);
 }
 
 OPTBLD_INLINE void iopFPushCufSafe(IOP_ARGS) {
-  doFPushCuf(pc, false, true);
+  doFPushCuf(decode_iva(pc), false, true);
 }
 
 OPTBLD_INLINE void iopFPassC(IOP_ARGS) {
@@ -6136,7 +4807,8 @@ enum class CallArrOnInvalidContainer {
 };
 
 static bool doFCallArray(PC& pc, int numStackValues,
-                         CallArrOnInvalidContainer onInvalid) {
+                         CallArrOnInvalidContainer onInvalid,
+                         void* ret = nullptr) {
   assert(numStackValues >= 1);
   ActRec* ar = (ActRec*)(vmStack().top() + numStackValues);
   assert(ar->numArgs() == numStackValues);
@@ -6178,6 +4850,11 @@ static bool doFCallArray(PC& pc, int numStackValues,
           int(vmfp()->m_func->base()));
     ar->setReturn(vmfp(), pc, mcg->ustubs().retHelper);
 
+    // When called from the jit, populate the correct return address
+    if (ret) {
+      ar->setJitReturn(ret);
+    }
+
     auto prepResult = prepareArrayArgs(ar, args, vmStack(), numStackValues,
                                        /* ref param checks */ true, nullptr);
     if (UNLIKELY(!prepResult)) {
@@ -6195,7 +4872,7 @@ static bool doFCallArray(PC& pc, int numStackValues,
   return true;
 }
 
-bool doFCallArrayTC(PC pc, int32_t numArgs) {
+bool doFCallArrayTC(PC pc, int32_t numArgs, void* retAddr) {
   assert_native_stack_aligned();
   assert(tl_regState == VMRegState::DIRTY);
   tl_regState = VMRegState::CLEAN;
@@ -6204,7 +4881,7 @@ bool doFCallArrayTC(PC pc, int32_t numArgs) {
     numArgs = 1;
     onInvalid = CallArrOnInvalidContainer::CastToArray;
   }
-  auto const ret = doFCallArray(pc, numArgs, onInvalid);
+  auto const ret = doFCallArray(pc, numArgs, onInvalid, retAddr);
   tl_regState = VMRegState::DIRTY;
   return ret;
 }
@@ -6238,7 +4915,7 @@ OPTBLD_INLINE void iopCufSafeReturn(IOP_ARGS) {
   vmStack().ndiscard(2);
 }
 
-inline bool initIterator(PC& pc, PC& origPc, Iter* it,
+inline bool initIterator(PC& pc, PC origPc, Iter* it,
                          Offset offset, Cell* c1) {
   bool hasElems = it->init(c1);
   if (!hasElems) {
@@ -6732,7 +5409,7 @@ OPTBLD_INLINE void iopVerifyParamType(IOP_ARGS) {
   }
 }
 
-OPTBLD_INLINE void implVerifyRetType(PC& pc) {
+OPTBLD_INLINE void implVerifyRetType() {
   if (LIKELY(!RuntimeOption::EvalCheckReturnTypeHints)) {
     return;
   }
@@ -6746,11 +5423,11 @@ OPTBLD_INLINE void implVerifyRetType(PC& pc) {
 }
 
 OPTBLD_INLINE void iopVerifyRetTypeC(IOP_ARGS) {
-  implVerifyRetType(pc);
+  implVerifyRetType();
 }
 
 OPTBLD_INLINE void iopVerifyRetTypeV(IOP_ARGS) {
-  implVerifyRetType(pc);
+  implVerifyRetType();
 }
 
 OPTBLD_INLINE TCA iopNativeImpl(IOP_ARGS) {
@@ -7064,7 +5741,8 @@ OPTBLD_INLINE void iopContEnterDelegate(IOP_ARGS) {
   EventHook::FunctionResumeYield(vmfp());
 }
 
-OPTBLD_INLINE TCA yieldFromGenerator(PC& pc, Generator* gen, Offset resumeOffset) {
+OPTBLD_INLINE
+TCA yieldFromGenerator(PC& pc, Generator* gen, Offset resumeOffset) {
   auto fp = vmfp();
 
   assert(tvIsGenerator(gen->m_delegate));
@@ -7092,7 +5770,8 @@ OPTBLD_INLINE TCA yieldFromGenerator(PC& pc, Generator* gen, Offset resumeOffset
   return jitReturnPost(jitReturn);
 }
 
-OPTBLD_INLINE TCA yieldFromIterator(PC& pc, Generator* gen, Iter* it, Offset resumeOffset) {
+OPTBLD_INLINE
+TCA yieldFromIterator(PC& pc, Generator* gen, Iter* it, Offset resumeOffset) {
   auto fp = vmfp();
 
   // For the most part this should never happen, the emitter assigns our
@@ -7339,7 +6018,7 @@ OPTBLD_INLINE TCA iopAwait(IOP_ARGS) {
     }
   }
   if (LIKELY(wh->isFailed())) {
-    throw_object_inl(Object(wh->getException()));
+    throw req::root<Object>{wh->getException()};
   }
   if (wh->isSucceeded()) {
     cellSet(wh->getResult(), *vmStack().topC());
@@ -7829,170 +6508,4 @@ TCA dispatchBB() {
   return switchModeForDebugger(retAddr);
 }
 
-void ExecutionContext::pushVMState(Cell* savedSP) {
-  if (UNLIKELY(!vmfp())) {
-    // first entry
-    assert(m_nestedVMs.size() == 0);
-    return;
-  }
-
-  TRACE(3, "savedVM: %p %p %p %p\n", vmpc(), vmfp(), vmFirstAR(), savedSP);
-  auto& savedVM = m_nestedVMs.alloc_back();
-  savedVM.pc = vmpc();
-  savedVM.fp = vmfp();
-  savedVM.firstAR = vmFirstAR();
-  savedVM.sp = savedSP;
-  savedVM.mInstrState = vmMInstrState();
-  savedVM.jitCalledFrame = vmJitCalledFrame();
-  m_nesting++;
-
-  if (debug && savedVM.fp &&
-      savedVM.fp->m_func &&
-      savedVM.fp->m_func->unit()) {
-    // Some asserts and tracing.
-    const Func* func = savedVM.fp->m_func;
-    /* bound-check asserts in offsetOf */
-    func->unit()->offsetOf(savedVM.pc);
-    TRACE(3, "pushVMState: saving frame %s pc %p off %d fp %p\n",
-          func->name()->data(),
-          savedVM.pc,
-          func->unit()->offsetOf(savedVM.pc),
-          savedVM.fp);
-  }
-}
-
-void ExecutionContext::popVMState() {
-  if (UNLIKELY(m_nestedVMs.empty())) {
-    // last exit
-    vmfp() = nullptr;
-    vmpc() = nullptr;
-    vmFirstAR() = nullptr;
-    return;
-  }
-
-  assert(m_nestedVMs.size() >= 1);
-
-  VMState &savedVM = m_nestedVMs.back();
-  vmpc() = savedVM.pc;
-  vmfp() = savedVM.fp;
-  vmFirstAR() = savedVM.firstAR;
-  vmStack().top() = savedVM.sp;
-  vmMInstrState() = savedVM.mInstrState;
-  vmJitCalledFrame() = savedVM.jitCalledFrame;
-
-  if (debug) {
-    if (savedVM.fp &&
-        savedVM.fp->m_func &&
-        savedVM.fp->m_func->unit()) {
-      const Func* func = savedVM.fp->m_func;
-      (void) /* bound-check asserts in offsetOf */
-        func->unit()->offsetOf(savedVM.pc);
-      TRACE(3, "popVMState: restoring frame %s pc %p off %d fp %p\n",
-            func->name()->data(),
-            savedVM.pc,
-            func->unit()->offsetOf(savedVM.pc),
-            savedVM.fp);
-    }
-  }
-
-  m_nestedVMs.pop_back();
-  m_nesting--;
-
-  TRACE(1, "Reentry: exit fp %p pc %p\n", vmfp(), vmpc());
-}
-
-static void threadLogger(const char* header, const char* msg,
-                         const char* ending, void* data) {
-  auto* ec = static_cast<ExecutionContext*>(data);
-  ec->write(header);
-  ec->write(msg);
-  ec->write(ending);
-  ec->flush();
-}
-
-void ExecutionContext::requestInit() {
-  assert(SystemLib::s_unit);
-
-  EnvConstants::requestInit(req::make_raw<EnvConstants>());
-  VarEnv::createGlobal();
-  vmStack().requestInit();
-  ObjectData::resetMaxId();
-  ResourceHdr::resetMaxId();
-  mcg->requestInit();
-
-  if (RuntimeOption::EvalJitEnableRenameFunction) {
-    assert(SystemLib::s_anyNonPersistentBuiltins);
-  }
-
-  /*
-   * The normal case for production mode is that all builtins are
-   * persistent, and every systemlib unit is accordingly going to be
-   * merge only.
-   *
-   * However, if we have rename_function generally enabled, or if any
-   * builtin functions were specified as interceptable at
-   * repo-generation time, we'll actually need to merge systemlib on
-   * every request because some of the builtins will not be marked
-   * persistent.
-   */
-  if (UNLIKELY(SystemLib::s_anyNonPersistentBuiltins)) {
-    SystemLib::s_unit->merge();
-    SystemLib::mergePersistentUnits();
-    if (SystemLib::s_hhas_unit) SystemLib::s_hhas_unit->merge();
-    if (SystemLib::s_nativeFuncUnit) SystemLib::s_nativeFuncUnit->merge();
-    if (SystemLib::s_nativeClassUnit) SystemLib::s_nativeClassUnit->merge();
-  } else {
-    // System units are merge only, and everything is persistent.
-    assert(SystemLib::s_unit->isEmpty());
-    assert(!SystemLib::s_hhas_unit || SystemLib::s_hhas_unit->isEmpty());
-    assert(!SystemLib::s_nativeFuncUnit ||
-           SystemLib::s_nativeFuncUnit->isEmpty());
-    assert(!SystemLib::s_nativeClassUnit ||
-           SystemLib::s_nativeClassUnit->isEmpty());
-  }
-
-  profileRequestStart();
-
-  HHProf::Request::StartProfiling();
-
-#ifdef DEBUG
-  Class* cls = NamedEntity::get(s_stdclass.get())->clsList();
-  assert(cls);
-  assert(cls == SystemLib::s_stdclassClass);
-#endif
-
-  if (Logger::UseRequestLog) Logger::SetThreadHook(&threadLogger, this);
-
-  // Needs to be last (or nearly last): might cause unit merging to call an
-  // extension function in the VM; this is bad if systemlib itself hasn't been
-  // merged.
-  autoTypecheckRequestInit();
-}
-
-void ExecutionContext::requestExit() {
-  autoTypecheckRequestExit();
-  HHProf::Request::FinishProfiling();
-
-  manageAPCHandle();
-  syncGdbState();
-  mcg->requestExit();
-  vmStack().requestExit();
-  profileRequestEnd();
-  EventHook::Disable();
-  EnvConstants::requestExit();
-  tl_miter_table.clear();
-
-  if (m_globalVarEnv) {
-    req::destroy_raw(m_globalVarEnv);
-    m_globalVarEnv = nullptr;
-  }
-
-  if (!m_lastError.isNull()) {
-    clearLastError();
-  }
-
-  if (Logger::UseRequestLog) Logger::SetThreadHook(nullptr, nullptr);
-}
-
-///////////////////////////////////////////////////////////////////////////////
 }

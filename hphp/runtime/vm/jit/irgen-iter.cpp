@@ -40,8 +40,7 @@ void implMIterInit(IRGS& env, Offset relOffset, Lambda genFunc) {
   // TODO MIterInit doesn't check iterBranchTarget; this might be bug ...
 
   auto const exit  = makeExit(env);
-  auto const pred  = env.irb->predictedStackInnerType(
-    offsetFromIRSP(env, BCSPOffset{0}));
+  auto const pred  = env.irb->predictedStackInnerType(bcSPOffset(env));
   auto const src   = topV(env);
 
   if (!pred.subtypeOfAny(TArr, TObj)) {
@@ -273,9 +272,7 @@ void emitMIterFree(IRGS& env, int32_t iterId) {
   gen(env, MIterFree, IterId(iterId), fp(env));
 }
 
-void emitIterBreak(IRGS& env,
-                   const ImmVector& iv,
-                   Offset relOffset) {
+void emitIterBreak(IRGS& env, Offset relOffset, const ImmVector& iv) {
   for (int iterIndex = 0; iterIndex < iv.size(); iterIndex += 2) {
     IterKind iterKind = (IterKind)iv.vec32()[iterIndex];
     Id       iterId   = iv.vec32()[iterIndex + 1];

@@ -123,14 +123,14 @@ void init_use_vars(IRGS& env, SSATmp* closure) {
   // (which are per-instance).
   auto const nuse = cls->numDeclProperties() - func->numStaticLocals();
 
-  int use_var_off = sizeof(ObjectData) + cls->builtinODTailSize();
+  ptrdiff_t use_var_off = sizeof(ObjectData) + cls->builtinODTailSize();
 
   for (auto i = 0; i < nuse; ++i, use_var_off += sizeof(Cell)) {
     auto const ty = typeFromRAT(cls->declPropRepoAuthType(i));
     auto const addr = gen(
       env,
       LdPropAddr,
-      PropOffset { use_var_off },
+      ByteOffsetData { use_var_off },
       ty.ptr(Ptr::Prop),
       closure
     );
@@ -304,7 +304,7 @@ void emitPrologueBody(IRGS& env, uint32_t argc, TransID transID) {
     ReqBindJmpData {
       SrcKey { func, func->getEntryForNumArgs(argc), false },
       FPInvOffset { func->numSlotsInFrame() },
-      offsetFromIRSP(env, BCSPOffset{0}),
+      bcSPOffset(env),
       TransFlags{}
     },
     sp(env),
@@ -393,7 +393,7 @@ void emitFuncBodyDispatch(IRGS& env, const DVFuncletsVec& dvs) {
           ReqBindJmpData {
             SrcKey { func, dv.second, false },
             FPInvOffset { func->numSlotsInFrame() },
-            offsetFromIRSP(env, BCSPOffset{0}),
+            bcSPOffset(env),
             TransFlags{}
           },
           sp(env),
@@ -409,7 +409,7 @@ void emitFuncBodyDispatch(IRGS& env, const DVFuncletsVec& dvs) {
     ReqBindJmpData {
       SrcKey { func, func->base(), false },
       FPInvOffset { func->numSlotsInFrame() },
-      offsetFromIRSP(env, BCSPOffset{0}),
+      bcSPOffset(env),
       TransFlags{}
     },
     sp(env),

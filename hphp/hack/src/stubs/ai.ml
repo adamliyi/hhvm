@@ -9,8 +9,8 @@
  *)
 
 let do_ _ _ _ = ()
-let go _ _ _ _ _ = [], Relative_path.Set.empty
-let go_incremental _ _ _ _ _ =  [], Relative_path.Set.empty
+let go _ _ _ _ _ = Errors.empty, Relative_path.Set.empty
+let go_incremental _ _ _ _ _ =  Errors.empty, Relative_path.Set.empty
 let modify_shared_mem_sizes global_size heap_size _ =
   global_size, heap_size
 
@@ -43,6 +43,10 @@ module InfoService = struct
 
   let go _ _ _ _ _ = empty_result
 
+end
+
+module ServerFindDepFiles = struct
+  let go _ _ _ = []
 end
 
 module ServerFindRefs = struct

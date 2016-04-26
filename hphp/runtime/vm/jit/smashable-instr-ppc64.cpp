@@ -16,6 +16,7 @@
 
 #include "hphp/runtime/vm/jit/smashable-instr-ppc64.h"
 
+#include "hphp/runtime/vm/jit/abi-ppc64.h"
 #include "hphp/runtime/vm/jit/align-ppc64.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 
@@ -55,17 +56,17 @@ TCA emitSmashableCmpq(CodeBlock& cb, CGMeta& fixups, int32_t imm,
 
   // don't use cmpqim because of smashableCmpqImm implementation. A "load 32bits
   // immediate" is mandatory
-  a.li32(rfuncln(), imm);
-  a.lwz   (rAsm, r[disp]); // base + displacement
+  a.li32 (rfuncln(), imm);
+  a.lwz  (rAsm, r[disp]); // base + displacement
   a.extsw(rAsm, rAsm);
-  a.cmpd(rfuncln(), rAsm);
+  a.cmpd (rfuncln(), rAsm);
   return start;
 }
 
 TCA emitSmashableCall(CodeBlock& cb, CGMeta& fixups, TCA target) {
   align(cb, &fixups, Alignment::SmashCmpq, AlignContext::Live);
 
-  return EMIT_BODY(cb, call, Call, rsp(), rtoc(), rfuncln(), rvmfp(), target);
+  return EMIT_BODY(cb, call, Call, target);
 }
 
 TCA emitSmashableJmp(CodeBlock& cb, CGMeta& fixups, TCA target) {
@@ -134,7 +135,7 @@ void smashCall(TCA inst, TCA target) {
     always_assert(false && "smashCall has unexpected block");
   }
 
-  a.setFrontier(inst + smashableCallSkipPrologue());
+  a.setFrontier(inst);
 
   a.li64(ppc64_asm::reg::r12, reinterpret_cast<uint64_t>(target));
 }
@@ -180,7 +181,7 @@ TCA smashableCallTarget(TCA inst) {
   if (!ppc64_asm::Assembler::isCall(inst)) return nullptr;
 
   return reinterpret_cast<TCA>(
-      ppc64_asm::Assembler::getLi64(inst + smashableCallSkipPrologue()));
+      ppc64_asm::Assembler::getLi64(inst));
 }
 
 TCA smashableJmpTarget(TCA inst) {

@@ -13,9 +13,15 @@ open Core
 open Hh_json
 open Result
 open Result.Monad_infix
+open Utils
 
 let server_busy_error_code = 1
 let invalid_call_error_code = 2
+
+let string_positions_to_ints line column =
+  try
+    int_of_string line, int_of_string column
+  with Failure "int_of_string" -> raise Not_found
 
 (**
  * During transition from hh_client based to persistent connection based
@@ -35,7 +41,7 @@ let invalid_call_error_code = 2
 *)
 let args_to_call = function
   | [JSON_String "--auto-complete"; JSON_String content] ->
-    AutoCompleteCall content
+    Auto_complete_call content
   | [JSON_String "--identify-function"; JSON_String pos; JSON_String content] ->
     let tpos = Str.split (Str.regexp ":") pos in
     let line, char =
@@ -45,7 +51,52 @@ let args_to_call = function
              int_of_string line, int_of_string char
          | _ -> raise Not_found
       with _ -> raise Not_found in
-    IdentifyFunctionCall (content, line, char)
+    Identify_function_call (content, line, char)
+  | [JSON_String "--search"; JSON_String content] -> Search_call content
+  | [] -> Status_call
+  | [JSON_String "--find-refs"; JSON_String s] ->
+    let open FindRefsService in
+    begin match Str.split (Str.regexp "::") s with
+      | class_name :: method_name :: _ ->
+        Find_refs_call (Method (class_name, method_name))
+      | function_name :: _ ->
+        Find_refs_call (Function function_name)
+      | _ -> raise Not_found
+    end
+  | [JSON_String "--find-class-refs"; JSON_String s] ->
+    Find_refs_call (FindRefsService.Class s)
+  | [JSON_String "--color"; JSON_String path]
+  | [JSON_String "--colour"; JSON_String path] ->
+    Colour_call path
+  | [JSON_String "--find-lvar-refs";
+     JSON_String content;
+     JSON_Number line;
+     JSON_Number column
+    ] ->
+      let line, column = string_positions_to_ints line column in
+      Find_lvar_refs_call (content, line, column)
+  | [JSON_String "--type-at-pos";
+     JSON_String content;
+     JSON_Number line;
+     JSON_Number column
+    ] ->
+      let line, column = string_positions_to_ints line column in
+      Type_at_pos_call (content, line, column)
+  | [JSON_String "--format";
+     JSON_String content;
+     JSON_Number start;
+     JSON_Number end_
+    ] ->
+      let start, end_ = string_positions_to_ints start end_ in
+      Format_call (content, start, end_)
+  | [JSON_String "--get-method-name";
+     JSON_String content;
+     JSON_Number line;
+     JSON_Number column
+    ] ->
+      let line, column = string_positions_to_ints line column in
+      Get_method_name_call (content, line, column)
+  | [JSON_String "--outline"; JSON_String content] -> Outline_call content
   | _ -> raise Not_found
 
 let call_of_string s =
@@ -104,20 +155,20 @@ let call_of_string s =
     (get_call id fields)
   with
   | Ok x -> x
-  | Error `Syntax_error e -> ParsingError ("Invalid JSON: " ^ e)
-  | Error `Not_object -> ParsingError "Expected JSON object"
-  | Error `No_id -> ParsingError "Request object must have id field"
-  | Error `Id_not_int -> ParsingError "id field must be an integer"
-  | Error `No_type -> ParsingError "Request object must have type field"
+  | Error `Syntax_error e -> Parsing_error ("Invalid JSON: " ^ e)
+  | Error `Not_object -> Parsing_error "Expected JSON object"
+  | Error `No_id -> Parsing_error "Request object must have id field"
+  | Error `Id_not_int -> Parsing_error "id field must be an integer"
+  | Error `No_type -> Parsing_error "Request object must have type field"
   | Error `Message_type_not_string ->
-    ParsingError "Type field must be a string"
+    Parsing_error "Type field must be a string"
   | Error `Message_type_not_recognized ->
-    ParsingError "Message type not recognized"
+    Parsing_error "Message type not recognized"
   | Error `No_args id ->
-    InvalidCall (id, "Request object must have an args field")
+    Invalid_call (id, "Request object must have an args field")
   | Error `Args_not_an_array id ->
-    InvalidCall (id, "Args field must be an array")
-  | Error `Call_not_recognized id -> InvalidCall (id, "Call not recognized")
+    Invalid_call (id, "Args field must be an array")
+  | Error `Call_not_recognized id -> Invalid_call (id, "Call not recognized")
 
 let build_response_json id result_field =
   JSON_Object [
@@ -128,8 +179,52 @@ let build_response_json id result_field =
 
 let json_string_of_response id response =
   let result_field = match response with
-    | AutoCompleteResponse r -> r
-    | IdentifyFunctionResponse s -> JSON_String s in
+    | Auto_complete_response r -> r
+    | Identify_function_response s -> JSON_String s
+    | Search_call_response r -> r
+    | Status_response r -> r
+    | Find_refs_response r -> ServerFindRefs.to_json r
+    | Colour_response r -> r
+    | Find_lvar_refs_response pos_list ->
+      let res_list = List.map pos_list (compose Pos.json Pos.to_absolute) in
+      JSON_Object [
+        "positions",      JSON_Array res_list;
+        "internal_error", JSON_Bool false
+      ]
+    | Type_at_pos_response (pos, ty) -> ServerInferType.to_json pos ty
+    | Format_response result ->
+      let error_text, result, is_error = match result with
+        | Format_hack.Disabled_mode -> "Php_or_decl", "", false
+        | Format_hack.Parsing_error _ -> "Parsing_error", "", false
+        | Format_hack.Internal_error -> "", "", true
+        | Format_hack.Success s -> "", s, false
+      in
+      JSON_Object [
+        "error_message",  JSON_String error_text;
+        "result",         JSON_String result;
+        "internal_error", JSON_Bool is_error;
+      ]
+    | Get_method_name_response result ->
+      begin match result with
+      | Some res ->
+        let result_type =
+          match res.IdentifySymbolService.type_ with
+          | IdentifySymbolService.Class -> "class"
+          | IdentifySymbolService.Method _ -> "method"
+          | IdentifySymbolService.Function -> "function"
+          | IdentifySymbolService.LocalVar -> "local"
+        in
+        JSON_Object [
+          "name",        JSON_String res.IdentifySymbolService.name;
+          "result_type", JSON_String result_type;
+          "pos",         Pos.json
+                           (Pos.to_absolute res.IdentifySymbolService.pos);
+        ]
+      | _ -> JSON_Object []
+      end
+    | Outline_response result ->
+      FileOutline.to_json result
+  in
   json_to_string (build_response_json id result_field)
 
 let json_string_of_error id error_code error_message  =

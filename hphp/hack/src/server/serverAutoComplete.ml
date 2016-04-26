@@ -12,27 +12,13 @@
 (*****************************************************************************)
 (* Code for auto-completion *)
 (*****************************************************************************)
-open Core
 
-let auto_complete files_info content =
+let auto_complete tcopt files_info content =
   AutocompleteService.attach_hooks();
   let content_funs, content_classes =
-    ServerIdeUtils.declare Relative_path.default content in
-  ServerIdeUtils.typecheck content_funs content_classes;
-  let fun_names, class_names =
-    files_info
-    |> Relative_path.Map.values
-    |> List.fold_left ~f:begin fun (f, c) { FileInfo.funs; classes; _ } ->
-      let add_all ids content_ids init =
-        List.fold_left ids ~init ~f: begin fun acc (_, x) ->
-          (* Duplicate class/function name is an error so should be rare, we
-           * only need to avoid adding the names declared in content twice *)
-          if SSet.mem x content_ids then acc else x::acc
-        end in
-      add_all funs content_funs f, add_all classes content_classes c
-    end ~init:(SSet.elements content_funs, SSet.elements content_classes)
-  in
-  let result = AutocompleteService.get_results fun_names class_names in
+    ServerIdeUtils.declare_and_check Relative_path.default content in
+  let result = AutocompleteService.get_results
+    tcopt content_funs content_classes in
   ServerIdeUtils.revive content_funs content_classes;
   AutocompleteService.detach_hooks();
   result

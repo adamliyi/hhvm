@@ -63,7 +63,6 @@ bool loadsCell(Opcode op) {
   case CGetElem:
   case VGetElem:
   case ArrayIdx:
-  case GenericIdx:
     switch (arch()) {
     case Arch::X64: return true;
     case Arch::ARM: return false;
@@ -95,18 +94,12 @@ bool storesCell(const IRInstruction& inst, uint32_t srcIdx) {
   // MixedArray elements, Map elements, and RefData inner values.  We don't
   // have StMem in here since it sometimes stores to RefDatas.
   switch (inst.op()) {
-  case StRetVal:
-    if (!inst.extra<StRetValData>()->wide) return false;
-    // fall through
   case StLoc:
     return srcIdx == 1;
-
   case StElem:
     return srcIdx == 2;
-
   case StStk:
     return srcIdx == 1;
-
   default:
     return false;
   }

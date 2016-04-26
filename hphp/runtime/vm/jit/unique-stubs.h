@@ -253,10 +253,14 @@ struct UniqueStubs {
    * Use interpreter functions to enter the pre-live ActRec that we place on
    * the stack (along with the Array of parameters) in a CallArray instruction.
    *
+   * fcallArrayReturn is only used by unwinder code to detect calls
+   * made from this stub.
+   *
    * @reached:  callarray from TC
    * @context:  func prologue
    */
   TCA fcallArrayHelper;
+  TCA fcallArrayReturn;
 
   /*
    * Similar to fcallArrayHelper, but takes an additional arg specifying the
@@ -267,6 +271,15 @@ struct UniqueStubs {
    * @context:  func prologue
    */
   TCA fcallUnpackHelper;
+
+  /*
+   * Use a special catch trace to clean up the native stack if unwinding occurs
+   * in the middle of fcallArrayHelper
+   *
+   * @reached: catch trace installed by unwinder
+   * @context: stub
+   */
+  TCA fcallArrayEndCatch;
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -366,6 +379,18 @@ struct UniqueStubs {
 
   /////////////////////////////////////////////////////////////////////////////
   // Other stubs.
+
+  /*
+   * Enter (or reenter) the TC.
+   *
+   * This is an assembly stub called from native code to transfer control
+   * (back) to jitted PHP code.
+   *
+   * enterTCExit is the address returned to when we leave the TC.
+   */
+  void (*enterTCHelper)(Cell* sp, ActRec* fp, TCA start,
+                        ActRec* firstAR, void* tl, ActRec* stashedAR);
+  TCA enterTCExit;
 
   /*
    * Return from this VM nesting level to the previous one.

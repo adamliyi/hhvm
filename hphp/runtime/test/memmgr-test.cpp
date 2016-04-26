@@ -19,7 +19,7 @@
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/resource-data.h"
 #include "hphp/runtime/base/dummy-resource.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
 
 namespace HPHP {
 
@@ -55,8 +55,11 @@ TEST(MemoryManager, RootMaps) {
 static void allocAndJoin(size_t size, bool free) {
   std::thread thread([&]() {
       MemoryManager::TlsWrapper::getCheck();
-      auto p = MM().objMalloc(size);
-      if (free) MM().objFree(p, size);
+      if (free) {
+        String str(size, ReserveString);
+      } else {
+        StringData::Make(size); // Leak.
+      }
     });
   thread.join();
 }

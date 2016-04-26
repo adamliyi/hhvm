@@ -198,6 +198,7 @@ bool canDCE(IRInstruction* inst) {
   case NewCol:
   case FreeActRec:
   case DefInlineFP:
+  case LdRetVal:
   case Mov:
   case CountArray:
   case CountArrayFast:
@@ -354,7 +355,6 @@ bool canDCE(IRInstruction* inst) {
   case CallBuiltin:
   case RetCtrl:
   case AsyncRetCtrl:
-  case StRetVal:
   case ReleaseVVAndSkip:
   case GenericRetDecRefs:
   case StMem:
@@ -404,7 +404,6 @@ bool canDCE(IRInstruction* inst) {
   case ArrayAdd:
   case ArrayIdx:
   case GetMemoKey:
-  case GenericIdx:
   case LdSwitchObjIndex:
   case LdSSwitchDestSlow:
   case InterpOne:
@@ -478,14 +477,20 @@ bool canDCE(IRInstruction* inst) {
   case EmptyProp:
   case IssetProp:
   case ElemX:
+  case ProfileMixedArrayOffset:
+  case CheckMixedArrayOffset:
+  case CheckArrayCOW:
   case ElemArray:
   case ElemArrayD:
   case ElemArrayW:
   case ElemArrayU:
+  case ElemMixedArrayK:
   case ElemDX:
   case ElemUX:
   case ArrayGet:
+  case MixedArrayGetK:
   case StringGet:
+  case OrdStrIdx:
   case MapGet:
   case CGetElem:
   case VGetElem:
@@ -524,6 +529,7 @@ bool canDCE(IRInstruction* inst) {
   case DbgTrashStk:
   case DbgTrashFrame:
   case DbgTrashMem:
+  case DbgTrashRetVal:
   case EnterFrame:
   case CheckStackOverflow:
   case InitExtraArgs:
@@ -532,7 +538,6 @@ bool canDCE(IRInstruction* inst) {
   case CheckARMagicFlag:
   case LdARNumArgsAndFlags:
   case StARNumArgsAndFlags:
-  case StTVAux:
   case StARInvName:
   case ExitPlaceholder:
   case ThrowOutOfBounds:
@@ -748,7 +753,7 @@ bool findWeakActRecUses(const BlockList& blocks,
  * Convert a localId in a callee frame into an SP relative offset in the caller
  * frame.
  */
-IRSPOffset locToStkOff(IRInstruction& inst) {
+IRSPRelOffset locToStkOff(IRInstruction& inst) {
   assertx(inst.is(LdLoc, StLoc, LdLocAddr, AssertLoc, CheckLoc, HintLocInner));
 
   auto locId = inst.extra<LocalId>()->locId;
@@ -874,48 +879,35 @@ void optimizeActRecs(const BlockList& blocks,
 void convertToStackInst(IRUnit& unit, IRInstruction& inst) {
   assertx(inst.is(CheckLoc, AssertLoc, LdLoc, StLoc, LdLocAddr, HintLocInner));
   assertx(inst.src(0)->inst()->is(DefInlineFP));
+
+  auto const data = IRSPRelOffsetData { locToStkOff(inst) };
+  auto const mainSP = unit.mainSP();
+
   switch (inst.op()) {
-    case StLoc: {
-      IRSPOffsetData data {locToStkOff(inst)};
-      unit.replace(&inst, StStk, data, unit.mainSP(), inst.src(1));
+    case StLoc:
+      unit.replace(&inst, StStk, data, mainSP, inst.src(1));
       return;
-    }
-    case LdLoc: {
-      auto ty = inst.typeParam();
-      IRSPOffsetData data {locToStkOff(inst)};
-      unit.replace(&inst, LdStk, data, ty, unit.mainSP());
+    case LdLoc:
+      unit.replace(&inst, LdStk, data, inst.typeParam(), mainSP);
       return;
-    }
-    case LdLocAddr: {
-      IRSPOffsetData data {locToStkOff(inst)};
-      unit.replace(&inst, LdStkAddr, data, unit.mainSP());
+    case LdLocAddr:
+      unit.replace(&inst, LdStkAddr, data, mainSP);
       retypeDests(&inst, &unit);
       return;
-    }
-    case AssertLoc: {
-      auto ty = inst.typeParam();
-      IRSPOffsetData data {locToStkOff(inst)};
-      unit.replace(&inst, AssertStk, data, ty, unit.mainSP());
+    case AssertLoc:
+      unit.replace(&inst, AssertStk, data, inst.typeParam(), mainSP);
       return;
-    }
     case CheckLoc: {
-      auto ty = inst.typeParam();
-      // NOTE: RelOffsetData takes an optional BCSPOffset but it only gets
-      // read inside of region-tracelet when we walk guards-- if we're
-      // killing an inlined frame its locals won't be part of the guards
-      RelOffsetData data {locToStkOff(inst)};
       auto next = inst.next();
-      unit.replace(&inst, CheckStk, data, ty, inst.taken(), unit.mainSP());
+      unit.replace(&inst, CheckStk, data, inst.typeParam(),
+                   inst.taken(), mainSP);
       inst.setNext(next);
       return;
     }
-    case HintLocInner: {
-      auto ty = inst.typeParam();
-      // NOTE: same as above
-      RelOffsetData data {locToStkOff(inst)};
-      unit.replace(&inst, HintStkInner, data, ty, unit.mainSP());
+    case HintLocInner:
+      unit.replace(&inst, HintStkInner, data, inst.typeParam(), mainSP);
       return;
-    }
+
     default: break;
   }
   not_reached();
@@ -925,34 +917,13 @@ void convertToInlineReturnNoFrame(IRUnit& unit, IRInstruction& inst) {
   assertx(inst.is(InlineReturn));
   auto const frameInst = inst.src(0)->inst();
   auto const spInst = frameInst->src(0)->inst();
+
+  auto const calleeAROff = frameInst->extra<DefInlineFP>()->spOffset;
+  auto const spOff = spInst->extra<DefSP>()->offset;
+
   InlineReturnNoFrameData data {
-    // +-------------------+
-    // |                   |
-    // | Outer Frame       |
-    // |                   |  <-- FP    --- ---
-    // +-------------------+             |   |
-    // |                   |             |   |  B: DefSP.offset
-    // | ...               |             |   |     (FPInvOffset, >= 0)
-    // +-------------------+             |   |
-    // |                   |  <-- SP     |  ---
-    // +-------------------+           C |   |
-    // |                   |             |   |
-    // | ...               |             |   |  A: DefInlineFP.spOffset
-    // +-------------------+             |   |     (IRSPRelOffset, <= 0)
-    // |                   |            ---  |
-    // | Callee Frame      |                 |
-    // |                   |                ---
-    // +-------------------+
-    //
-    // What we're trying to compute is C, a FPRelOffset (<0) from the
-    // Outer FP to the top cell in the Callee Frame. From the picture,
-    // we have |C| = |A| + |B| - 2. To get the negative result, A
-    // already has the correct sign, but we need to negate B and the
-    // minus 2 becomes +2, so: C = A - B + 2.
-    FPRelOffset {
-      frameInst->extra<DefInlineFP>()->spOffset.offset -
-        spInst->extra<DefSP>()->offset.offset + 2
-    }
+    // Offset of the callee's return value relative to the frame pointer.
+    calleeAROff.to<FPRelOffset>(spOff) + (AROFF(m_r) / sizeof(TypedValue))
   };
   unit.replace(&inst, InlineReturnNoFrame, data);
 }

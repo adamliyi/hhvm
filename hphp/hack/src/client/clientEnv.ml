@@ -36,6 +36,11 @@ type client_mode =
 | MODE_RETRIEVE_CHECKPOINT of string
 | MODE_DELETE_CHECKPOINT of string
 | MODE_STATS
+| MODE_FIND_LVAR_REFS of string
+| MODE_GET_METHOD_NAME of string
+| MODE_FORMAT of int * int
+| MODE_FIND_DEPENDENT_FILES of string
+| MODE_GET_DEFINITION of string
 
 type client_check_env = {
   mode: client_mode;
@@ -47,6 +52,7 @@ type client_check_env = {
   timeout: float option;
   autostart: bool;
   no_load: bool;
+  ai_mode: string option;
 }
 
 let mode_to_string = function
@@ -75,3 +81,8 @@ let mode_to_string = function
   | MODE_RETRIEVE_CHECKPOINT _ -> "MODE_RETRIEVE_CHECKPOINT"
   | MODE_DELETE_CHECKPOINT _ -> "MODE_DELETE_CHECKPOINT"
   | MODE_STATS -> "MODE_STATS"
+  | MODE_FIND_LVAR_REFS _ -> "MODE_FIND_LVAR_REFS"
+  | MODE_GET_METHOD_NAME _ -> "MODE_GET_METHOD_NAME"
+  | MODE_FORMAT _ -> "MODE_FORMAT"
+  | MODE_FIND_DEPENDENT_FILES _ -> "MODE_FIND_DEPENDENT_FILES"
+  | MODE_GET_DEFINITION _ -> "MODE_GET_DEFINITION"

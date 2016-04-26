@@ -285,10 +285,16 @@ GeneralEffects may_reenter(const IRInstruction& inst, GeneralEffects x) {
    * actually uses may_reenter with a non-AEmpty kills at the time of this
    * writing anyway.
    */
-  auto const killed_stack =
-    stack_below(inst.marker().fp(), -inst.marker().spOff().offset - 1);
-  auto const kills_union = x.kills.precise_union(killed_stack);
-  auto const new_kills = kills_union ? *kills_union : killed_stack;
+  auto const new_kills = [&] {
+    if (inst.marker().fp() == nullptr) return AEmpty;
+
+    auto const killed_stack = stack_below(
+      inst.marker().fp(),
+      -inst.marker().spOff().offset - 1
+    );
+    auto const kills_union = x.kills.precise_union(killed_stack);
+    return kills_union ? *kills_union : killed_stack;
+  }();
 
   return GeneralEffects {
     x.loads | AHeapAny
@@ -480,10 +486,6 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
    * If we're returning from a function, it's ReturnEffects.  The RetCtrl
    * opcode also suspends resumables, which we model as having any possible
    * effects.
-   *
-   * Note that marking AFrameAny as dead isn't quite right, because that
-   * ought to mean that the preceding StRetVal is dead; but memory effects
-   * ignores StRetVal so the AFrameAny is fine.
    */
   case RetCtrl:
     if (inst.extra<RetCtrl>()->suspendingResumed) {
@@ -909,6 +911,15 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
       return may_load_store_move(stack_in, AEmpty, stack_in);
     }
 
+  case ProfileMixedArrayOffset:
+  case CheckMixedArrayOffset:
+  case CheckArrayCOW:
+    return may_load_store(AHeapAny, AEmpty);
+
+  case ElemMixedArrayK:
+  case MixedArrayGetK:
+    return may_load_store(AElemAny, AEmpty);
+
   case ArrayIdx:
     return may_load_store(AElemAny | ARefAny, AEmpty);
   case MapIdx:
@@ -1054,7 +1065,7 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
 
   case CheckStk:
     return may_load_store(
-      AStack { inst.src(0), inst.extra<CheckStk>()->irSpOffset.offset, 1 },
+      AStack { inst.src(0), inst.extra<CheckStk>()->offset.offset, 1 },
       AEmpty
     );
   case CufIterSpillFrame:
@@ -1204,7 +1215,6 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
   case LdARNumArgsAndFlags:
   case StARNumArgsAndFlags:
   case LdTVAux:
-  case StTVAux:
   case LdARInvName:
   case StARInvName:
   case MethodExists:
@@ -1226,7 +1236,7 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
   case StClosureArg:
   case StContArKey:
   case StContArValue:
-  case StRetVal:
+  case LdRetVal:
   case ConvStrToInt:
   case ConvResToInt:
   case OrdStr:
@@ -1458,7 +1468,6 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
   case ConvCellToArr:  // decrefs src, may read obj props
   case ConvCellToObj:  // decrefs src
   case ConvObjToArr:   // decrefs src
-  case GenericIdx:
   case InitProps:
   case InitSProps:
   case OODeclExists:
@@ -1474,7 +1483,8 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
   case LookupCns:
   case LookupCnsE:
   case LookupCnsU:
-  case StringGet:      // raise_warning
+  case StringGet:      // raise_notice
+  case OrdStrIdx:      // raise_notice
   case ArrayAdd:       // decrefs source
   case AddElemIntKey:  // decrefs value
   case AddElemStrKey:  // decrefs value
@@ -1555,6 +1565,8 @@ MemEffects memory_effects_impl(const IRInstruction& inst) {
       AEmpty, AEmpty, AEmpty,
       pointee(inst.src(0))
     };
+  case DbgTrashRetVal:
+    return IrrelevantEffects {};
 
   //////////////////////////////////////////////////////////////////////
 
@@ -1613,9 +1625,10 @@ DEBUG_ONLY bool check_effects(const IRInstruction& inst, MemEffects me) {
          *
          * The mayRaiseError instructions should all be going through
          * may_reenter right now, which will kill the stack below the re-entry
-         * depth.
+         * depth---unless the marker for `inst' doesn't have an fp set.
          */
-        always_assert(AStackAny.maybe(x.kills));
+        always_assert(inst.marker().fp() == nullptr ||
+                      AStackAny.maybe(x.kills));
       }
     },
     [&] (PureLoad x)         { check(x.src); },

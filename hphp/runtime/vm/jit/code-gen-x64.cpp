@@ -33,6 +33,7 @@
 #include "hphp/runtime/base/apc-local-array.h"
 #include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/base/mixed-array.h"
+#include "hphp/runtime/base/packed-array.h"
 #include "hphp/runtime/base/rds-header.h"
 #include "hphp/runtime/base/rds-util.h"
 #include "hphp/runtime/base/rds.h"
@@ -40,6 +41,8 @@
 #include "hphp/runtime/base/shape.h"
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/base/string-data.h"
+//#include "hphp/runtime/base/typed-value.h"
+//#include "hphp/runtime/base/struct-array.h"
 
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/hhbc-codec.h"
@@ -59,7 +62,6 @@
 #include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/reg-algorithms.h"
 #include "hphp/runtime/vm/jit/service-requests.h"
-#include "hphp/runtime/vm/jit/stack-offsets-defs.h"
 #include "hphp/runtime/vm/jit/stack-offsets.h"
 #include "hphp/runtime/vm/jit/stack-overflow.h"
 #include "hphp/runtime/vm/jit/target-cache.h"
@@ -78,7 +80,9 @@
 #include "hphp/runtime/ext/asio/ext_async-function-wait-handle.h"
 #include "hphp/runtime/ext/asio/ext_wait-handle.h"
 #include "hphp/runtime/ext/std/ext_std_closure.h"
-#include "hphp/runtime/ext/collections/ext_collections-idl.h"
+#include "hphp/runtime/ext/collections/hash-collection.h"
+#include "hphp/runtime/ext/collections/ext_collections-pair.h"
+#include "hphp/runtime/ext/collections/ext_collections-vector.h"
 #include "hphp/runtime/ext/generator/ext_generator.h"
 
 #define rvmsp() DontUseRVmSpInThisFile
@@ -144,74 +148,13 @@ void ifRefCountedNonPersistent(Vout& v, Type ty, Vloc loc, Then then) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-/*
- * Emit code to store `loc', the registers representing `src', to `dst'.
- */
-void storeTV(Vout& v, Vptr dst, Vloc loc, const SSATmp* src) {
-  auto const type = src->type();
-
-  if (loc.isFullSIMD()) {
-    // The whole TV is stored in a single SIMD reg.
-    assertx(RuntimeOption::EvalHHIRAllocSIMDRegs);
-    v << storeups{loc.reg(), dst};
-    return;
-  }
-
-  if (type.needsReg()) {
-    assertx(loc.hasReg(1));
-    v << storeb{loc.reg(1), dst + TVOFF(m_type)};
-  } else {
-    v << storeb{v.cns(type.toDataType()), dst + TVOFF(m_type)};
-  }
-
-  // We ignore the values of statically nullish types.
-  if (src->isA(TNull) || src->isA(TNullptr)) return;
-
-  // Store the value.
-  if (src->hasConstVal()) {
-    // Skip potential zero-extend if we know the value.
-    v << store{v.cns(src->rawVal()), dst + TVOFF(m_data)};
-  } else {
-    assertx(loc.hasReg(0));
-    auto const extended = zeroExtendIfBool(v, src, loc.reg(0));
-    v << store{extended, dst + TVOFF(m_data)};
-  }
-}
-
-/*
- * Emit code to load `src' into `loc', the registers representing `dst'.
- */
-void loadTV(Vout& v, const SSATmp* dst, Vloc loc, Vptr src) {
-  auto const type = dst->type();
-
-  if (loc.isFullSIMD()) {
-    // The whole TV is loaded into a single SIMD reg.
-    assertx(RuntimeOption::EvalHHIRAllocSIMDRegs);
-    v << loadups{src, loc.reg()};
-    return;
-  }
-
-  if (type.needsReg()) {
-    assertx(loc.hasReg(1));
-    v << loadb{src + TVOFF(m_type), loc.reg(1)};
-  }
-
-  if (type <= TBool) {
-    v << loadtqb{src + TVOFF(m_data), loc.reg(0)};
-  } else {
-    v << load{src + TVOFF(m_data), loc.reg(0)};
-  }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-
 void debug_trashsp(Vout& v) {
   if (RuntimeOption::EvalHHIRGenerateAsserts) {
     v << syncvmsp{v.cns(0x42)};
   }
 }
 
-void maybe_syncsp(Vout& v, BCMarker marker, Vreg irSP, IRSPOffset off) {
+void maybe_syncsp(Vout& v, BCMarker marker, Vreg irSP, IRSPRelOffset off) {
   if (!marker.resumed()) {
     debug_trashsp(v);
     return;
@@ -223,6 +166,35 @@ void maybe_syncsp(Vout& v, BCMarker marker, Vreg irSP, IRSPOffset off) {
 
 RegSet cross_trace_args(BCMarker marker) {
   return marker.resumed() ? cross_trace_regs_resumed() : cross_trace_regs();
+}
+
+void prepare_return_regs(Vout& v, SSATmp* retVal, Vloc retLoc,
+                         folly::Optional<AuxUnion> aux) {
+  auto const type = [&] {
+    auto const mask = [&] { return uint64_t{(*aux).u_raw} << 32; };
+
+    if (!retLoc.hasReg(1)) {
+      auto const dt = retVal->type().toDataType();
+      return aux ? v.cns(dt | mask()) : v.cns(dt);
+    }
+    auto const type = retLoc.reg(1);
+
+    if (!aux) {
+      auto const ret = v.makeReg();
+      v << copy{type, ret};
+      return ret;
+    }
+
+    auto const extended = v.makeReg();
+    auto const result = v.makeReg();
+
+    v << movzbq{type, extended};
+    v << orq{extended, v.cns(mask()), result, v.makeReg()};
+    return result;
+  }();
+  auto const data = zeroExtendIfBool(v, retVal, retLoc.reg(0));
+
+  v << syncvmret{data, type};
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -646,17 +618,6 @@ void CodeGenerator::cgHalt(IRInstruction* inst) {
 
 //////////////////////////////////////////////////////////////////////
 
-void CodeGenerator::cgGenericIdx(IRInstruction* inst) {
-  auto& v = vmain();
-  auto const sp = srcLoc(inst, 3).reg();
-  auto const spOff = inst->extra<GenericIdx>()->offset.offset;
-  auto const sync_sp = v.makeReg();
-  v << lea{sp[cellsToBytes(spOff)], sync_sp};
-  emitEagerSyncPoint(v, inst->marker().fixupSk().pc(),
-                     rvmtl(), rvmfp(), sync_sp);
-  cgCallNative (v, inst);
-}
-
 void CodeGenerator::cgCallNative(Vout& v, IRInstruction* inst) {
   using namespace NativeCalls;
   always_assert(CallMap::hasInfo(inst->op()));
@@ -689,16 +650,26 @@ CallDest CodeGenerator::callDest(Vreg reg0, Vreg reg1) const {
 
 CallDest CodeGenerator::callDest(const IRInstruction* inst) const {
   if (!inst->numDsts()) return kVoidDest;
-  auto loc = dstLoc(inst, 0);
+  return callDest(inst, dstLoc(inst, 0));
+}
+
+CallDest CodeGenerator::callDest(const IRInstruction* inst,
+                                 const Vloc& loc) const {
   if (loc.numAllocated() == 0) return kVoidDest;
   assertx(loc.numAllocated() == 1);
-  return { inst->dst(0)->isA(TBool) ? DestType::Byte : DestType::SSA,
-           loc.reg(0) };
+  return {
+    inst->dst(0)->isA(TBool) ? DestType::Byte : DestType::SSA,
+    loc.reg(0)
+  };
 }
 
 CallDest CodeGenerator::callDestTV(const IRInstruction* inst) const {
   if (!inst->numDsts()) return kVoidDest;
-  auto loc = dstLoc(inst, 0);
+  return callDestTV(inst, dstLoc(inst, 0));
+}
+
+CallDest CodeGenerator::callDestTV(const IRInstruction* inst,
+                                   const Vloc& loc) const {
   if (loc.numAllocated() == 0) return kVoidDest;
   if (loc.isFullSIMD()) {
     assertx(loc.numAllocated() == 1);
@@ -718,112 +689,11 @@ CallDest CodeGenerator::callDestDbl(const IRInstruction* inst) const {
   return { DestType::Dbl, loc.reg(0) };
 }
 
-/*
- * Prepare the given ArgDest for a call by shifting or zero-extending as
- * appropriate, then append its Vreg to the given VregList.
- */
-static void prepareArg(const ArgDesc& arg, Vout& v, VregList& vargs) {
-  switch (arg.kind()) {
-    case ArgDesc::Kind::Reg: {
-      auto reg = arg.srcReg();
-      if (arg.isZeroExtend()) {
-        reg = v.makeReg();
-        v << movzbq{arg.srcReg(), reg};
-      }
-      vargs.push_back(reg);
-      break;
-    }
-
-    case ArgDesc::Kind::Imm: {
-      vargs.push_back(v.cns(arg.imm().q()));
-      break;
-    }
-
-    case ArgDesc::Kind::TypeImm: {
-      vargs.push_back(v.cns(arg.typeImm()));
-      break;
-    }
-
-    case ArgDesc::Kind::Addr: {
-      auto tmp = v.makeReg();
-      v << lea{arg.srcReg()[arg.disp().l()], tmp};
-      vargs.push_back(tmp);
-      break;
-    }
-  }
-}
-
-void
-CodeGenerator::cgCallHelper(Vout& v, CallSpec call, const CallDest& dstInfo,
-                            SyncOptions sync, const ArgGroup& args) {
-  auto const inst = args.inst();
-  jit::vector<Vreg> vargs, vSimdArgs, vStkArgs;
-  for (size_t i = 0; i < args.numGpArgs(); ++i) {
-    prepareArg(args.gpArg(i), v, vargs);
-  }
-  for (size_t i = 0; i < args.numSimdArgs(); ++i) {
-    prepareArg(args.simdArg(i), v, vSimdArgs);
-  }
-  for (size_t i = 0; i < args.numStackArgs(); ++i) {
-    prepareArg(args.stkArg(i), v, vStkArgs);
-  }
-
-  Fixup syncFixup;
-  if (RuntimeOption::HHProfEnabled || sync != SyncOptions::None) {
-    // If we are profiling the heap, we always need to sync because regs need
-    // to be correct during allocations no matter what
-    syncFixup = makeFixup(inst->marker(), sync);
-  }
-
-  Vlabel targets[2];
-  bool nothrow = false;
-  auto* taken = inst->taken();
-  auto const do_catch = taken && taken->isCatch();
-  if (do_catch) {
-    always_assert_flog(
-      inst->is(InterpOne) || sync != SyncOptions::None,
-      "cgCallHelper called with None but inst has a catch block: {}\n",
-      *inst
-    );
-    always_assert_flog(
-      taken->catchMarker() == inst->marker(),
-      "Catch trace doesn't match fixup:\n"
-      "Instruction: {}\n"
-      "Catch trace: {}\n"
-      "Fixup      : {}\n",
-      inst->toString(),
-      taken->catchMarker().show(),
-      inst->marker().show()
-    );
-
-    targets[0] = v.makeBlock();
-    targets[1] = m_state.labels[taken];
-  } else {
-    // The current instruction doesn't have a catch block so it'd better not
-    // throw. Register a null catch trace to indicate this to the
-    // unwinder.
-    nothrow = true;
-  }
-
-  VregList dstRegs;
-  if (dstInfo.reg0.isValid()) {
-    dstRegs.push_back(dstInfo.reg0);
-    if (dstInfo.reg1.isValid()) {
-      dstRegs.push_back(dstInfo.reg1);
-    }
-  }
-
-  auto argsId = v.makeVcallArgs(
-    {std::move(vargs), std::move(vSimdArgs), std::move(vStkArgs)});
-  auto dstId = v.makeTuple(std::move(dstRegs));
-  if (do_catch) {
-    v << vinvoke{call, argsId, dstId, {targets[0], targets[1]},
-                 syncFixup, dstInfo.type};
-    m_state.catch_calls[inst->taken()] = CatchCall::CPP;
-    v = targets[0];
-  } else {
-    v << vcall{call, argsId, dstId, syncFixup, dstInfo.type, nothrow};
-  }
+void CodeGenerator::cgCallHelper(Vout& v, CallSpec call,
+                                 const CallDest& dstInfo,
+                                 SyncOptions sync,
+                                 const ArgGroup& args) {
+  irlower::cgCallHelper(v, m_state, call, dstInfo, sync, args);
 }
 
 void CodeGenerator::cgMov(IRInstruction* inst) {
@@ -1432,6 +1302,37 @@ void CodeGenerator::cgOrdStr(IRInstruction* inst) {
   v << loadzbq{sd[0], dstLoc(inst, 0).reg()};
 }
 
+void CodeGenerator::cgOrdStrIdx(IRInstruction* inst) {
+  auto& v = vmain();
+  auto const strReg = srcLoc(inst, 0).reg();
+  auto const sd = v.makeReg();
+  auto const strLen = v.makeReg();
+  auto const srcOff = srcLoc(inst, 1).reg();
+  auto const sf = v.makeReg();
+
+  v << loadzlq{strReg[StringData::sizeOff()], strLen};
+  v << cmpq{srcOff, strLen, sf};
+  unlikelyCond(v, vcold(), CC_B, sf, dstLoc(inst, 0).reg(),
+               [&] (Vout& v) {
+                 cgCallHelper(
+                   v,
+                   CallSpec::direct(MInstrHelpers::stringGetI),
+                   kVoidDest,
+                   SyncOptions::Sync,
+                   argGroup(inst).ssa(0).ssa(1)
+                 );
+                 return v.cns(0);
+               },
+               [&] (Vout& v) {
+                 auto const dst = v.makeReg();
+                 // sd = StringData->m_data;
+                 v << load{strReg[StringData::dataOff()], sd};
+                 // dst = (unsigned char)sd[0];
+                 v << loadzbq{sd[srcOff], dst};
+                 return dst;
+               });
+}
+
 void CodeGenerator::cgConvBoolToStr(IRInstruction* inst) {
   auto dstReg = dstLoc(inst, 0).reg();
   auto srcReg = srcLoc(inst, 0).reg();
@@ -1658,8 +1559,12 @@ void CodeGenerator::cgLdObjMethod(IRInstruction* inst) {
   auto classptr = v.makeReg();
   v << mcprep{func_class};
 
+  // Get the Class* part of the cache line.
+  auto tmp = v.makeReg();
+  v << movtql{func_class, tmp};
+  v << movzlq{tmp, classptr};
+
   // Check the inline cache.
-  v << movl{func_class, classptr};  // zeros the top 32 bits
   auto const sf = v.makeReg();
   v << cmpq{classptr, clsReg, sf};
   v << jcc{CC_NE, sf, {fast_path, slow_path}};
@@ -1701,13 +1606,9 @@ void CodeGenerator::cgLdObjInvoke(IRInstruction* inst) {
   v << jcc{CC_Z, sf, {label(inst->next()), label(inst->taken())}};
 }
 
-void CodeGenerator::cgStRetVal(IRInstruction* inst) {
-  auto const rFp = srcLoc(inst, 0).reg();
-  storeTV(vmain(), rFp[AROFF(m_r)], srcLoc(inst, 1), inst->src(1));
-  if (RuntimeOption::EvalHHIRGenerateAsserts &&
-      inst->extra<StRetValData>()->wide) {
-    vmain() << storeli{0xbadbaad, rFp[AROFF(m_r.m_aux.u_fcallAwaitFlag)]};
-  }
+void CodeGenerator::cgLdRetVal(IRInstruction* inst) {
+  auto const fp = srcLoc(inst, 0).reg();
+  loadTV(vmain(), inst->dst(), dstLoc(inst, 0), fp[AROFF(m_r)], true);
 }
 
 void traceRet(ActRec* fp, Cell* sp, void* rip) {
@@ -1716,8 +1617,6 @@ void traceRet(ActRec* fp, Cell* sp, void* rip) {
   }
   checkFrame(fp, sp, /*fullCheck*/ false, 0);
   assertx(sp <= (Cell*)fp || fp->resumed());
-  // check return value if stack not empty
-  if (sp < (Cell*)fp) assertTv(sp);
 }
 
 static Vreg adjustSPForReturn(IRLS& env, const IRInstruction* inst) {
@@ -1748,12 +1647,17 @@ void CodeGenerator::cgRetCtrl(IRInstruction* inst) {
                v.makeVcallArgs({{prev_fp, sync_sp, ripReg}}), v.makeTuple({})};
   }
 
+  prepare_return_regs(v, inst->src(2), srcLoc(inst, 2),
+                      inst->extra<RetCtrl>()->aux);
   v << phpret{fp, rvmfp(), php_return_regs()};
 }
 
 void CodeGenerator::cgAsyncRetCtrl(IRInstruction* inst) {
+  auto& v = vmain();
   adjustSPForReturn(m_state, inst);
-  vmain() << leavetc{php_return_regs()};
+  prepare_return_regs(v, inst->src(2), srcLoc(inst, 2),
+                      inst->extra<AsyncRetCtrl>()->aux);
+  v << leavetc{php_return_regs()};
 }
 
 void CodeGenerator::cgLdBindAddr(IRInstruction* inst) {
@@ -1762,16 +1666,9 @@ void CodeGenerator::cgLdBindAddr(IRInstruction* inst) {
   auto& v = vmain();
 
   // Emit service request to smash address of SrcKey into 'addr'.
-  auto const addrPtr = mcg->allocData<TCA>(sizeof(TCA), 1);
+  auto const addrPtr = v.allocData<TCA>();
   v << bindaddr{addrPtr, extra->sk, extra->spOff};
-
-  // Load the maybe bound address.
-  auto const addr = reinterpret_cast<intptr_t>(addrPtr);
-  // the tc/global data is intentionally layed out to guarantee
-  // rip-relative addressing will work.
-  // Also, a rip-relative load, is 1 byte smaller than the corresponding
-  // baseless load.
-  v << loadqp{rip[addr], dstReg};
+  v << loadqd{reinterpret_cast<uint64_t*>(addrPtr), dstReg};
 }
 
 void CodeGenerator::cgProfileSwitchDest(IRInstruction* inst) {
@@ -1806,12 +1703,12 @@ void CodeGenerator::cgJmpSwitchDest(IRInstruction* inst) {
 
   maybe_syncsp(v, marker, srcLoc(inst, 1).reg(), extra->irSPOff);
 
-  auto const table = mcg->allocData<TCA>(sizeof(TCA), extra->cases);
+  auto const table = v.allocData<TCA>(extra->cases);
   auto const t = v.makeReg();
   for (int i = 0; i < extra->cases; i++) {
     v << bindaddr{&table[i], extra->targets[i], invSPOff};
   }
-  v << leap{rip[(intptr_t)table], t};
+  v << lead{table, t};
   v << jmpm{t[indexReg * 8], cross_trace_args(marker)};
 }
 
@@ -1819,16 +1716,23 @@ void CodeGenerator::cgLdSSwitchDestFast(IRInstruction* inst) {
   auto const extra = inst->extra<LdSSwitchDestFast>();
   auto const spOff = extra->spOff;
 
-  auto table = mcg->allocData<SSwitchMap>(64);
-  new (table) SSwitchMap(extra->numCases);
   auto& v = vmain();
+  auto const table = v.allocData<SSwitchMap>();
+  // XXX(t10347945): This causes our data section to own a pointer to heap
+  // memory, and we're putting bindaddrs in said heap memory.
+  new (table) SSwitchMap(extra->numCases);
 
   for (int64_t i = 0; i < extra->numCases; ++i) {
     table->add(extra->cases[i].str, nullptr);
     auto const addr = table->find(extra->cases[i].str);
-    v << bindaddr{addr, extra->cases[i].dest, spOff};
+    // The addresses we're passing to bindaddr{} here live in SSwitchMap's heap
+    // buffer (see comment above). They don't need to be relocated like normal
+    // VdataPtrs, so bind them here.
+    VdataPtr<TCA> dataPtr{nullptr};
+    dataPtr.bind(addr);
+    v << bindaddr{dataPtr, extra->cases[i].dest, spOff};
   }
-  auto const def = mcg->allocData<TCA>(sizeof(TCA), 1);
+  auto const def = v.allocData<TCA>();
   v << bindaddr{def, extra->defaultSk, spOff};
   cgCallHelper(v,
                CallSpec::direct(sswitchHelperFast),
@@ -1836,8 +1740,8 @@ void CodeGenerator::cgLdSSwitchDestFast(IRInstruction* inst) {
                SyncOptions::None,
                argGroup(inst)
                  .ssa(0)
-                 .immPtr(table)
-                 .immPtr(def));
+                 .dataPtr(table)
+                 .dataPtr(def));
 }
 
 static TCA sswitchHelperSlow(TypedValue typedVal,
@@ -1855,10 +1759,9 @@ void CodeGenerator::cgLdSSwitchDestSlow(IRInstruction* inst) {
   auto const extra = inst->extra<LdSSwitchDestSlow>();
   auto const spOff = extra->spOff;
 
-  auto strtab = mcg->allocData<const StringData*>(
-    sizeof(const StringData*), extra->numCases);
-  auto jmptab = mcg->allocData<TCA>(sizeof(TCA), extra->numCases + 1);
   auto& v = vmain();
+  auto strtab = v.allocData<const StringData*>(extra->numCases);
+  auto jmptab = v.allocData<TCA>(extra->numCases + 1);
 
   for (int i = 0; i < extra->numCases; ++i) {
     strtab[i] = extra->cases[i].str;
@@ -1871,9 +1774,9 @@ void CodeGenerator::cgLdSSwitchDestSlow(IRInstruction* inst) {
                SyncOptions::Sync,
                argGroup(inst)
                  .typedValue(0)
-                 .immPtr(strtab)
+                 .dataPtr(strtab)
                  .imm(extra->numCases)
-                 .immPtr(jmptab));
+                 .dataPtr(jmptab));
 }
 
 /*
@@ -1980,10 +1883,10 @@ void CodeGenerator::cgStLocRange(IRInstruction* inst) {
 }
 
 void CodeGenerator::cgEagerSyncVMRegs(IRInstruction* inst) {
-  auto const spOff = inst->extra<EagerSyncVMRegs>()->offset.offset;
+  auto const spOff = inst->extra<EagerSyncVMRegs>()->offset;
   auto& v = vmain();
   auto const sync_sp = v.makeReg();
-  v << lea{srcLoc(inst, 1).reg()[cellsToBytes(spOff)], sync_sp};
+  v << lea{srcLoc(inst, 1).reg()[cellsToBytes(spOff.offset)], sync_sp};
   emitEagerSyncPoint(v, inst->marker().fixupSk().pc(),
                      rvmtl(), srcLoc(inst, 0).reg(), sync_sp);
 }
@@ -2662,6 +2565,9 @@ void CodeGenerator::cgCallArray(IRInstruction* inst) {
                   {done, m_state.labels[inst->taken()]}};
   m_state.catch_calls[inst->taken()] = CatchCall::PHP;
   v = done;
+
+  auto const dst = dstLoc(inst, 0);
+  v << defvmret{dst.reg(0), dst.reg(1)};
 }
 
 void CodeGenerator::cgCall(IRInstruction* inst) {
@@ -2696,9 +2602,16 @@ void CodeGenerator::cgCall(IRInstruction* inst) {
   if (isNativeImplCall(callee, argc)) {
     // The assumption here is that for builtins, the generated func contains
     // only a single opcode (NativeImpl), and there are no non-argument locals.
-    assertx(argc == callee->numLocals() && callee->numIterators() == 0);
-    assertx(peek_op(callee->getEntry()) == Op::NativeImpl);
-    assertx(instrLen(callee->getEntry()) == callee->past() - callee->base());
+    if (do_assert) {
+      assertx(argc == callee->numLocals() && callee->numIterators() == 0);
+      PC addr = callee->getEntry();
+      while (peek_op(addr) == Op::AssertRATL) {
+        addr += instrLen(addr);
+      }
+      assertx(peek_op(addr) == Op::NativeImpl);
+      assertx(addr + instrLen(addr) ==
+              callee->unit()->entry() + callee->past());
+    }
     auto retAddr = (int64_t)mcg->ustubs().retHelper;
     v << store{v.cns(retAddr),
                sync_sp[cellsToBytes(argc) + AROFF(m_savedRip)]};
@@ -2712,7 +2625,7 @@ void CodeGenerator::cgCall(IRInstruction* inst) {
           builtinFuncPtr);
     // We sometimes call this while curFunc() isn't really the builtin, so
     // make sure to record the sync point as if we are inside the builtin.
-    if (mcg->fixupMap().eagerRecord(callee)) {
+    if (FixupMap::eagerRecord(callee)) {
       emitEagerSyncPoint(v, callee->getEntry(), rds, rvmfp(), sync_sp);
     }
     // Call the native implementation. This will free the locals for us in the
@@ -2729,6 +2642,7 @@ void CodeGenerator::cgCall(IRInstruction* inst) {
     // register so the trace we are returning to has it where it expects.
     // TODO(#1273094): we should probably modify the actual builtins to return
     // values via registers using the C ABI and do a reg-to-reg move.
+    loadTV(v, inst->dst(), dstLoc(inst, 0), rvmfp()[AROFF(m_r)], true);
     v << load{rvmfp()[AROFF(m_sfp)], rvmfp()};
     emitRB(v, Trace::RBTypeFuncExit, callee->fullName()->data());
     return;
@@ -2748,6 +2662,9 @@ void CodeGenerator::cgCall(IRInstruction* inst) {
   v << callphp{addr, php_call_regs(), {{next, catchBlock}}};
   m_state.catch_calls[inst->taken()] = CatchCall::PHP;
   v = next;
+
+  auto const dst = dstLoc(inst, 0);
+  v << defvmret{dst.reg(0), dst.reg(1)};
 }
 
 void CodeGenerator::cgCastHelper(IRInstruction *inst,
@@ -2993,7 +2910,7 @@ void CodeGenerator::cgCallBuiltin(IRInstruction* inst) {
     if (dstType.isValid()) {
       auto const sf = v.makeReg();
       v << testq{dstReg, dstReg, sf};
-      v << cmovq{CC_Z, sf, rtype, nulltype, dstType};
+      v << cmovb{CC_Z, sf, rtype, nulltype, dstType};
     }
     return;
   }
@@ -3008,7 +2925,7 @@ void CodeGenerator::cgCallBuiltin(IRInstruction* inst) {
     if (dstType.isValid()) {
       auto const sf = v.makeReg();
       v << testb{tmp_type, tmp_type, sf};
-      v << cmovq{CC_Z, sf, tmp_type, nulltype, dstType};
+      v << cmovb{CC_Z, sf, tmp_type, nulltype, dstType};
     }
     return;
   }
@@ -3052,6 +2969,10 @@ void CodeGenerator::cgDbgTrashFrame(IRInstruction* inst) {
 
 void CodeGenerator::cgDbgTrashMem(IRInstruction* inst) {
   emitTrashTV(srcLoc(inst, 0).reg(), 0, kTVTrashJITHeap);
+}
+
+void CodeGenerator::cgDbgTrashRetVal(IRInstruction* inst) {
+  emitTrashTV(srcLoc(inst, 0).reg(), AROFF(m_r), kTVTrashJITRetVal);
 }
 
 void CodeGenerator::cgNativeImpl(IRInstruction* inst) {
@@ -3219,10 +3140,10 @@ void CodeGenerator::cgStringIsset(IRInstruction* inst) {
   auto idxReg = srcLoc(inst, 1).reg();
   auto dstReg = dstLoc(inst, 0).reg();
   auto& v = vmain();
-  auto const idxTrunc = v.makeReg();
-  v << movtql{idxReg, idxTrunc};
+  auto const strLen = v.makeReg();
   auto const sf = v.makeReg();
-  v << cmplm{idxTrunc, strReg[StringData::sizeOff()], sf};
+  v << loadzlq{strReg[StringData::sizeOff()], strLen};
+  v << cmpq{idxReg, strLen, sf};
   v << setcc{CC_NBE, sf, dstReg};
 }
 
@@ -3315,12 +3236,19 @@ void CodeGenerator::cgLdPackedArrayElemAddr(IRInstruction* inst) {
   static_assert(sizeof(TypedValue) == 16 && sizeof(ArrayData) == 16, "");
   /*
    * This computes `rArr + rIdx * sizeof(TypedValue) + sizeof(ArrayData)`. The
-   * logic of `scaaledIdx * 16` is split in the following two instructions, in
+   * logic of `scaledIdx * 16` is split in the following two instructions, in
    * order to save a byte in the shl instruction.
+   *
+   * TODO(#7728856): We should really move this into vasm-x64.cpp...
    */
-  auto scaledIdx = v.makeReg();
-  v << shlli{1, rIdx, scaledIdx, v.makeReg()};
-  v << lea{Vptr{rArr, scaledIdx, 8, 16}, dst};
+  auto idxl = v.makeReg();
+  auto scaled_idxl = v.makeReg();
+  auto scaled_idx = v.makeReg();
+  v << movtql{rIdx, idxl};
+  v << shlli{1, idxl, scaled_idxl, v.makeReg()};
+  v << movzlq{scaled_idxl, scaled_idx};
+  v << lea{rArr[scaled_idx * int(sizeof(TypedValue) / 2) +
+                int(sizeof(ArrayData))], dst};
 }
 
 void CodeGenerator::cgCheckRange(IRInstruction* inst) {
@@ -3453,26 +3381,6 @@ void CodeGenerator::cgStElem(IRInstruction* inst) {
   }
 }
 
-Fixup CodeGenerator::makeFixup(const BCMarker& marker, SyncOptions sync) {
-  assertx(marker.valid());
-  auto stackOff = marker.spOff();
-  switch (sync) {
-  case SyncOptions::SyncAdjustOne:
-    stackOff -= 1;
-    break;
-  case SyncOptions::Sync:
-    break;
-  case SyncOptions::None:
-    // we can get here if we are memory profiling, since we override the
-    // normal sync settings and sync anyway
-    always_assert(RuntimeOption::HHProfEnabled);
-    break;
-  }
-
-  Offset pcOff = marker.fixupBcOff() - marker.fixupFunc()->base();
-  return Fixup{pcOff, stackOff.offset};
-}
-
 void CodeGenerator::cgLdMIStateAddr(IRInstruction* inst) {
   auto const base = rvmtl();
   int64_t offset = inst->src(0)->intVal();
@@ -3524,7 +3432,7 @@ void CodeGenerator::cgLdStk(IRInstruction* inst) {
 
 void CodeGenerator::cgCheckStk(IRInstruction* inst) {
   auto const rbase = srcLoc(inst, 0).reg();
-  auto const baseOff = cellsToBytes(inst->extra<CheckStk>()->irSpOffset.offset);
+  auto const baseOff = cellsToBytes(inst->extra<CheckStk>()->offset.offset);
   emitTypeCheck(inst->typeParam(), rbase[baseOff + TVOFF(m_type)],
                 rbase[baseOff + TVOFF(m_data)], inst->taken());
 }
@@ -4801,24 +4709,18 @@ void emitPackTVRegs(Vout& v, Vloc loc, const SSATmp* src,
 }
 
 void CodeGenerator::cgAsyncRetFast(IRInstruction* inst) {
-  auto const retValLoc = srcLoc(inst, 2);
-  auto const retValSrc = inst->src(2);
+  auto const ret = inst->src(2);
+  auto const retLoc = srcLoc(inst, 2);
   auto& v = vmain();
 
-  // Here we sync stack assuming the return value will be pushed onto stack by
-  // the stub, i.e. the fast path case.  If slow path is taken, SP will be
-  // adjusted accordingly.
   adjustSPForReturn(m_state, inst);
 
-  // The asyncRetCtrl stub takes 2 arguments: data and type of the return value.
-  emitPackTVRegs(v, retValLoc, retValSrc, rarg(0), rarg(1));
+  // The asyncRetCtrl stub takes the return TV as its arguments.
+  emitPackTVRegs(v, retLoc, ret, rarg(0), rarg(1));
+  auto args = vm_regs_with_sp() | rarg(1);
+  if (!ret->isA(TNull)) args |= rarg(0);
 
-  RegSet asyncStubRegs(vm_regs_with_sp() | rarg(1));
-  if (!(retValSrc->isA(TNull))) {
-      asyncStubRegs |= rarg(0);
-  }
-  auto const stub = mcg->ustubs().asyncRetCtrl;
-  v << jmpi{stub, asyncStubRegs};
+  v << jmpi{mcg->ustubs().asyncRetCtrl, args};
 }
 
 void CodeGenerator::cgIsWaitHandle(IRInstruction* inst) {
@@ -5114,8 +5016,7 @@ void CodeGenerator::cgNewStructArray(IRInstruction* inst) {
     }
   }
 
-  StringData** table = mcg->allocData<StringData*>(sizeof(StringData*),
-                                                      data->numKeys);
+  auto table = vmain().allocData<const StringData*>(data->numKeys);
   memcpy(table, data->keys, data->numKeys * sizeof(*data->keys));
   MixedArray* (*f)(uint32_t, const StringData* const*, const TypedValue*) =
     &MixedArray::MakeStruct;
@@ -5126,7 +5027,7 @@ void CodeGenerator::cgNewStructArray(IRInstruction* inst) {
     SyncOptions::None,
     argGroup(inst)
       .imm(data->numKeys)
-      .imm(uintptr_t(table))
+      .dataPtr(table)
       .addr(srcLoc(inst, 0).reg(), cellsToBytes(data->offset.offset))
   );
 }
@@ -5150,7 +5051,7 @@ void CodeGenerator::cgIncProfCounter(IRInstruction* inst) {
 }
 
 void CodeGenerator::cgDbgTraceCall(IRInstruction* inst) {
-  auto const spOff = inst->extra<DbgTraceCall>()->offset.offset;
+  auto const spOff = inst->extra<DbgTraceCall>()->offset;
   cgCallHelper(
     vmain(),
     CallSpec::direct(traceCallback),
@@ -5158,7 +5059,7 @@ void CodeGenerator::cgDbgTraceCall(IRInstruction* inst) {
     SyncOptions::None,
     argGroup(inst)
       .ssa(0)
-      .addr(srcLoc(inst, 1).reg(), cellsToBytes(spOff))
+      .addr(srcLoc(inst, 1).reg(), cellsToBytes(spOff.offset))
       .imm(inst->marker().bcOff())
   );
 }
@@ -5266,7 +5167,7 @@ void CodeGenerator::cgLdClsInitData(IRInstruction* inst) {
   auto& v = vmain();
   auto handle = v.makeReg();
   auto vec = v.makeReg();
-  v << loadl{clsReg[offset], handle};
+  v << loadzlq{clsReg[offset], handle};
   v << load{rds[handle], vec};
   v << load{vec[Class::PropInitVec::dataOff()], dstReg};
 }
@@ -5327,7 +5228,7 @@ void CodeGenerator::cgLdFuncNumParams(IRInstruction* inst) {
   auto tmp = v.makeReg();
   // See Func::finishedEmittingParams and Func::numParams.
   v << loadzlq{src, tmp};
-  v << shrli{1, tmp, dst, v.makeReg()};
+  v << shrqi{1, tmp, dst, v.makeReg()};
 }
 
 void CodeGenerator::cgInitPackedArray(IRInstruction* inst) {
@@ -5543,30 +5444,26 @@ void CodeGenerator::cgStARNumArgsAndFlags(IRInstruction* inst) {
 }
 
 void CodeGenerator::cgLdTVAux(IRInstruction* inst) {
-  auto const extra = inst->extra<LdTVAux>();
-  auto tv = srcLoc(inst, 0).reg();
-  auto dst = dstLoc(inst, 0).reg();
-  auto &v = vmain();
-  v << loadzlq{tv[TVOFF(m_aux)], dst};
+  auto const tv = srcLoc(inst, 0);
+  assertx(tv.hasReg(1));
+  auto const type = tv.reg(1);
+  auto const dst = dstLoc(inst, 0).reg();
+
+  auto& v = vmain();
+  v << shrqi{32, type, dst, v.makeReg()};
+
   if (RuntimeOption::EvalHHIRGenerateAsserts) {
-    auto mask = -extra->valid - 1;
+    auto const extra = inst->extra<LdTVAux>();
+    auto const mask = -extra->valid - 1;
+
     if (mask) {
       auto const sf = v.makeReg();
       v << testqi{mask, dst, sf};
       ifThen(v, CC_NZ, sf, [](Vout& v) {
-          v << ud2{};
-        });
+        v << ud2{};
+      });
     }
   }
-}
-
-void CodeGenerator::cgStTVAux(IRInstruction* inst) {
-  auto const fp = srcLoc(inst, 0).reg();
-  auto const val = srcLoc(inst, 1).reg();
-  auto &v = vmain();
-  auto const tmp = v.makeReg();
-  v << movtql{val, tmp};
-  v << storel{tmp, fp[AROFF(m_r.m_aux.u_fcallAwaitFlag)]};
 }
 
 void CodeGenerator::cgLdARInvName(IRInstruction* inst) {
@@ -5592,11 +5489,13 @@ void CodeGenerator::cgPackMagicArgs(IRInstruction* inst) {
   v << andli{ActRec::kNumArgsMask, naaf, num_args, v.makeReg()};
 
   auto const offset = v.makeReg();
+  auto const offsetq = v.makeReg();
   auto const values = v.makeReg();
 
   static_assert(sizeof(Cell) == 16, "");
   v << shlli{4, num_args, offset, v.makeReg()};
-  v << subq{offset, fp, values, v.makeReg()};
+  v << movzlq{offset, offsetq};
+  v << subq{offsetq, fp, values, v.makeReg()};
 
   cgCallHelper(
     v,

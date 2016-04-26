@@ -133,7 +133,6 @@ bool IRInstruction::consumesReference(int srcNo) const {
     case StClosureCtx:
     case StContArValue:
     case StContArKey:
-    case StRetVal:
     case StLoc:
     case AFWHBlockOn:
       // Consume the value being stored, not the thing it's being stored into
@@ -238,11 +237,11 @@ Type allocObjReturn(const IRInstruction* inst) {
 }
 
 Type arrElemReturn(const IRInstruction* inst) {
-  assertx(inst->is(LdStructArrayElem, ArrayGet));
+  assertx(inst->is(LdStructArrayElem, ArrayGet, MixedArrayGetK));
   assertx(!inst->hasTypeParam() || inst->typeParam() <= TGen);
 
   auto resultType = inst->hasTypeParam() ? inst->typeParam() : TGen;
-  if (inst->is(ArrayGet)) {
+  if (inst->is(ArrayGet, MixedArrayGetK)) {
     resultType &= TInitGen;
   }
 

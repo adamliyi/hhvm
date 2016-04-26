@@ -111,8 +111,12 @@ inline Reg8 rbyte(Reg64 r)     { return Reg8(int(r)); }
 inline Reg16 r16(Reg8 r)       { return Reg16(int(r)); }
 inline Reg32 r32(Reg8 r)       { return Reg32(int(r)); }
 inline Reg32 r32(Reg16 r)      { return Reg32(int(r)); }
-inline Reg32 r32(Reg64 r)      { return Reg32(int(r)); }
 inline Reg32 r32(Reg32 r)      { return r; }
+inline Reg32 r32(Reg64 r)      { return Reg32(int(r)); }
+inline Reg64 r64(Reg8 r)       { return Reg64(int(r)); }
+inline Reg64 r64(Reg16 r)      { return Reg64(int(r)); }
+inline Reg64 r64(Reg32 r)      { return Reg64(int(r)); }
+inline Reg64 r64(Reg64 r)      { return r; }
 
 //////////////////////////////////////////////////////////////////////
 
@@ -252,7 +256,7 @@ struct DispRIP {
     return DispRIP(disp - x);
   }
 
-  intptr_t disp; // TODO #4613274: should be int32_t
+  intptr_t disp;
 };
 
 // *(reg + x)
@@ -938,6 +942,8 @@ public:
   void decq(MemoryRef m) { instrM(instr_dec,  m); }
   void decl(MemoryRef m) { instrM32(instr_dec, m); }
   void decw(MemoryRef m) { instrM16(instr_dec, m); }
+
+  void push(Immed64 i) { emitI(instr_push, i.q()); }
 
   void movups(RegXMM x, MemoryRef m)        { instrRM(instr_movups, x, m); }
   void movups(MemoryRef m, RegXMM x)        { instrMR(instr_movups, m, x); }

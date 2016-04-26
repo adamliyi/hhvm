@@ -24,7 +24,10 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 inline void* ExecutionContext::operator new(size_t s) {
-  return req::malloc(s);
+  // Can't use req::make_raw here because we want raw memory, not a constructed
+  // object. This gets called generically from ThreadLocal, so we can't just
+  // change the call-sites.
+  return req::malloc(s, type_scan::getIndexForMalloc<ExecutionContext>());
 }
 
 inline void* ExecutionContext::operator new(size_t s, void* p) {
@@ -251,6 +254,25 @@ inline Variant ExecutionContext::invokeMethodV(
   Variant ret;
   *ret.asTypedValue() = tv;
   return ret;
+}
+
+inline ActRec* ExecutionContext::getOuterVMFrame(const ActRec* ar) {
+  ActRec* sfp = ar->sfp();
+  if (LIKELY(sfp != nullptr)) return sfp;
+  return LIKELY(!m_nestedVMs.empty()) ? m_nestedVMs.back().fp : nullptr;
+}
+
+inline Cell ExecutionContext::lookupClsCns(const StringData* cls,
+                                      const StringData* cns) {
+  return lookupClsCns(NamedEntity::get(cls), cls, cns);
+}
+
+inline VarEnv* ExecutionContext::hasVarEnv(int frame) {
+  auto const fp = getFrameAtDepth(frame);
+  if (fp && (fp->func()->attrs() & AttrMayUseVV)) {
+    if (fp->hasVarEnv()) return fp->getVarEnv();
+  }
+  return nullptr;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

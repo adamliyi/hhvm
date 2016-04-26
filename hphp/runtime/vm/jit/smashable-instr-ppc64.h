@@ -20,7 +20,6 @@
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/phys-reg.h"
 
-#include "hphp/runtime/vm/jit/abi-ppc64.h" // For PPC64_HAS_PUSH_POP definition
 #include "hphp/ppc64-asm/asm-ppc64.h"
 #include "hphp/util/data-block.h"
 
@@ -36,7 +35,7 @@ namespace ppc64 {
  * Mirrors the API of smashable-instr.h.
  */
 
-constexpr uint8_t kStdIns = ppc64_asm::Assembler::kBytesPerInstr;
+constexpr uint8_t kStdIns = ppc64_asm::instr_size_in_bytes;
 
 // li64
 constexpr size_t smashableMovqLen() { return kStdIns * 5; }
@@ -44,21 +43,11 @@ constexpr size_t smashableMovqLen() { return kStdIns * 5; }
 // li64 + cmpd
 constexpr size_t smashableCmpqLen() { return kStdIns * 6; }
 
-// prologue of call function until the li64 takes place. It skips:
-// mflr, stdu, stdu, std, addi, std
-constexpr uint8_t smashableCallSkipPrologue() { return kStdIns * 6; }
 // The following instruction size is from the beginning of the smashableCall
 // to the address the LR saves upon branching with bctrl (so the following)
 // Currently this calculation considers:
-// prologue, li64 (5 instr), mtctr, nop, nop, bctrl
-constexpr size_t smashableCallLen() {
-  return smashableCallSkipPrologue() + kStdIns * 9;
-}
-// to check the bctrl, it has to be on that instruction so don't skip that
-constexpr uint8_t smashableCallSkip() { return smashableCallLen() - kStdIns; }
-// epilogue of call function after the return address. It skips:
-// ld, ld, mtlr, ld, addi
-constexpr uint8_t smashableCallSkipEpilogue() { return kStdIns * 5; }
+// li64 (5 instr), mtctr, nop, nop, bctrl
+constexpr size_t smashableCallLen() { return kStdIns * 9; }
 
 // li64 + mtctr + nop + nop + bcctr
 constexpr size_t smashableJccLen()  { return kStdIns * 9; }

@@ -11,6 +11,7 @@
 open Core
 open ServerEnv
 open ServerCheckUtils
+open Reordered_argument_collections
 open Utils
 
 open Result.Export
@@ -64,7 +65,7 @@ let make_next_files genv : Relative_path.t MultiWorker.nextlist =
 
 let save_state env fn =
   let t = Unix.gettimeofday () in
-  if env.errorl <> []
+  if not (Errors.is_empty env.errorl)
   then failwith "--save-mini only works if there are no type errors!";
   let chan = Sys_utils.open_out_no_fail fn in
   let names = FileInfo.simplify_fast env.files_info in
@@ -98,7 +99,7 @@ let load_state root cmd (_ic, oc) =
         "%s %s %s"
         (Filename.quote (Path.to_string cmd))
         (Filename.quote (Path.to_string root))
-        (Filename.quote Build_id.build_id_ohai) in
+        (Filename.quote Build_id.build_revision) in
     Hh_logger.log "Running load_mini script: %s\n%!" cmd;
     let ic = Unix.open_process_in cmd in
     let json = read_json_line ic in
@@ -189,8 +190,7 @@ let indexing genv =
 let parsing genv env ~get_next t =
   let files_info, errorl, failed =
     Parsing_service.go genv.workers ~get_next in
-  let files_info =
-    Relative_path.Map.fold Relative_path.Map.add files_info env.files_info in
+  let files_info = Relative_path.Map.union files_info env.files_info in
   let hs = SharedMem.heap_size () in
   Hh_logger.log "Heap size: %d" hs;
   Stats.(stats.init_parsing_heap_size <- hs);
@@ -198,7 +198,7 @@ let parsing genv env ~get_next t =
   HackEventLogger.parsing_end t hs  ~parsed_count:0;
   let env = { env with
     files_info;
-    errorl = List.rev_append errorl env.errorl;
+    errorl = Errors.merge errorl env.errorl;
     failed_parsing = Relative_path.Set.union env.failed_parsing failed;
   } in
   env, (Hh_logger.log_duration "Parsing" t)
@@ -212,13 +212,13 @@ let update_files genv files_info t =
 
 let naming env t =
   let env =
-    Relative_path.Map.fold begin fun k v env ->
+    Relative_path.Map.fold env.files_info ~f:begin fun k v env ->
       let errorl, failed = NamingGlobal.ndecl_file k v in
       { env with
-        errorl = List.rev_append errorl env.errorl;
+        errorl = Errors.merge errorl env.errorl;
         failed_parsing = Relative_path.Set.union env.failed_parsing failed;
       }
-    end env.files_info env
+    end ~init:env
   in
   let hs = SharedMem.heap_size () in
   Hh_logger.log "Heap size: %d" hs;
@@ -227,7 +227,7 @@ let naming env t =
 let type_decl genv env fast t =
   let bucket_size = genv.local_config.SLC.type_decl_bucket_size in
   let errorl, failed_decl =
-    Typing_decl_service.go ~bucket_size genv.workers env.tcopt fast in
+    Decl_service.go ~bucket_size genv.workers env.tcopt fast in
   let hs = SharedMem.heap_size () in
   Hh_logger.log "Heap size: %d" hs;
   Stats.(stats.init_heap_size <- hs);
@@ -235,7 +235,7 @@ let type_decl genv env fast t =
   let t = Hh_logger.log_duration "Type-decl" t in
   let env = {
     env with
-    errorl = List.rev_append errorl env.errorl;
+    errorl = Errors.merge errorl env.errorl;
     failed_decl;
   } in
   env, t
@@ -245,31 +245,33 @@ let type_check genv env fast t =
   then begin
     let count = Relative_path.Map.cardinal fast in
     let errorl, failed = Typing_check_service.go genv.workers env.tcopt fast in
+    let hs = SharedMem.heap_size () in
+    Hh_logger.log "Heap size: %d" hs;
     HackEventLogger.type_check_end count t;
     let env = { env with
-      errorl = List.rev_append errorl env.errorl;
+      errorl = Errors.merge errorl env.errorl;
       failed_check = failed;
     } in
     env, (Hh_logger.log_duration "Type-check" t)
   end else env, t
 
 let get_dirty_fast old_fast fast dirty =
-  Relative_path.Set.fold begin fun fn acc ->
-    let dirty_fast = Relative_path.Map.get fn fast in
-    let dirty_old_fast = Relative_path.Map.get fn old_fast in
+  Relative_path.Set.fold dirty ~f:begin fun fn acc ->
+    let dirty_fast = Relative_path.Map.get fast fn in
+    let dirty_old_fast = Relative_path.Map.get old_fast fn in
     let fast = Option.merge dirty_old_fast dirty_fast FileInfo.merge_names in
     match fast with
-    | Some fast -> Relative_path.Map.add fn fast acc
+    | Some fast -> Relative_path.Map.add acc ~key:fn ~data:fast
     | None -> acc
-  end dirty Relative_path.Map.empty
+  end ~init:Relative_path.Map.empty
 
 let get_all_deps {FileInfo.n_funs; n_classes; n_types; n_consts} =
   let add_deps_of_sset dep_ctor sset depset =
-    SSet.fold begin fun n acc ->
+    SSet.fold sset ~init:depset ~f:begin fun n acc ->
       let dep = dep_ctor n in
       let deps = Typing_deps.get_bazooka dep in
       DepSet.union deps acc
-    end sset depset
+    end
   in
   let deps = add_deps_of_sset (fun n -> Dep.Fun n) n_funs DepSet.empty in
   let deps = add_deps_of_sset (fun n -> Dep.FunName n) n_funs deps in
@@ -288,9 +290,9 @@ let get_all_deps {FileInfo.n_funs; n_classes; n_types; n_consts} =
  * Finally we recheck the lot. *)
 let type_check_dirty genv env old_fast fast dirty_files t =
   let fast = get_dirty_fast old_fast fast dirty_files in
-  let names = Relative_path.Map.fold begin fun _k v acc ->
+  let names = Relative_path.Map.fold fast ~f:begin fun _k v acc ->
     FileInfo.merge_names v acc
-  end fast FileInfo.empty_names in
+  end ~init:FileInfo.empty_names in
   let deps = get_all_deps names in
   let to_recheck = Typing_deps.get_files deps in
   let fast = extend_fast fast env.files_info to_recheck in
@@ -309,7 +311,7 @@ let ai_check genv files_info env t =
     let errorl, failed = Ai.go
       Typing_check_utils.check_defs genv.workers files_info env.tcopt ai_opt in
     let env = { env with
-      errorl = List.rev_append errorl env.errorl;
+      errorl = Errors.merge errorl env.errorl;
       failed_check = Relative_path.Set.union failed env.failed_check;
     } in
     env, (Hh_logger.log_duration "Ai" t)
@@ -327,9 +329,9 @@ let print_hash_stats () =
     used_slots slots load_factor;
   ()
 
-let get_build_targets () =
+let get_build_targets env =
   let targets =
-    List.map (BuildMain.get_all_targets ()) (Relative_path.(concat Root)) in
+    List.map (BuildMain.get_live_targets env) (Relative_path.(concat Root)) in
   Relative_path.set_of_list targets
 
 (* entry point *)
@@ -358,8 +360,13 @@ let init ?load_mini_script genv =
   let t = update_files genv env.files_info t in
   let env, t = naming env t in
   let fast = FileInfo.simplify_fast env.files_info in
-  let fast = Relative_path.(Set.fold Map.remove) env.failed_parsing fast in
-  let env, t = type_decl genv env fast t in
+  let fast = Relative_path.Set.fold env.failed_parsing
+    ~f:Relative_path.Map.remove ~init:fast in
+  let env, t =
+    if genv.local_config.SLC.lazy_decl
+      && Option.is_none (ServerArgs.ai_mode genv.options)
+    then env, t
+    else type_decl genv env fast t in
 
   let state = state_future >>= fun f ->
     with_loader_timeout timeout (fun _ -> f `Wait_for_changes)
@@ -367,14 +374,14 @@ let init ?load_mini_script genv =
     genv.wait_until_ready ();
     let root = Path.to_string root in
     let updates = genv.notifier () in
-    let updates = SSet.filter (fun p ->
-      str_starts_with p root && ServerEnv.file_filter p) updates in
+    let updates = SSet.filter updates (fun p ->
+      str_starts_with p root && ServerEnv.file_filter p) in
     let changed_while_parsing = Relative_path.(relativize_set Root updates) in
     (* Build targets are untracked by version control, so we must always
      * recheck them. While we could query hg / git for the untracked files,
      * it's much slower. *)
     let dirty_files =
-      Relative_path.Set.union dirty_files (get_build_targets ()) in
+      Relative_path.Set.union dirty_files (get_build_targets env) in
     Ok (dirty_files, changed_while_parsing, old_fast)
   in
   HackEventLogger.vcs_changed_files_end t;

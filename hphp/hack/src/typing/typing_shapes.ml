@@ -45,7 +45,7 @@ let rec shrink_shape pos field_name env shape =
 
 let idx env fty shape_ty field default =
   let env, shape_ty = Env.expand_type env shape_ty in
-  let env, res = Typing_utils.in_var env (Reason.Rnone, Tunresolved []) in
+  let env, res = Env.fresh_unresolved_type env in
   match TUtils.shape_field_name env (fst field) (snd field) with
   | None -> env, (Reason.Rwitness (fst field), Tany)
   | Some field_name ->
@@ -94,7 +94,7 @@ let to_array env shape_ty res =
             begin match Env.get_class env cid with
               | Some class_ -> begin match Env.get_const env class_ mid with
                   | Some const ->
-                      Typing_phase.localize_with_self env const.ce_type
+                    Typing_phase.localize_with_self env const.cc_type
                   | None -> env, (Reason.Rnone, Tany)
                 end
               | None -> env, (Reason.Rnone, Tany)

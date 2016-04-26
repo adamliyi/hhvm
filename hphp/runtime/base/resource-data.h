@@ -64,15 +64,16 @@ make(Args&&... args);
  *
  * In the JIT, SSATmps of type Res are ResourceHdr pointers.
  */
-struct ResourceHdr {
+struct ResourceHdr final : type_scan::MarkCountable<ResourceHdr> {
   static void resetMaxId();
 
   IMPLEMENT_COUNTABLE_METHODS
   bool kindIsValid() const { return m_hdr.kind == HeaderKind::Resource; }
   void release() noexcept;
 
-  void init(size_t size) {
+  void init(size_t size, type_scan::Index tyindex) {
     m_hdr.init(size, HeaderKind::Resource, 1);
+    m_type_index = tyindex;
   }
 
   ResourceData* data() {
@@ -90,6 +91,8 @@ struct ResourceHdr {
     return m_hdr.aux;
   }
 
+  type_scan::Index typeIndex() const { return m_type_index; }
+
   int32_t getId() const { return m_id; }
   void setRawId(int32_t id) { m_id = id; }
   void setId(int32_t id); // only for BuiltinFiles
@@ -97,14 +100,18 @@ struct ResourceHdr {
 private:
   static void compileTimeAssertions();
 private:
+  static_assert(sizeof(type_scan::Index) <= 4,
+                "type_scan::Index cannot be greater than 32-bits");
+
   int32_t m_id;
+  type_scan::Index m_type_index;
   HeaderWord<uint16_t> m_hdr; // m_hdr.aux stores heap size
 };
 
 /**
  * Base class of all PHP resources.
  */
-struct ResourceData {
+struct ResourceData : type_scan::MarkCountable<ResourceData> {
   ResourceData();
 
   ResourceData(const ResourceData&) = delete;
@@ -291,7 +298,8 @@ typename std::enable_if<
   static_assert(size <= 0xffff && size < kMaxSmallSize, "");
   static_assert(std::is_convertible<T*,ResourceData*>::value, "");
   auto const b = static_cast<ResourceHdr*>(MM().mallocSmallSize(size));
-  b->init(size); // initialize HeaderWord
+  // initialize HeaderWord
+  b->init(size, type_scan::getIndexForMalloc<T>());
   try {
     auto r = new (b->data()) T(std::forward<Args>(args)...);
     assert(r->hasExactlyOneRef());

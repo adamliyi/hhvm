@@ -204,11 +204,13 @@ using ArgVec = jit::vector<Arg>;
  */
 template<typename... Args>
 TCA emit_persistent(CodeBlock& cb,
+                    DataBlock& data,
                     folly::Optional<FPInvOffset> spOff,
                     ServiceRequest sr,
                     Args... args);
 template<typename... Args>
 TCA emit_ephemeral(CodeBlock& cb,
+                   DataBlock& data,
                    TCA start,
                    folly::Optional<FPInvOffset> spOff,
                    ServiceRequest sr,
@@ -217,16 +219,18 @@ TCA emit_ephemeral(CodeBlock& cb,
 /*
  * Helpers for emitting specific service requests.
  */
-TCA emit_bindjmp_stub(CodeBlock& cb, CGMeta& fixups, FPInvOffset spOff,
+TCA emit_bindjmp_stub(CodeBlock& cb, DataBlock& data, CGMeta& fixups,
+                      FPInvOffset spOff,
                       TCA jmp, SrcKey target, TransFlags trflags);
-TCA emit_bindjcc1st_stub(CodeBlock& cb, CGMeta& fixups,
+TCA emit_bindjcc1st_stub(CodeBlock& cb, DataBlock& data, CGMeta& fixups,
                          FPInvOffset spOff, TCA jcc, SrcKey taken, SrcKey next,
                          ConditionCode cc);
-TCA emit_bindaddr_stub(CodeBlock& cb, CGMeta& fixups, FPInvOffset spOff,
-                       TCA* addr, SrcKey target, TransFlags trflags);
-TCA emit_retranslate_stub(CodeBlock& cb, FPInvOffset spOff,
+TCA emit_bindaddr_stub(CodeBlock& cb, DataBlock& data, CGMeta& fixups,
+                       FPInvOffset spOff, TCA* addr, SrcKey target,
+                       TransFlags trflags);
+TCA emit_retranslate_stub(CodeBlock& cb, DataBlock& data, FPInvOffset spOff,
                           SrcKey target, TransFlags trflags);
-TCA emit_retranslate_opt_stub(CodeBlock& cb, FPInvOffset spOff,
+TCA emit_retranslate_opt_stub(CodeBlock& cb, DataBlock& data, FPInvOffset spOff,
                               SrcKey target, TransID transID);
 
 /*
@@ -260,7 +264,7 @@ constexpr int kMaxArgs = 4;
  *
  * This structure is created on the stack by handleSRHelper() from the SR
  * arguments passed in registers.  Any changes to its size or layout of must be
- * reflected in handleSRHelper() in translator-asm-helpers.S.
+ * reflected in the handleSRHelper unique stub.
  */
 struct ReqInfo {
   /*

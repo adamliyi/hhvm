@@ -117,6 +117,23 @@ inline Reg Vr<Reg>::asReg() const {
          /* isSF() ? */   Reg(rn-Vreg::S0);
 }
 
+inline std::string show(Width w) {
+  switch (w) {
+    case Width::Byte:  return "Vreg8";
+    case Width::Word:  return "Vreg16";
+    case Width::Long:  return "Vreg32";
+    case Width::Quad:  return "Vreg64";
+    case Width::Octa:  return "Vreg128";
+    case Width::Dbl:   return "VregDbl";
+    case Width::Flags: return "VregSF";
+    case Width::WordN: return "Vreg{8,16}";
+    case Width::LongN: return "Vreg{8,16,32}";
+    case Width::QuadN: return "Vreg{8,16,32,64}";
+    case Width::Any:   return "Vreg";
+  }
+  not_reached();
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Vr addressing.
 
@@ -215,6 +232,16 @@ inline bool Vloc::hasReg(int i) const {
 
 inline Vreg Vloc::reg(int i) const {
   return m_regs[i];
+}
+
+inline VregList Vloc::regs() const {
+  if (hasReg(1)) {
+    return { m_regs[0], m_regs[1] };
+  }
+  if (hasReg(0)) {
+    return { m_regs[0] };
+  }
+  return {};
 }
 
 inline int Vloc::numAllocated() const {
