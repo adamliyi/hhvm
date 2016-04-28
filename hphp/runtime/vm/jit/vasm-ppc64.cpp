@@ -453,7 +453,8 @@ void Vgen::emit(const cvtsi2sd& i) {
 void Vgen::emit(const ucomisd& i) {
   ppc64_asm::Label notNAN;
   emit(fcmpu{i.s0, i.s1, i.sf});
-  a.bc(notNAN, BranchConditions::CR0_NoOverflow);
+  a.bc(notNAN, BranchConditions::CR0_NoOverflow,
+      BranchPredictionHint::LikelyNot);
   {
     // Set "negative" bit if "Overflow" bit is set. Also, keep overflow bit set
     a.li64(rAsm, 0x99000000, false);
