@@ -96,14 +96,30 @@ enum class BranchConditions {
   NoOverflow                  = CR0_NoOverflow
 };
 
+enum class BranchPredictionHint {
+  NoHint,
+  Likely,
+  LikelyNot
+};
+
+enum class BranchTargetPrediction {
+   SameTargetLikely,
+   SameTargetLikelyNot,
+   NotPredictable
+};
+
 #undef BRANCHES
 
 struct BranchParams {
     /* BO and BI parameter mapping related to BranchConditions */
     enum class BO {
+
       CRNotSet              = 4,
       CRSet                 = 12,
-      Always                = 20
+      Always                = 20,
+      HintNo                = 0,
+      HintLikely            = 3,
+      HintLikelyNot         = 2,
     };
 
 #define CR_CONDITIONS(cr) \
@@ -125,17 +141,20 @@ struct BranchParams {
 
 #undef CR_CONDITIONS
 
-    enum class BH {
-      CTR_Loop              = 0,
-      LR_Loop               = 1,
-      Reserved              = 2,
-      NoBranchPrediction    = 3
-    };
+  enum class BH { /*TODO: necessary?*/
+    CTR_Loop                    = 0,
+    LR_Loop                     = 1,
+    Reserved                    = 2,
+    NoBranchTargetPrediction    = 3
+  };
 
   private:
 
     /* Constructor auxiliary */
-    void defineBoBi(BranchConditions bc) {
+    void defineBoBi(BranchConditions bc,
+        BranchPredictionHint bph,
+        BranchTargetPrediction btp
+        ) {
       switch (bc) {
       /* Signed comparison */
       case BranchConditions::LessThan:
@@ -197,16 +216,51 @@ struct BranchParams {
       default:
           not_implemented();
       }
+      switch(bph) {
+      case BranchPredictionHint::Likely:
+        m_bo = static_cast<BO>(static_cast<unsigned int>(m_bo) |
+            static_cast<unsigned int>(BO::HintLikely));
+        break;
+      case BranchPredictionHint::LikelyNot:
+        m_bo = static_cast<BO>(static_cast<unsigned int>(m_bo) |
+            static_cast<unsigned int>(BO::HintLikelyNot));
+        break;
+      case BranchPredictionHint::NoHint:
+        m_bo = static_cast<BO>(static_cast<unsigned int>(m_bo) |
+            static_cast<unsigned int>(BO::HintNo));
+        break;
+      default:
+        not_implemented();
+      }
+      switch (btp) {
+      case BranchTargetPrediction::NotPredictable:
+        m_bh = BH::NoBranchTargetPrediction;
+        break;
+      case BranchTargetPrediction::SameTargetLikelyNot:
+        m_bh = BH::LR_Loop;
+        break;
+      case BranchTargetPrediction::SameTargetLikely:
+        m_bh = BH::CTR_Loop;
+        break;
+      default:
+        not_implemented();
+      }
     }
 #undef SWITCHES
 
   public:
     BranchParams() = delete;
 
-    BranchParams(BranchConditions bc) { defineBoBi(bc); }
+    BranchParams(BranchConditions bc,
+        BranchPredictionHint bph = BranchPredictionHint::NoHint,
+        BranchTargetPrediction btp = BranchTargetPrediction::NotPredictable) {
+      defineBoBi(bc,bph,btp);
+    }
 
-    BranchParams(ConditionCode cc) {
-      defineBoBi(convertCC(cc));
+    BranchParams(ConditionCode cc,
+        BranchPredictionHint bph = BranchPredictionHint::NoHint,
+        BranchTargetPrediction btp = BranchTargetPrediction::NotPredictable) {
+      defineBoBi(convertCC(cc),bph,btp);
     }
 
     static BranchConditions convertCC(ConditionCode cc) {
@@ -325,10 +379,12 @@ struct BranchParams {
 
     uint8_t bo() { return (uint8_t)m_bo; }
     uint8_t bi() { return (uint8_t)m_bi; }
+    uint8_t bh() { return (uint8_t)m_bh; }
 
   private:
     BranchParams::BO m_bo;
     BranchParams::BI m_bi;
+    BranchParams::BH m_bh;
 };
 
 
@@ -1821,7 +1877,7 @@ struct Assembler {
   void bdnz()           { not_implemented(); }  //Extended bc 16,0,target
   void blr() {
     BranchParams bp(BranchConditions::Always);
-    bclr(bp.bo(), bp.bi(), 0);
+    bclr(bp.bo(), bp.bi(), bp.bh());
   }
   void bltlr()          { not_implemented(); }  //Extended bclr 12,0,0
   void bnelr()          { not_implemented(); }  //Extended bclr 4,10,0
@@ -1830,11 +1886,11 @@ struct Assembler {
   void bnectr()         { not_implemented(); }  //Extended bcctr 4,10,0
   void bctr() {
     BranchParams bp(BranchConditions::Always);
-    bcctr(bp.bo(), bp.bi(), 0);
+    bcctr(bp.bo(), bp.bi(), bp.bh());
   }
   void bctrl() {
     BranchParams bp(BranchConditions::Always);
-    bcctrl(bp.bo(), bp.bi(), 0);
+    bcctrl(bp.bo(), bp.bi(), bp.bh());
   }
   void crmov()          { not_implemented(); }  //Extended cror Bx,By,By
   void crclr()          { not_implemented(); }  //Extended crxor Bx,Bx,BX
@@ -1963,8 +2019,10 @@ struct Assembler {
   void bl(Label& l);
   void bla(Label& l);
 
-  void bc(Label& l, BranchConditions bc);
-  void bc(Label& l, ConditionCode cc);
+  void bc(Label& l, BranchConditions bc,
+      BranchPredictionHint bph = BranchPredictionHint::NoHint);
+  void bc(Label& l, ConditionCode cc,
+      BranchPredictionHint bph = BranchPredictionHint::NoHint);
   void bca(Label& l, BranchConditions bc);
   void bcl(Label& l, BranchConditions bc);
   void bcla(Label& l, BranchConditions bc);
@@ -2596,8 +2654,9 @@ struct Label {
 
   void branchOffset(Assembler& a,
                     BranchConditions bc,
-                    LinkReg lr) {
-    BranchParams bp(bc);
+                    LinkReg lr,
+                    BranchPredictionHint bph = BranchPredictionHint::NoHint) {
+    BranchParams bp(bc, bph);
     addJump(&a, BranchType::bc);
 
     int16_t offset;
@@ -2648,8 +2707,8 @@ struct Label {
     } else {
       a.emitNop(2 * instr_size_in_bytes);
     }
-    if (LinkReg::Save == lr) a.bcctrl(bp.bo(), bp.bi(), 0);
-    else                     a.bcctr (bp.bo(), bp.bi(), 0);
+    if (LinkReg::Save == lr) a.bcctrl(bp.bo(), bp.bi(), bp.bh());
+    else                     a.bcctr (bp.bo(), bp.bi(), bp.bh());
   }
 
   void asm_label(Assembler& a) {
@@ -2694,11 +2753,13 @@ inline void Assembler::bl(Label& l)  { bcl(l, BranchConditions::Always); }
 inline void Assembler::bla(Label& l) { bcla(l, BranchConditions::Always); }
 
 
-inline void Assembler::bc(Label& l, BranchConditions bc) {
-  l.branchOffset(*this, bc, LinkReg::DoNotTouch);
+inline void Assembler::bc(Label& l, BranchConditions bc,
+    BranchPredictionHint bph/* = BranchPredictionHint::NoHint*/) {
+  l.branchOffset(*this, bc, LinkReg::DoNotTouch, bph);
 }
-inline void Assembler::bc(Label& l, ConditionCode cc) {
-  l.branchOffset(*this, BranchParams::convertCC(cc), LinkReg::DoNotTouch);
+inline void Assembler::bc(Label& l, ConditionCode cc,
+    BranchPredictionHint bph/* = BranchPredictionHint::NoHint*/) {
+  l.branchOffset(*this, BranchParams::convertCC(cc), LinkReg::DoNotTouch, bph);
 }
 inline void Assembler::bca(Label& l, BranchConditions bc) {
   l.branchAbsolute(*this, bc, LinkReg::DoNotTouch);
