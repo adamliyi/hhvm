@@ -31,12 +31,12 @@ namespace code_gen_detail {
 
 template <class Then>
 void ifThen(Vout& vmain, Vout& vcold, ConditionCode cc, Vreg sf,
-            Then thenBlock) {
+            Then thenBlock, bool unlikely = false) {
   auto then = vcold.makeBlock();
   auto done = vmain.makeBlock();
 
-  vmain << jcc{cc, sf, {done, then}};
-
+  if (!unlikely) vmain << jcc{cc, sf, {done, then}};
+  else vmain << jccprob{cc, sf, {done, then},{done.area(), then.area()} };
   vcold = then;
   thenBlock(vcold);
   if (!vcold.closed()) vcold << jmp{done};
@@ -66,12 +66,13 @@ void ifThenElse(Vout& vmain, Vout& vcold, ConditionCode cc, Vreg sf,
 
 template <class Then, class Else>
 Vreg cond(Vout& vmain, Vout& vcold, ConditionCode cc, Vreg sf,
-          Vreg dst, Then thenBlock, Else elseBlock) {
+          Vreg dst, Then thenBlock, Else elseBlock, bool unlikely = false) {
   auto elze = vmain.makeBlock();
   auto then = vcold.makeBlock();
   auto done = vmain.makeBlock();
 
-  vmain << jcc{cc, sf, {elze, then}};
+  if(!unlikely) vmain << jcc{cc, sf, {elze, then}};
+  else vmain << jccprob{cc, sf, {elze, then}, {elze.area(), then.area()}};
 
   vmain = elze;
   auto r1 = elseBlock(vmain);
@@ -115,14 +116,14 @@ void ifThen(Vout& vmain, ConditionCode cc, Vreg sf, Then thenBlock) {
 template <class Then>
 void unlikelyIfThen(Vout& vmain, Vout& vcold, ConditionCode cc, Vreg sf,
                     Then thenBlock) {
-  code_gen_detail::ifThen(vmain, vcold, cc, sf, thenBlock);
+  code_gen_detail::ifThen(vmain, vcold, cc, sf, thenBlock,true);
 }
 
 template <class Then>
 void ifThen(Vout& vmain, Vout& vcold, ConditionCode cc, Vreg sf,
             Then thenBlock, bool unlikely) {
   code_gen_detail::ifThen(vmain, unlikely ? vcold : vmain,
-                          cc, sf, thenBlock);
+                          cc, sf, thenBlock,unlikely);
 }
 
 /*
@@ -176,7 +177,8 @@ Vreg cond(Vout& vmain, ConditionCode cc, Vreg sf,
 template <class Then, class Else>
 Vreg unlikelyCond(Vout& vmain, Vout& vcold, ConditionCode cc, Vreg sf,
                   Vreg dst, Then thenBlock, Else elseBlock) {
-  return code_gen_detail::cond(vmain, vcold, cc, sf, dst, thenBlock, elseBlock);
+  return code_gen_detail::cond(vmain, vcold, cc, sf, dst, thenBlock, elseBlock,
+      true);
 }
 
 template <class Then, class Else>
