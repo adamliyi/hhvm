@@ -403,6 +403,7 @@ struct Vgen {
   void emit(const cvtsi2sd& i);
   void emit(const jcc& i);
   void emit(const jcci& i);
+  void emit(const jccprob& i);
   void emit(const jmp& i);
   void emit(const jmpr& i);
   void emit(const ldimmb& i);
@@ -601,6 +602,25 @@ void Vgen::emit(const jcc& i) {
 
     // offset to be determined by a.patchBctr
     a.branchAuto(a.frontier(), i.cc);
+  }
+  emit(jmp{i.targets[0]});
+}
+void Vgen::emit(const jccprob& i) {
+  if (i.targets[1] != i.targets[0]) {
+    if (next == i.targets[1]) {
+      return emit(jccprob{ccNegate(i.cc), i.sf, {i.targets[1], i.targets[0]},
+        {i.hints[1], i.hints[0]} } );
+    }
+    auto taken = i.targets[1];
+    jccs.push_back({a.frontier(), taken});
+
+    // offset to be determined by a.patchBctr
+    if(i.hints[0] == AreaIndex::Main &&
+        (i.hints[1] == AreaIndex::Cold || i.hints[1] == AreaIndex::Frozen))
+      a.branchAuto(a.frontier(), i.cc, LinkReg::DoNotTouch ,
+          BranchPredictionHint::LikelyNot);
+    else
+      a.branchAuto(a.frontier(), i.cc);
   }
   emit(jmp{i.targets[0]});
 }

@@ -248,6 +248,7 @@ struct Vunit;
   /* branches */\
   O(jcc, I(cc), U(sf), Dn)\
   O(jcci, I(cc), U(sf), Dn)\
+  O(jccprob, I(cc), U(sf), Dn Dn)\
   O(jmp, Inone, Un, Dn)\
   O(jmpr, Inone, U(target) U(args), Dn)\
   O(jmpm, Inone, U(target) U(args), Dn)\
@@ -1028,8 +1029,10 @@ struct storesd { VregDbl s; Vptr m; };
  *
  * In vasm, targets are always ordered {next, taken}.
  */
-struct jcc { ConditionCode cc; VregSF sf; Vlabel targets[2]; };
+struct jcc { ConditionCode cc; VregSF sf; Vlabel targets[2];};
 struct jcci { ConditionCode cc; VregSF sf; Vlabel target; TCA taken; };
+struct jccprob { ConditionCode cc; VregSF sf; Vlabel targets[2];
+  AreaIndex hints[2];};
 struct jmp { Vlabel target; };
 struct jmpr { Vreg64 target; RegSet args; };
 struct jmpm { Vptr target; RegSet args; };

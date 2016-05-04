@@ -204,6 +204,7 @@ bool effectful(Vinstr& inst) {
     case Vinstr::incwm:
     case Vinstr::jcc:
     case Vinstr::jcci:
+    case Vinstr::jccprob:
     case Vinstr::jmp:
     case Vinstr::jmpm:
     case Vinstr::jmpr:
