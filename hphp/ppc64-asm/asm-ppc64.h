@@ -2033,11 +2033,13 @@ struct Assembler {
 
   void branchAuto(CodeAddress c,
                   BranchConditions bc = BranchConditions::Always,
-                  LinkReg lr = LinkReg::DoNotTouch);
+                  LinkReg lr = LinkReg::DoNotTouch,
+                  BranchPredictionHint bph = BranchPredictionHint::NoHint);
 
   void branchAuto(CodeAddress c,
                   ConditionCode cc,
-                  LinkReg lr = LinkReg::DoNotTouch);
+                  LinkReg lr = LinkReg::DoNotTouch,
+                  BranchPredictionHint bph = BranchPredictionHint::NoHint);
 
   // ConditionCode variants
   void bc(ConditionCode cc, int16_t address) {
@@ -2690,9 +2692,10 @@ struct Label {
     else                     a.bca (bp.bo(), bp.bi(), uint16_t(address));
   }
 
-  void branchAuto(Assembler& a, BranchConditions bc, LinkReg lr) {
+  void branchAuto(Assembler& a, BranchConditions bc, LinkReg lr,
+      BranchPredictionHint bph) {
     // use CTR to perform absolute branch
-    BranchParams bp(bc);
+    BranchParams bp(bc, bph);
     const ssize_t address = ssize_t(m_address);
     // Use reserved function linkage register
     addJump(&a, BranchType::bctr);  // marking THIS address for patchBctr
@@ -2774,18 +2777,20 @@ inline void Assembler::bcla(Label& l, BranchConditions bc) {
 inline void Assembler::branchAuto(Label& l,
                                   BranchConditions bc,
                                   LinkReg lr) {
-  l.branchAuto(*this, bc, lr);
+  l.branchAuto(*this, bc, lr, BranchPredictionHint::NoHint);
 }
 inline void Assembler::branchAuto(CodeAddress c,
                                   BranchConditions bc,
-                                  LinkReg lr) {
+                                  LinkReg lr,
+                                  BranchPredictionHint bph) {
   Label l(c);
-  l.branchAuto(*this, bc, lr);
+  l.branchAuto(*this, bc, lr, bph);
 }
 inline void Assembler::branchAuto(CodeAddress c,
                                   ConditionCode cc,
-                                  LinkReg lr) {
-  branchAuto(c, BranchParams::convertCC(cc), lr);
+                                  LinkReg lr,
+                                  BranchPredictionHint bph) {
+  branchAuto(c, BranchParams::convertCC(cc), lr, bph);
 }
 
 } // namespace ppc64_asm
