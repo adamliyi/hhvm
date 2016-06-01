@@ -20,15 +20,20 @@
 #include <string>
 #include <unordered_map>
 
+#include "hphp/ppc64-asm/asm-ppc64.h"
+#include "hphp/ppc64-asm/dasm-ppc64.h"
+
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/vm/jit/translator.h"
 
 #include "hphp/tools/tc-print/offline-trans-data.h"
 #include "hphp/tools/tc-print/perf-events.h"
 
+#ifdef __x86_64__
 extern "C" {
 #include <xed-interface.h>
 }
+#endif
 
 namespace HPHP { namespace jit {
 
@@ -99,8 +104,11 @@ private:
 
   std::string       dumpDir;
   TCRegionRec       tcRegions[TCRCount];
+
+#ifdef __x86_64__
   xed_state_t       xed_state;
   xed_syntax_enum_t xed_syntax;
+#endif
 
   std::unordered_map<TCA, std::string> addr2SymMap;
 

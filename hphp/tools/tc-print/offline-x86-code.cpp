@@ -90,10 +90,12 @@ TCRegion OfflineX86Code::findTCRegionContaining(TCA addr) const {
 }
 
 void OfflineX86Code::xedInit() {
+#ifdef __x86_64__
   xed_state_init(&xed_state, XED_MACHINE_MODE_LONG_64,
                  XED_ADDRESS_WIDTH_64b, XED_ADDRESS_WIDTH_64b);
   xed_tables_init();
   xed_syntax = getenv("HHVM_INTEL_DISAS") ? XED_SYNTAX_INTEL : XED_SYNTAX_ATT;
+#endif
 }
 
 
@@ -124,7 +126,7 @@ TCA OfflineX86Code::getTransJmpTargets(const TransRec *transRec,
 
   return aFallThru;
 }
-
+#ifdef __x86_64__
 TCA OfflineX86Code::collectJmpTargets(FILE  *file,
                                       TCA    fileStartAddr,
                                       TCA    codeStartAddr,
@@ -189,14 +191,6 @@ TCA OfflineX86Code::collectJmpTargets(FILE  *file,
     return ip;
   }
   return 0;
-}
-
-void OfflineX86Code::printDisasm(TCA startAddr, uint32_t len,
-                                 const vector<TransBCMapping>& bcMap,
-                                 const PerfEventsMap<TCA>& perfEvents) {
-  TCRegion tcr = findTCRegionContaining(startAddr);
-  disasm(tcRegions[tcr].file, tcRegions[tcr].baseAddr, startAddr, len,
-         perfEvents, BCMappingInfo(tcr, bcMap));
 }
 
 // Disassemble the code from the given raw file, whose initial address is given
@@ -324,6 +318,92 @@ void OfflineX86Code::disasm(FILE* file,
     frontier += instrLen;
     ip       += instrLen;
   }
+}
+#elif defined(__powerpc64__)
+static constexpr auto kIndent = 4;
+
+TCA OfflineX86Code::collectJmpTargets(FILE  *file,
+                                      TCA    fileStartAddr,
+                                      TCA    codeStartAddr,
+                                      uint64_t codeLen,
+                                      vector<TCA> *jmpTargets) {
+
+  return 0;
+}
+
+// Disassemble the code from the given raw file, whose initial address is given
+// by fileStartAddr, for the address range given by
+// [codeStartAddr, codeStartAddr + codeLen)
+
+void OfflineX86Code::disasm(FILE* file,
+                            TCA   fileStartAddr,
+                            TCA   codeStartAddr,
+                            uint64_t codeLen,
+                            const PerfEventsMap<TCA>& perfEvents,
+                            BCMappingInfo bcMappingInfo,
+                            bool printAddr /* =true */,
+                            bool printBinary /* =false */) {
+
+  //char codeStr[MAX_INSTR_ASM_LEN];
+  uint8_t* code = (uint8_t*) alloca(codeLen);
+  uint8_t* frontier;
+  uint32_t instrLen = 4;
+  TCA          ip;
+  size_t       currBC = 0;
+
+  if (codeLen == 0) return;
+
+  if (fseek(file, codeStartAddr - fileStartAddr, SEEK_SET)) {
+    error("disasm error: seeking file");
+  }
+
+  size_t readLen = fread(code, codeLen, 1, file);
+  if (readLen != 1) error("disasm error: reading file");
+
+  // Decode and print each instruction
+  for (frontier = code, ip = codeStartAddr; frontier < code + codeLen; ) {
+    std::ostringstream codeStr;
+    ppc64_asm::Disassembler disasm(false, false, kIndent + 4,
+                                   color(ANSI_COLOR_BROWN));
+    disasm.disassembly(codeStr, frontier);
+
+    // Annotate the x86 with its bytecode.
+    currBC = printBCMapping(bcMappingInfo, currBC, (TCA)ip);
+
+    if (printAddr) printf("%14p: ", ip);
+
+    if (printBinary) {
+      uint32_t i;
+      for (i=0; i < instrLen; i++) {
+        printf("%02X", frontier[i]);
+      }
+      for (; i < 16; i++) {
+        printf("  ");
+      }
+    }
+
+    if (!perfEvents.empty()) {
+      printEventStats((TCA)ip, instrLen, perfEvents);
+    } else {
+      printf("%48s", "");
+    }
+
+    const std::string tmp = codeStr.str();
+    const char* cstr = tmp.c_str();
+    printf("%s", cstr);
+
+    frontier += instrLen;
+    ip       += instrLen;
+  }
+}
+#endif
+
+void OfflineX86Code::printDisasm(TCA startAddr, uint32_t len,
+                                 const vector<TransBCMapping>& bcMap,
+                                 const PerfEventsMap<TCA>& perfEvents) {
+  TCRegion tcr = findTCRegionContaining(startAddr);
+  disasm(tcRegions[tcr].file, tcRegions[tcr].baseAddr, startAddr, len,
+         perfEvents, BCMappingInfo(tcr, bcMap));
 }
 
 void OfflineX86Code::loadSymbolsMap() {
